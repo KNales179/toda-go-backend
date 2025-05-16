@@ -21,6 +21,7 @@ const AdminAuthRoutes = require('./routes/Adminauth');
 const blockedRoadRoutes = require('./routes/BlockRoad');
 const bookingRoute = require('./routes/Booking');
 const driverStatusRoute = require('./routes/DriverStatusRoute');
+const driverinfo = require('./routes/DriverInfo');
 
 // Use routes
 app.use("/api/auth/passenger", passengerRoutes);
@@ -31,6 +32,7 @@ app.use('/api/admin', AdminAuthRoutes);
 app.use('/api', blockedRoadRoutes);
 app.use('/api', bookingRoute);
 app.use('/api', driverStatusRoute);
+app.use('/api', driverinfo);
 
 
 // Static uploads

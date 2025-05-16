@@ -69,6 +69,7 @@ router.post('/book', async (req, res) => {
       notes,
       passengerName: passengerName || "Anonymous",
       driverId: nearestDriver.driverId,
+      driverName: nearestDriver.driverName,
       status: "pending",
       createdAt: new Date(),
     };
@@ -82,6 +83,7 @@ router.post('/book', async (req, res) => {
         booking: {
             ...bookingData,
             driverId: nearestDriver.driverId, // ensure it's inside the booking object
+            driverName: nearestDriver.driverName,
         },
         distance: shortestDistance.toFixed(2),
     });
