@@ -1,9 +1,0 @@
-node_modules/
-.env
-../app/
-../components/
-../hooks/
-../assets/
-../scripts/
-../package.json
-../package-lock.json
