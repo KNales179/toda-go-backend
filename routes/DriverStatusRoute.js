@@ -1,23 +1,24 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const DriverStatus = require('../models/DriverStatus');
+const DriverStatus = require("../models/DriverStatus");
 
-// POST /api/driver-status
-router.post('/driver-status', async (req, res) => {
+// GET /api/driver-status/:driverId
+router.get("/driver-status/:driverId", async (req, res) => {
   try {
-    const { driverId, isOnline, location } = req.body;
+    const status = await DriverStatus.findOne({ driverId: req.params.driverId });
 
-    const status = await DriverStatus.findOneAndUpdate(
-      { driverId },
-      { isOnline, location, updatedAt: new Date() },
-      { upsert: true, new: true }
-    );
+    if (!status) {
+      return res.status(404).json({ message: "Driver status not found" });
+    }
 
-    console.log('✅ Driver status updated:', status);
-    res.status(200).json({ message: 'Status updated', status });
+    res.status(200).json({
+      location: status.location,
+      isOnline: status.isOnline,
+      updatedAt: status.updatedAt,
+    });
   } catch (err) {
-    console.error('❌ Error updating driver status:', err);
-    res.status(500).json({ error: 'Server error' });
+    console.error("❌ Failed to fetch driver status:", err);
+    res.status(500).json({ message: "Server error" });
   }
 });
 
