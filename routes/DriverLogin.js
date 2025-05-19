@@ -51,7 +51,7 @@ router.post("/login", async (req, res) => {
         message: "Login successful",
         userType: "Driver",
         userId: driver._id,
-        driver: driver, // Include full driver data
+        driver: driver, 
       });
     }
 

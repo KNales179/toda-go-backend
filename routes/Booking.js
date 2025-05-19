@@ -15,6 +15,7 @@ router.post('/book', async (req, res) => {
       paymentMethod,
       notes,
       passengerName,
+      passengerId,
     } = req.body;
 
     // STEP 1: Get all online drivers
@@ -69,9 +70,9 @@ router.post('/book', async (req, res) => {
       notes,
       passengerName: passengerName || "Anonymous",
       driverId: nearestDriver.driverId,
-      driverName: nearestDriver.driverName,
       status: "pending",
       createdAt: new Date(),
+      passengerId,
     };
 
     bookings.push(bookingData);
@@ -83,7 +84,6 @@ router.post('/book', async (req, res) => {
         booking: {
             ...bookingData,
             driverId: nearestDriver.driverId, // ensure it's inside the booking object
-            driverName: nearestDriver.driverName,
         },
         distance: shortestDistance.toFixed(2),
     });
