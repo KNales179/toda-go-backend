@@ -77,8 +77,6 @@ router.post('/book', async (req, res) => {
 
     bookings.push(bookingData);
 
-    console.log("📥 Booking stored with driver match:", bookingData);
-
     return res.status(200).json({
         message: "Booking matched with driver!",
         booking: {
@@ -108,8 +106,12 @@ router.get('/driver-requests/:driverId', (req, res) => {
     (b) => b.driverId === driverId && b.status === "pending"
   );
 
+  console.log("📡 Fetching driver bookings for:", driverId);
+  console.log("🔍 Matching bookings:", driverBookings);
+
   res.status(200).json(driverBookings);
 });
+
 
 router.post('/accept-booking', (req, res) => {
   const { bookingId } = req.body;
