@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const DriverStatus = require("../models/DriverStatus");
+const Passenger = require("../models/Passenger");
 
 let bookings = [];
 
@@ -14,18 +15,15 @@ router.post('/book', async (req, res) => {
       fare,
       paymentMethod,
       notes,
-      passengerName,
       passengerId,
     } = req.body;
 
-    // STEP 1: Get all online drivers
     const onlineDrivers = await DriverStatus.find({ isOnline: true });
 
     if (onlineDrivers.length === 0) {
       return res.status(404).json({ message: "No available drivers right now." });
     }
 
-    // STEP 2: Find the nearest one using haversine formula
     const getDistance = (lat1, lon1, lat2, lon2) => {
       const toRad = (v) => (v * Math.PI) / 180;
       const R = 6371;
@@ -58,7 +56,17 @@ router.post('/book', async (req, res) => {
       return res.status(404).json({ message: "No nearby driver found." });
     }
 
-    // STEP 3: Save booking and assign driver
+    let passengerName = "Anonymous";
+    try {
+      const passenger = await Passenger.findById(passengerId).select("firstName middleName lastName");
+      if (passenger) {
+        passengerName = `${passenger.firstName} ${passenger.middleName} ${passenger.lastName}`;
+      }
+    } catch (err) {
+      console.warn("⚠️ Could not fetch passenger name, defaulting to Anonymous.");
+    }
+
+
     const bookingData = {
       id: bookings.length + 1,
       pickupLat,
@@ -90,7 +98,7 @@ router.post('/book', async (req, res) => {
   }
 });
 
-// Debug route: view all bookings
+
 router.get('/bookings', (req, res) => {
   return res.status(200).json(bookings);
 });
@@ -99,7 +107,7 @@ router.get('/driver-requests/:driverId', (req, res) => {
   const { driverId } = req.params;
 
   const driverBookings = bookings.filter(
-    (b) => b.driverId === driverId && b.status === "pending"
+    (b) => String(b.driverId) === driverId && b.status === "pending"
   );
 
   console.log("📡 Fetching driver bookings for:", driverId);
