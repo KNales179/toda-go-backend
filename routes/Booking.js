@@ -76,18 +76,14 @@ router.post('/book', async (req, res) => {
     };
 
     bookings.push(bookingData);
-
     return res.status(200).json({
         message: "Booking matched with driver!",
         booking: {
             ...bookingData,
-            driverId: nearestDriver.driverId, // ensure it's inside the booking object
+            driverId: nearestDriver.driverId,
         },
         distance: shortestDistance.toFixed(2),
     });
-
-
-
   } catch (error) {
     console.error("❌ Error during booking:", error);
     return res.status(500).json({ message: "Server error" });
@@ -108,6 +104,7 @@ router.get('/driver-requests/:driverId', (req, res) => {
 
   console.log("📡 Fetching driver bookings for:", driverId);
   console.log("🔍 Matching bookings:", driverBookings);
+  console.log("📦 Full bookings list:", bookings);
 
   res.status(200).json(driverBookings);
 });
