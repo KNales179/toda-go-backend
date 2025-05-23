@@ -110,10 +110,6 @@ router.get('/driver-requests/:driverId', (req, res) => {
     (b) => String(b.driverId) === driverId && b.status === "pending"
   );
 
-  console.log("📡 Fetching driver bookings for:", driverId);
-  console.log("🔍 Matching bookings:", driverBookings);
-  console.log("📦 Full bookings list:", bookings);
-
   res.status(200).json(driverBookings);
 });
 
@@ -127,8 +123,6 @@ router.post('/accept-booking', (req, res) => {
   }
 
   booking.status = "accepted";
-
-  console.log("✅ Booking accepted:", booking);
 
   return res.status(200).json({ message: "Booking accepted", booking });
 });
