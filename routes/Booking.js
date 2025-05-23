@@ -144,4 +144,18 @@ router.post('/confirm-driver', (req, res) => {
 });
 
 
+router.post('/cancel-booking', (req, res) => {
+  const { bookingId } = req.body;
+
+  const booking = bookings.find(b => b.id === bookingId);
+  if (!booking) return res.status(404).json({ message: "Booking not found" });
+
+  booking.status = "cancelled";
+  booking.cancelledBy = "passenger";
+  console.log("❌ Booking cancelled by passenger:", bookingId);
+
+  res.status(200).json({ message: "Booking cancelled" });
+});
+
+
 module.exports = router;
