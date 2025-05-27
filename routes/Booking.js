@@ -144,13 +144,15 @@ router.post('/accept-booking', (req, res) => {
   return res.status(200).json({ message: "Booking accepted", booking });
 });
 
-router.post('/confirm-driver', (req, res) => {
+router.post('/driver-confirmed', (req, res) => {
   const { bookingId } = req.body;
-  const booking = bookings.find((b) => b.id === bookingId);
+  const booking = bookings.find(b => b.id === bookingId);
   if (!booking) return res.status(404).json({ message: "Booking not found" });
-  booking.passengerConfirmed = true;
-  return res.status(200).json({ message: "Passenger confirmed driver", booking });
+
+  booking.driverConfirmed = true;
+  return res.status(200).json({ message: "Passenger notified!", booking });
 });
+
 
 router.post('/cancel-booking', (req, res) => {
   const { bookingId } = req.body;
@@ -161,5 +163,12 @@ router.post('/cancel-booking', (req, res) => {
   console.log("❌ Booking cancelled by passenger:", bookingId);
   res.status(200).json({ message: "Booking cancelled" });
 });
+
+router.post('/clear-bookings', (req, res) => {
+  bookings = [];
+  console.log("🧹 All bookings cleared.");
+  res.status(200).json({ message: "All bookings cleared." });
+});
+
 
 module.exports = router;
