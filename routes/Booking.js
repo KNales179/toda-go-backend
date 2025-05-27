@@ -131,7 +131,7 @@ router.get('/bookings', (req, res) => res.status(200).json(bookings));
 router.get('/driver-requests/:driverId', (req, res) => {
   const { driverId } = req.params;
   const driverBookings = bookings.filter(
-    (b) => String(b.driverId) === driverId && b.status === "pending"
+    (b) => String(b.driverId) === driverId && (b.status === "pending" || b.status === "accepted")
   );
   res.status(200).json(driverBookings);
 });
