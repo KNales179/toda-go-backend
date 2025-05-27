@@ -106,6 +106,15 @@ router.get('/bookings', (req, res) => {
 router.get('/driver-requests/:driverId', (req, res) => {
   const { driverId } = req.params;
 
+  const cancelledBooking = bookings.find(
+    (b) => String(b.driverId) === driverId && b.status === "cancelled"
+  );
+
+  if (cancelledBooking) {
+    console.log("❌ Sending cancelled booking to driver:", cancelledBooking.id);
+    return res.status(200).json([cancelledBooking]);
+  }
+
   const driverBookings = bookings.filter(
     (b) => String(b.driverId) === driverId && b.status === "pending"
   );
