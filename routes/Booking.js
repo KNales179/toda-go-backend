@@ -106,21 +106,18 @@ router.get('/bookings', (req, res) => {
 router.get('/driver-requests/:driverId', (req, res) => {
   const { driverId } = req.params;
 
-  const cancelledBooking = bookings.find(
-    (b) => String(b.driverId) === driverId && b.status === "cancelled"
-  );
-
-  if (cancelledBooking) {
-    console.log("❌ Sending cancelled booking to driver:", cancelledBooking.id);
-    return res.status(200).json([cancelledBooking]);
-  }
-
+  // ✅ Only send bookings that are still pending (not cancelled)
   const driverBookings = bookings.filter(
     (b) => String(b.driverId) === driverId && b.status === "pending"
   );
 
+  if (driverBookings.some(b => b.status === "cancelled")) {
+    console.log(`❌ Cancelled bookings found but won't be sent to driver.`);
+  }
+
   res.status(200).json(driverBookings);
 });
+
 
 
 router.post('/accept-booking', (req, res) => {
