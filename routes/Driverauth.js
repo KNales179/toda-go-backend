@@ -139,4 +139,31 @@ router.post(
   }
 );
 
+
+router.patch("/:id/update-profile-image", upload.single("profileImage"), async (req, res) => {
+  console.log("🟢 Upload route hit for driver. File:", req.file);
+  try {
+    const driverId = req.params.id;
+    const driver = await Driver.findById(driverId);
+    if (!driver) {
+      return res.status(404).json({ message: "Driver not found" });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ message: "No image uploaded." });
+    }
+
+    driver.selfieImage = req.file.path;
+    await driver.save();
+
+    res.status(200).json({
+      driver,
+      message: "Driver profile image updated!",
+    });
+  } catch (error) {
+    console.error("❌ Error updating driver profile image:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 module.exports = router;
