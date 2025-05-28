@@ -12,6 +12,7 @@ const passengerSchema = new mongoose.Schema({
   middleName: { type: String, required: true },
   lastName: { type: String, required: true },
   suffix: { type: String },
+  gender: { type:String },
   birthday: { type: Date},
   birth_place: { type: String },
   age: { type: Number },
@@ -20,6 +21,7 @@ const passengerSchema = new mongoose.Schema({
   contact: { type: String },
   civil_status: { type: String },
   profileImage: { type: String, default: "" },
+  homeAddress: { type:String },
 
   // From original app
   email: { type: String, unique: true, required: true },

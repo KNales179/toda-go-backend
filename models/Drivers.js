@@ -16,8 +16,10 @@ const DriverSchema = new mongoose.Schema({
   driverLastName: { type: String, required: true },
   driverSuffix: { type: String },
   driverName: { type: String, required: true },
+  gender: { type:String },
   driverBirthdate: { type: String, required: true },
   driverPhone: { type: String, required: true },
+  homeAddress: { type:String },
 
   experienceYears: { type: String, enum: ["1-5 taon", "6-10 taon", "16-20 taon", "20 taon pataas"], required: true },
   isLucenaVoter: { type: String, enum: ["Oo", "Hindi"], required: true },
