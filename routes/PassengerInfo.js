@@ -7,7 +7,7 @@ const Passenger = require("../models/Passenger");
 // GET /api/passenger/:id ➜ fetch name details of a passenger by _id
 router.get("/passenger/:id", async (req, res) => {
   try {
-    const passenger = await Passenger.findById(req.params.id).select("firstName middleName lastName birthday email");
+    const passenger = await Passenger.findById(req.params.id).select("firstName middleName lastName birthday email profileImage");
     if (!passenger) return res.status(404).json({ message: "Passenger not found" });
 
     res.status(200).json({ passenger });
