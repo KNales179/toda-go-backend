@@ -63,7 +63,7 @@ router.post("/login-passenger", async (req, res) => {
   }
 });
 
-router.patch("/passenger/:id/update-profile-image", upload.single("profileImage"), async (req, res) => {
+router.patch("/:id/update-profile-image", upload.single("profileImage"), async (req, res) => {
     console.log("🟢 Upload route hit. File:", req.file);
     console.log("📤 Uploading formData:", formData);
     try {
