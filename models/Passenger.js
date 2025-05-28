@@ -19,7 +19,7 @@ const passengerSchema = new mongoose.Schema({
   brgy_Id: { type: Number },
   contact: { type: String },
   civil_status: { type: String },
-  selfieImage: { type: String },
+  profileImage: { type: String, default: "" },
 
   // From original app
   email: { type: String, unique: true, required: true },
