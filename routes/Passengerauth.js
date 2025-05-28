@@ -65,7 +65,6 @@ router.post("/login-passenger", async (req, res) => {
 
 router.patch("/:id/update-profile-image", upload.single("profileImage"), async (req, res) => {
     console.log("🟢 Upload route hit. File:", req.file);
-    console.log("📤 Uploading formData:", formData);
     try {
       const passengerId = req.params.id;
       const passenger = await Passenger.findById(passengerId);
@@ -77,7 +76,7 @@ router.patch("/:id/update-profile-image", upload.single("profileImage"), async (
         return res.status(400).json({ message: "No image uploaded." });
       }
 
-      passenger.profileImage = req.file.path; // Save the new image path
+      passenger.profileImage = req.file.path
       await passenger.save();
 
       res.status(200).json({
