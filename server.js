@@ -26,6 +26,7 @@ const passengerinfo = require("./routes/PassengerInfo");
 const statsRoute = require('./routes/Stats');
 const feedbackRoutes = require("./routes/FeedbackRoutes");
 const reportsRoute = require('./routes/ReportsRoute');
+const rideHistoryRoute = require("./routes/RideHistoryRoutes");
 
 // Use routes
 app.use("/api/auth/passenger", passengerRoutes);
@@ -41,7 +42,7 @@ app.use("/api", passengerinfo);
 app.use('/api/stats', statsRoute);
 app.use("/api/feedback", feedbackRoutes);
 app.use('/api', reportsRoute);
-
+app.use("/api", rideHistoryRoute);
 
 // Static uploads
 app.use("/uploads", express.static("uploads"));
