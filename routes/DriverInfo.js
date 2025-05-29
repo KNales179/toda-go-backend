@@ -15,4 +15,17 @@ router.get("/driver/:id", async (req, res) => {
   }
 });
 
+
+router.get("/drivers", async (req, res) => {
+  try {
+    const drivers = await Driver.find().select(
+      "driverFirstName driverMiddleName driverLastName driverName email driverPhone todaName franchiseNumber sector experienceYears selfieImage"
+    );
+    res.status(200).json(drivers);
+  } catch (error) {
+    console.error("❌ Failed to fetch drivers:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 module.exports = router;

@@ -5,7 +5,7 @@ const ReportSchema = new mongoose.Schema({
   passengerId: String,
   driverId: String,
   reportType: String,
-  otherReport: String, // If passenger entered a custom reason
+  otherReport: String, 
   submittedAt: { type: Date, default: Date.now },
 });
 
