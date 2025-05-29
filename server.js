@@ -25,7 +25,7 @@ const driverinfo = require('./routes/DriverInfo');
 const passengerinfo = require("./routes/PassengerInfo");
 const statsRoute = require('./routes/Stats');
 const feedbackRoutes = require("./routes/FeedbackRoutes");
-const reportsRoute = require('./routes/Reports');
+const reportsRoute = require('./routes/ReportsRoute');
 
 // Use routes
 app.use("/api/auth/passenger", passengerRoutes);
