@@ -22,6 +22,8 @@ const DriverSchema = new mongoose.Schema({
   homeAddress: { type:String },
 
   experienceYears: { type: String, enum: ["1-5 taon", "6-10 taon", "16-20 taon", "20 taon pataas"], required: true },
+  rating: { type: Number, default: 0 },
+  ratingCount: { type: Number, default: 0 },
   isLucenaVoter: { type: String, enum: ["Oo", "Hindi"], required: true },
   votingLocation: { type: String },
 

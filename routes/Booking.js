@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const DriverStatus = require("../models/DriverStatus");
 const Passenger = require("../models/Passenger");
+const RideHistory = require("../models/RideHistory");
 
 let bookings = [];
 
@@ -178,8 +179,29 @@ router.post('/complete-booking', (req, res) => {
     return res.status(404).json({ message: "Booking not found" });
   }
 
-  booking.status = "completed"; // Simple status update
-  res.status(200).json({ message: "Booking marked as completed" });
+  booking.status = "completed"; 
+
+  const rideHistory = new RideHistory({
+    bookingId: booking.id,
+    passengerId: booking.passengerId,
+    driverId: booking.driverId,
+    pickupLat: booking.pickupLat,
+    pickupLng: booking.pickupLng,
+    destinationLat: booking.destinationLat,
+    destinationLng: booking.destinationLng,
+    fare: booking.fare,
+    paymentMethod: booking.paymentMethod,
+    notes: booking.notes,
+  });
+
+  rideHistory.save()
+    .then(() => {
+      res.status(200).json({ message: "Booking marked as completed and history saved!" });
+    })
+    .catch((err) => {
+      console.error("❌ Error saving ride history:", err);
+      res.status(500).json({ message: "Server error while saving ride history" });
+    });
 });
 
 
