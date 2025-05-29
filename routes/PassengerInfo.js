@@ -17,4 +17,17 @@ router.get("/passenger/:id", async (req, res) => {
   }
 });
 
+router.get("/passengers", async (req, res) => {
+  try {
+    const passengers = await Passenger.find().select(
+      "firstName middleName lastName email phone status"
+    );
+    res.status(200).json(passengers);
+  } catch (error) {
+    console.error("❌ Failed to fetch passengers:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
 module.exports = router;
