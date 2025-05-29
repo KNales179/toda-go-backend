@@ -171,4 +171,16 @@ router.post('/clear-bookings', (req, res) => {
 });
 
 
+router.post('/complete-booking', (req, res) => {
+  const { bookingId } = req.body;
+  const booking = bookings.find(b => b.id === bookingId);
+  if (!booking) {
+    return res.status(404).json({ message: "Booking not found" });
+  }
+
+  booking.status = "completed"; // Simple status update
+  res.status(200).json({ message: "Booking marked as completed" });
+});
+
+
 module.exports = router;
