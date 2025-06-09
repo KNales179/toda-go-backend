@@ -27,6 +27,7 @@ const statsRoute = require('./routes/Stats');
 const feedbackRoutes = require("./routes/FeedbackRoutes");
 const reportsRoute = require('./routes/ReportsRoute');
 const rideHistoryRoute = require("./routes/RideHistoryRoutes");
+const orsRoute = require('./routes/orsRoute');
 
 // Use routes
 app.use("/api/auth/passenger", passengerRoutes);
@@ -43,6 +44,7 @@ app.use('/api/stats', statsRoute);
 app.use("/api/feedback", feedbackRoutes);
 app.use('/api', reportsRoute);
 app.use("/api", rideHistoryRoute);
+app.use(orsRoute);
 
 // Static uploads
 app.use("/uploads", express.static("uploads"));

@@ -3,7 +3,7 @@ const router = express.Router();
 const Passenger = require("../models/Passenger");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const upload = require("../middleware/upload"); // ✅ Use your existing Multer middleware!
+const upload = require("../middleware/upload");
 
 // Register
 router.post("/register-passenger", async (req, res) => {

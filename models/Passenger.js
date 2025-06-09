@@ -5,9 +5,6 @@ const passengerSchema = new mongoose.Schema({
   citizen_id: {
     type: String, 
   },
-  license_Id: {
-    type: String,
-  },
   firstName: { type: String, required: true },
   middleName: { type: String, required: true },
   lastName: { type: String, required: true },
