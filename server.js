@@ -12,6 +12,12 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
+app.get('/health', (req, res) => res.status(200).send('ok'));
+app.get('/warmup', async (req, res) => {
+  try { await mongoose.connection.db.admin().ping(); res.send('warmed'); }
+  catch { res.status(500).send('warmup-failed'); }
+});
+
 // Routes
 const passengerRoutes = require("./routes/Passengerauth");
 const driverRoutes = require("./routes/Driverauth");
@@ -58,6 +64,7 @@ mongoose.connect(process.env.MONGO_URI, {
 })
 .then(() => console.log("✅ Connected to MongoDB"))
 .catch((err) => console.error("❌ MongoDB connection failed:", err));
+
 
 // Base route
 app.get("/", (req, res) => {
