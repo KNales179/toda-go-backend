@@ -3,20 +3,16 @@ const router = express.Router();
 const DriverStatus = require("../models/DriverStatus");
 const Passenger = require("../models/Passenger");
 const RideHistory = require("../models/RideHistory");
+const { haversineMeters } = require('../utils/haversine');
 
 let bookings = [];
 
 router.post('/book', async (req, res) => {
   try {
     const {
-      pickupLat,
-      pickupLng,
-      destinationLat,
-      destinationLng,
-      fare,
-      paymentMethod,
-      notes,
-      passengerId,
+      pickupLat, pickupLng,
+      destinationLat, destinationLng,
+      fare, paymentMethod, notes, passengerId,
     } = req.body;
 
     // Get passenger name for record-keeping
@@ -24,107 +20,70 @@ router.post('/book', async (req, res) => {
     try {
       const passenger = await Passenger.findById(passengerId).select("firstName middleName lastName");
       if (passenger) {
-        passengerName = `${passenger.firstName} ${passenger.middleName} ${passenger.lastName}`;
+        passengerName = [passenger.firstName, passenger.middleName, passenger.lastName]
+          .filter(Boolean).join(" ");
       }
-    } catch (err) {
-      console.warn("⚠️ Could not fetch passenger name, defaulting to Anonymous.");
-    }
+    } catch { /* ignore */ }
 
-    // Create the booking record even if no driver yet
     const bookingId = bookings.length + 1;
     const bookingData = {
       id: bookingId,
-      pickupLat,
-      pickupLng,
-      destinationLat,
-      destinationLng,
-      fare,
-      paymentMethod,
-      notes,
+      pickupLat, pickupLng,
+      destinationLat, destinationLng,
+      fare, paymentMethod, notes,
       passengerName,
+      passengerId,
       driverId: null,
       status: "pending",
       createdAt: new Date(),
-      passengerId,
     };
     bookings.push(bookingData);
 
-    // Function to find the nearest driver
-    const getNearestDriver = async () => {
-      const onlineDrivers = await DriverStatus.find({ isOnline: true });
-      if (onlineDrivers.length === 0) return null;
-
-      let nearestDriver = null;
-      let shortestDistance = Infinity;
-
-      const toRad = (v) => (v * Math.PI) / 180;
-      const R = 6371;
-      const getDistance = (lat1, lon1, lat2, lon2) => {
-        const dLat = toRad(lat2 - lat1);
-        const dLon = toRad(lon2 - lon1);
-        const a =
-          Math.sin(dLat / 2) ** 2 +
-          Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-          Math.sin(dLon / 2) ** 2;
-        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      };
-
-      for (const driver of onlineDrivers) {
-        const dist = getDistance(
-          pickupLat,
-          pickupLng,
-          driver.location.latitude,
-          driver.location.longitude
-        );
-        if (dist < shortestDistance) {
-          shortestDistance = dist;
-          nearestDriver = driver;
-        }
-      }
-
-      return nearestDriver;
-    };
-
-    // Wait up to 10 minutes for an online driver
-    const startTime = Date.now();
-    const maxWaitTime = 10 * 60 * 1000; // 10 minutes
-
-    const pollForDriver = async () => {
-      const driver = await getNearestDriver();
-      if (driver) {
-        // Assign the driver to the booking
-        bookingData.driverId = driver.driverId;
-        console.log("✅ Driver found and assigned:", driver.driverId);
-        return res.status(200).json({
-          message: "Booking matched with driver!",
-          booking: {
-            ...bookingData,
-            driverId: driver.driverId,
-          }
-        });
-      }
-
-      if (Date.now() - startTime < maxWaitTime) {
-        // No driver yet, wait 5 seconds and try again
-        setTimeout(pollForDriver, 5000);
-      } else {
-        // No driver found after 10 minutes
-        console.log("❌ No drivers found after 10 minutes.");
-        return res.status(200).json({
-          message: "No drivers found within 10 minutes. Please try again.",
-          booking: bookingData,
-        });
-      }
-    };
-
-    // Start polling
-    pollForDriver();
-
+    return res.status(201).json({
+      message: "Booking created (pending). Waiting for a driver to accept.",
+      booking: bookingData,
+    });
   } catch (error) {
     console.error("❌ Error during booking:", error);
     return res.status(500).json({ message: "Server error" });
   }
 });
+
+router.get('/waiting-bookings', (req, res) => {
+  const { lat, lng, radiusKm = '5', limit = '20', freshnessMin = '15' } = req.query;
+
+  const center = { lat: Number(lat), lng: Number(lng) };
+  if (!Number.isFinite(center.lat) || !Number.isFinite(center.lng)) {
+    return res.status(400).json({ message: "lat and lng query params are required." });
+  }
+
+  const radiusMeters = Number(radiusKm) * 1000;
+  const freshCutoff = Date.now() - Number(freshnessMin) * 60 * 1000;
+
+  const items = bookings
+    .filter(b =>
+      b.status === 'pending' &&
+      new Date(b.createdAt).getTime() >= freshCutoff
+    )
+    .map(b => {
+      const distM = haversineMeters(center, { lat: b.pickupLat, lng: b.pickupLng });
+      return {
+        id: b.id,
+        distanceKm: distM / 1000,
+        pickup: { lat: b.pickupLat, lng: b.pickupLng },
+        destination: { lat: b.destinationLat, lng: b.destinationLng },
+        fare: b.fare,
+        passengerPreview: { name: b.passengerName || "Anonymous" },
+        createdAt: b.createdAt,
+      };
+    })
+    .filter(x => x.distanceKm * 1000 <= radiusMeters)
+    .sort((a, b) => a.distanceKm - b.distanceKm)
+    .slice(0, Number(limit));
+
+  return res.status(200).json(items);
+});
+
 
 // Other endpoints (unchanged):
 router.get('/bookings', (req, res) => res.status(200).json(bookings));
@@ -138,25 +97,30 @@ router.get('/driver-requests/:driverId', (req, res) => {
 });
 
 router.post('/accept-booking', (req, res) => {
-  const { bookingId } = req.body;
-  const id = Number(bookingId);                  // ✅ coerce
+  const { bookingId, driverId } = req.body;
+  const id = Number(bookingId);
+
   if (!Number.isFinite(id)) {
     return res.status(400).json({ message: "Invalid bookingId" });
   }
+  if (!driverId) {
+    return res.status(400).json({ message: "driverId is required" });
+  }
+
   const booking = bookings.find((b) => b.id === id);
   if (!booking) return res.status(404).json({ message: "Booking not found" });
+
+  if (booking.status !== 'pending') {
+    return res.status(409).json({ message: "Already taken or not pending" });
+  }
+
   booking.status = "accepted";
+  booking.driverId = String(driverId);
+  booking.acceptedAt = new Date();
+
   return res.status(200).json({ message: "Booking accepted", booking });
 });
 
-router.post('/driver-confirmed', (req, res) => {
-  const { bookingId } = req.body;
-  const booking = bookings.find(b => b.id === bookingId);
-  if (!booking) return res.status(404).json({ message: "Booking not found" });
-
-  booking.driverConfirmed = true;
-  return res.status(200).json({ message: "Passenger notified!", booking });
-});
 
 
 router.post('/cancel-booking', (req, res) => {
