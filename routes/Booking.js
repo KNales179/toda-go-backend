@@ -1,12 +1,28 @@
+// routes/Booking.js (queue model: pending → accept)
 const express = require('express');
 const router = express.Router();
 const DriverStatus = require("../models/DriverStatus");
 const Passenger = require("../models/Passenger");
 const RideHistory = require("../models/RideHistory");
-const { haversineMeters } = require('../utils/haversine');
 
+// In-memory store (unchanged for now)
 let bookings = [];
 
+// --- Haversine helpers ---
+const toRad = (v) => (v * Math.PI) / 180;
+const EARTH_R_M = 6371000;
+const haversineMeters = (a, b) => {
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const la1 = toRad(a.lat);
+  const la2 = toRad(b.lat);
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(la1) * Math.cos(la2) * Math.sin(dLng / 2) ** 2;
+  return 2 * EARTH_R_M * Math.asin(Math.sqrt(s));
+};
+
+// --- BOOK: create pending only (no auto-assign) ---
 router.post('/book', async (req, res) => {
   try {
     const {
@@ -15,15 +31,12 @@ router.post('/book', async (req, res) => {
       fare, paymentMethod, notes, passengerId,
     } = req.body;
 
-    // Get passenger name for record-keeping
+    // Fetch nice-to-have passenger name
     let passengerName = "Anonymous";
     try {
-      const passenger = await Passenger.findById(passengerId).select("firstName middleName lastName");
-      if (passenger) {
-        passengerName = [passenger.firstName, passenger.middleName, passenger.lastName]
-          .filter(Boolean).join(" ");
-      }
-    } catch { /* ignore */ }
+      const p = await Passenger.findById(passengerId).select("firstName middleName lastName");
+      if (p) passengerName = [p.firstName, p.middleName, p.lastName].filter(Boolean).join(" ");
+    } catch {}
 
     const bookingId = bookings.length + 1;
     const bookingData = {
@@ -32,16 +45,16 @@ router.post('/book', async (req, res) => {
       destinationLat, destinationLng,
       fare, paymentMethod, notes,
       passengerName,
-      passengerId,
+      passengerId: passengerId || null,
       driverId: null,
       status: "pending",
       createdAt: new Date(),
     };
     bookings.push(bookingData);
 
-    return res.status(201).json({
-      message: "Booking created (pending). Waiting for a driver to accept.",
-      booking: bookingData,
+    return res.status(200).json({
+      message: "Booking created. Waiting for a driver to accept.",
+      booking: bookingData
     });
   } catch (error) {
     console.error("❌ Error during booking:", error);
@@ -49,79 +62,92 @@ router.post('/book', async (req, res) => {
   }
 });
 
-router.get('/waiting-bookings', (req, res) => {
-  const { lat, lng, radiusKm = '5', limit = '20', freshnessMin = '15' } = req.query;
+// --- DRIVER QUEUE: nearby pending bookings ---
+router.get('/waiting-bookings', async (req, res) => {
+  try {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    const radiusKm = Math.max(0, Number(req.query.radiusKm ?? 5));
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit ?? 20)));
 
-  const center = { lat: Number(lat), lng: Number(lng) };
-  if (!Number.isFinite(center.lat) || !Number.isFinite(center.lng)) {
-    return res.status(400).json({ message: "lat and lng query params are required." });
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return res.status(400).json({ message: "lat/lng required" });
+    }
+
+    const center = { lat, lng };
+    const out = bookings
+      .filter(b => b && b.status === "pending")
+      .map(b => {
+        const distM = haversineMeters(
+          center,
+          { lat: b.pickupLat, lng: b.pickupLng }
+        );
+        return {
+          id: b.id,
+          pickup: { lat: b.pickupLat, lng: b.pickupLng },
+          destination: { lat: b.destinationLat, lng: b.destinationLng },
+          fare: b.fare,
+          passengerPreview: { name: b.passengerName },
+          distanceKm: distM / 1000,
+          createdAt: b.createdAt,
+        };
+      })
+      .filter(r => r.distanceKm <= radiusKm)
+      .sort((a, b) => a.distanceKm - b.distanceKm || a.id - b.id)
+      .slice(0, limit);
+
+    return res.status(200).json(out);
+  } catch (e) {
+    console.error("❌ waiting-bookings error:", e);
+    return res.status(500).json({ message: "Server error" });
   }
-
-  const radiusMeters = Number(radiusKm) * 1000;
-  const freshCutoff = Date.now() - Number(freshnessMin) * 60 * 1000;
-
-  const items = bookings
-    .filter(b =>
-      b.status === 'pending' &&
-      new Date(b.createdAt).getTime() >= freshCutoff
-    )
-    .map(b => {
-      const distM = haversineMeters(center, { lat: b.pickupLat, lng: b.pickupLng });
-      return {
-        id: b.id,
-        distanceKm: distM / 1000,
-        pickup: { lat: b.pickupLat, lng: b.pickupLng },
-        destination: { lat: b.destinationLat, lng: b.destinationLng },
-        fare: b.fare,
-        passengerPreview: { name: b.passengerName || "Anonymous" },
-        createdAt: b.createdAt,
-      };
-    })
-    .filter(x => x.distanceKm * 1000 <= radiusMeters)
-    .sort((a, b) => a.distanceKm - b.distanceKm)
-    .slice(0, Number(limit));
-
-  return res.status(200).json(items);
 });
 
+// --- ACCEPT: require driverId + guard pending ---
+router.post('/accept-booking', async (req, res) => {
+  try {
+    const { bookingId, driverId } = req.body;
+    const id = Number(bookingId);
+    if (!Number.isFinite(id)) return res.status(400).json({ message: "Invalid bookingId" });
+    if (!driverId) return res.status(400).json({ message: "driverId required" });
 
-// Other endpoints (unchanged):
+    const booking = bookings.find(b => b.id === id);
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+
+    if (booking.status !== "pending") {
+      return res.status(409).json({ message: `Cannot accept. Current status: ${booking.status}` });
+    }
+
+    booking.driverId = String(driverId);
+    booking.status = "accepted";
+
+    return res.status(200).json({ message: "Booking accepted", booking });
+  } catch (e) {
+    console.error("❌ accept-booking error:", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+// --- Existing helpers/endpoints (kept) ---
 router.get('/bookings', (req, res) => res.status(200).json(bookings));
 
 router.get('/driver-requests/:driverId', (req, res) => {
   const { driverId } = req.params;
   const driverBookings = bookings.filter(
-    (b) => String(b.driverId) === driverId && (b.status === "pending" || b.status === "accepted")
+    (b) => String(b.driverId) === String(driverId) &&
+           (b.status === "pending" || b.status === "accepted")
   );
   res.status(200).json(driverBookings);
 });
 
-router.post('/accept-booking', (req, res) => {
-  const { bookingId, driverId } = req.body;
-  const id = Number(bookingId);
-
-  if (!Number.isFinite(id)) {
-    return res.status(400).json({ message: "Invalid bookingId" });
-  }
-  if (!driverId) {
-    return res.status(400).json({ message: "driverId is required" });
-  }
-
-  const booking = bookings.find((b) => b.id === id);
+router.post('/driver-confirmed', (req, res) => {
+  const { bookingId } = req.body;
+  const booking = bookings.find(b => b.id === bookingId);
   if (!booking) return res.status(404).json({ message: "Booking not found" });
 
-  if (booking.status !== 'pending') {
-    return res.status(409).json({ message: "Already taken or not pending" });
-  }
-
-  booking.status = "accepted";
-  booking.driverId = String(driverId);
-  booking.acceptedAt = new Date();
-
-  return res.status(200).json({ message: "Booking accepted", booking });
+  booking.driverConfirmed = true;
+  return res.status(200).json({ message: "Passenger notified!", booking });
 });
-
-
 
 router.post('/cancel-booking', (req, res) => {
   const { bookingId } = req.body;
@@ -140,16 +166,13 @@ router.post('/clear-bookings', (req, res) => {
 });
 
 router.post('/complete-booking', (req, res) => {
-  const { bookingId, id: idAlt } = req.body;     // allow both keys
-  const id = Number(bookingId ?? idAlt);         // ✅ coerce
+  const { bookingId, id: idAlt } = req.body;
+  const id = Number(bookingId ?? idAlt);
   if (!Number.isFinite(id)) {
     return res.status(400).json({ message: "Invalid bookingId" });
   }
-
   const booking = bookings.find(b => b.id === id);
-  if (!booking) {
-    return res.status(404).json({ message: "Booking not found" });
-  }
+  if (!booking) return res.status(404).json({ message: "Booking not found" });
 
   booking.status = "completed";
 
@@ -173,7 +196,5 @@ router.post('/complete-booking', (req, res) => {
       res.status(500).json({ message: "Server error while saving ride history" });
     });
 });
-
-
 
 module.exports = router;
