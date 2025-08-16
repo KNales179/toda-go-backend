@@ -31,6 +31,14 @@ const DriverSchema = new mongoose.Schema({
   driversLicenseImage: { type: String },
   orcrImage: { type: String },
   selfieImage: { type: String },
+
+  capacity: {
+    type: Number,
+    min: 1,
+    max: 6,
+    default: 4,  
+    required: true,
+  },
 }, { timestamps: true });
 
 DriverSchema.pre("save", async function (next) {

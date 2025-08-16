@@ -41,6 +41,7 @@ router.post(
         experienceYears,
         isLucenaVoter,
         votingLocation,
+        capacity,
       } = req.body;
       console.log(email, role, driverEmail, driverPassword, operatorEmail, operatorPassword);
       if (!req.files.votersIDImage) {
@@ -51,6 +52,7 @@ router.post(
       const votersIDImage = req.files.votersIDImage[0].path;
       const driversLicenseImage = req.files.driversLicenseImage?.[0]?.path;
       const orcrImage = req.files.orcrImage?.[0]?.path;
+      const cap = Math.min(6, Math.max(1, Number(capacity) || 4));
 
       const profileID = uuidv4();
 
@@ -87,6 +89,7 @@ router.post(
         driversLicenseImage,
         orcrImage,
         selfieImage,
+        capacity: cap,
       });
       if (role === "Operator" || role === "Both") {
         if (operatorEmail) {
