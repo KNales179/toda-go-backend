@@ -139,7 +139,11 @@ router.get('/driver-requests/:driverId', (req, res) => {
 
 router.post('/accept-booking', (req, res) => {
   const { bookingId } = req.body;
-  const booking = bookings.find((b) => b.id === bookingId);
+  const id = Number(bookingId);                  // ✅ coerce
+  if (!Number.isFinite(id)) {
+    return res.status(400).json({ message: "Invalid bookingId" });
+  }
+  const booking = bookings.find((b) => b.id === id);
   if (!booking) return res.status(404).json({ message: "Booking not found" });
   booking.status = "accepted";
   return res.status(200).json({ message: "Booking accepted", booking });
@@ -171,15 +175,19 @@ router.post('/clear-bookings', (req, res) => {
   res.status(200).json({ message: "All bookings cleared." });
 });
 
-
 router.post('/complete-booking', (req, res) => {
-  const { bookingId } = req.body;
-  const booking = bookings.find(b => b.id === bookingId);
+  const { bookingId, id: idAlt } = req.body;     // allow both keys
+  const id = Number(bookingId ?? idAlt);         // ✅ coerce
+  if (!Number.isFinite(id)) {
+    return res.status(400).json({ message: "Invalid bookingId" });
+  }
+
+  const booking = bookings.find(b => b.id === id);
   if (!booking) {
     return res.status(404).json({ message: "Booking not found" });
   }
 
-  booking.status = "completed"; 
+  booking.status = "completed";
 
   const rideHistory = new RideHistory({
     bookingId: booking.id,
@@ -195,14 +203,13 @@ router.post('/complete-booking', (req, res) => {
   });
 
   rideHistory.save()
-    .then(() => {
-      res.status(200).json({ message: "Booking marked as completed and history saved!" });
-    })
+    .then(() => res.status(200).json({ message: "Booking marked as completed and history saved!" }))
     .catch((err) => {
       console.error("❌ Error saving ride history:", err);
       res.status(500).json({ message: "Server error while saving ride history" });
     });
 });
+
 
 
 module.exports = router;
