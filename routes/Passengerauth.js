@@ -109,7 +109,6 @@ router.post("/login-passenger", async (req, res) => {
   }
 });
 
-// ---------- OPTIONAL: resend verification ----------
 router.post("/resend-verification", async (req, res) => {
   try {
     const { email } = req.body;
