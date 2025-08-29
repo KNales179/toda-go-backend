@@ -4,11 +4,13 @@ const Passenger = require("../models/Passenger");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const upload = require("../middleware/upload");
-const { sendMail } = require("../utils/mailer"); // expects sendMail({to, subject, html})
+const { sendMail } = require("../utils/mailer");
 
 // ---------- REGISTER ----------
 router.post("/register-passenger", async (req, res) => {
   try {
+    console.log("register-passenger → body:", req.body);
+
     const { firstName, middleName, lastName, birthday, email, password } = req.body;
 
     if (!email || !password) {
@@ -18,7 +20,7 @@ router.post("/register-passenger", async (req, res) => {
     const exists = await Passenger.findOne({ email });
     if (exists) return res.status(400).json({ error: "Passenger already exists" });
 
-    // create doc (Mongoose assigns _id immediately)
+    // Create & save first (guarantee _id); set isVerified
     const passenger = new Passenger({
       firstName,
       middleName,
@@ -26,14 +28,16 @@ router.post("/register-passenger", async (req, res) => {
       birthday,
       email,
       password,
-      isVerified: false, // make sure this field exists in your schema
+      isVerified: false,
     });
+    await passenger.save();
 
-    // build verification link
+    // Build token & link
     const token = jwt.sign({ id: passenger._id }, process.env.JWT_SECRET, { expiresIn: "1d" });
     const verifyUrl = `${process.env.BACKEND_BASE_URL}/api/auth/passenger/verify-email?token=${encodeURIComponent(token)}`;
+    console.log("register-passenger → verifyUrl:", verifyUrl);
 
-    // send email via SendGrid
+    // Send email (OBJECT shape)
     await sendMail({
       to: passenger.email,
       subject: "Verify your TodaGo Account",
@@ -41,11 +45,10 @@ router.post("/register-passenger", async (req, res) => {
         <p>Hello ${passenger.firstName || "Passenger"},</p>
         <p>Please verify your account by clicking below (expires in 24 hours):</p>
         <p><a href="${verifyUrl}" style="display:inline-block;padding:10px 16px;background:#1a73e8;color:#fff;border-radius:6px;text-decoration:none">Verify Email</a></p>
-        <p>If the button doesn't work, copy and paste this URL:<br>${verifyUrl}</p>
+        <p>If the button doesn't work, copy this URL:<br>${verifyUrl}</p>
       `,
     });
 
-    await passenger.save();
     return res.status(201).json({ message: "Registered. Please check your email to verify." });
   } catch (error) {
     console.error("Registration failed:", error);
@@ -74,7 +77,6 @@ router.get("/verify-email", async (req, res) => {
     passenger.isVerified = true;
     await passenger.save();
 
-    // You can res.redirect(...) to a pretty success page instead
     return res.send("✅ Email verified! You can now log in to the app.");
   } catch (e) {
     console.error("verify-email error:", e);
@@ -97,7 +99,6 @@ router.post("/login-passenger", async (req, res) => {
       return res.status(403).json({ error: "Email not verified", needVerification: true });
     }
 
-    // issue your normal token/session
     const payload = { id: passenger.id, email: passenger.email };
     const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "1h" });
 
