@@ -6,6 +6,7 @@ const DriverSchema = new mongoose.Schema({
   profileID: { type: String, required: true },
   email: { type: String, unique: true, sparse: true },
   password: { type: String },
+  isVerified: { type: Boolean, default: false },
 
   franchiseNumber: { type: String, required: true },
   todaName: { type: String, required: true },

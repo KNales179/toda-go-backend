@@ -4,6 +4,7 @@ const sgMail = require('@sendgrid/mail');
 function ensureSendgridReady() {
   const key = process.env.SENDGRID_API_KEY || '';
   const fromEmail = process.env.SMTP_FROM_EMAIL || '';
+  console.log(SENDGRID_API_KEY)
 
   if (!key) throw new Error('SENDGRID_API_KEY not set');
   if (!key.startsWith('SG.')) throw new Error('SENDGRID_API_KEY must start with "SG."');
