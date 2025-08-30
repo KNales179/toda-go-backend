@@ -66,10 +66,16 @@ mongoose.connect(process.env.MONGO_URI, {
 .catch((err) => console.error("❌ MongoDB connection failed:", err));
 
 
-// Base route
-app.get("/", (req, res) => {
-  res.send("Welcome to the Toda-Go Backend!");
+// in server.js (after app init)
+app.get('/__env-mail', (req, res) => {
+  res.json({
+    has_SENDGRID_API_KEY: !!process.env.SENDGRID_API_KEY,
+    starts_with_SG: (process.env.SENDGRID_API_KEY || '').startsWith('SG.'),
+    SMTP_FROM_EMAIL: process.env.SMTP_FROM_EMAIL ? 'set' : 'missing',
+    SMTP_FROM_NAME: process.env.SMTP_FROM_NAME || '(none)',
+  });
 });
+
 
 // Run server
 app.listen(PORT, '0.0.0.0', () => {

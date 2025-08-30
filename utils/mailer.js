@@ -14,6 +14,7 @@ function ensureSendgridReady() {
   if (!ensureSendgridReady._set) {
     sgMail.setApiKey(key);
     ensureSendgridReady._set = true;
+    console.log('[mailer] SendGrid ready. from:', { email: fromEmail, name: fromName });
   }
 }
 

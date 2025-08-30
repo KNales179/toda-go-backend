@@ -193,10 +193,12 @@ router.post("/resend-verification", async (req, res) => {
       const token = jwt.sign({ kind, id }, process.env.JWT_SECRET, { expiresIn: "1d" });
       const verifyUrl = `${baseUrl}/api/auth/driver/verify-email?token=${encodeURIComponent(token)}`;
       await sendMail({
-        to,
-        subject: "Verify your TodaGo Account",
-        html: `<p>Hello ${name || "there"}, verify: <a href="${verifyUrl}">${verifyUrl}</a></p>`,
+        to: driverEmail,                
+        subject: "Verify your TodaGo Driver Account",
+        html: `<p>Click to verify: <a href="${verifyUrl}">${verifyUrl}</a></p>`,
+        text: `Verify: ${verifyUrl}`,   
       });
+
     }
 
     if (driver && !driver.isVerified) await send("driver", driver._id, driver.email, driver.driverName);
