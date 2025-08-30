@@ -1,4 +1,5 @@
 // src/utils/mailer.js
+console.log('[mailer] loaded v2');
 const sgMail = require('@sendgrid/mail');
 
 function ensureSendgridReady() {
