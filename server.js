@@ -18,6 +18,16 @@ app.get('/warmup', async (req, res) => {
   catch { res.status(500).send('warmup-failed'); }
 });
 
+app.get('/env-check', (req, res) => {
+  res.json({
+    has_SENDGRID_API_KEY: !!process.env.SENDGRID_API_KEY,
+    starts_with_SG: (process.env.SENDGRID_API_KEY || '').startsWith('SG.'),
+    from_email: process.env.SMTP_FROM_EMAIL,
+    backend_base: process.env.BACKEND_BASE_URL
+  });
+});
+
+
 // Routes
 const passengerRoutes = require("./routes/Passengerauth");
 const driverRoutes = require("./routes/Driverauth");
