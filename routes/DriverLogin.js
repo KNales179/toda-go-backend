@@ -9,74 +9,64 @@ router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    const [driver, operator] = await Promise.all([
-      Driver.findOne({ email }),
-      Operator.findOne({ email }),
-    ]);
+    let driver = await Driver.findOne({ email }) || null;
+    let operator = await Operator.findOne({ email }) || null;
+
+    const driverPasswordMatch = driver ? await bcrypt.compare(password, driver.password || "") : false;
+    const operatorPasswordMatch = operator ? await bcrypt.compare(password, operator.password || "") : false;
 
     if (!driver && !operator) {
       return res.status(404).json({ error: "Email does not exist" });
     }
 
-    // Compare only if record exists and has a password
-    const driverOk = driver && driver.password
-      ? await bcrypt.compare(password, driver.password)
-      : false;
-
-    const operatorOk = operator && operator.password
-      ? await bcrypt.compare(password, operator.password)
-      : false;
-
-    // If both exist and both passwords match, prefer "Both" (must share profileID)
-    if (driver && operator && driverOk && operatorOk) {
+    // both match, same profile: treat as Both
+    if (driver && driverPasswordMatch && operator && operatorPasswordMatch) {
       if (driver.profileID !== operator.profileID) {
         return res.status(400).json({ error: "Conflict: Profile IDs do not match" });
-      }
-      if (!driver.isVerified) {
-        return res.status(403).json({ error: "Email not verified", needVerification: true, userType: "Driver" });
-      }
-      if (!operator.isVerified) {
-        return res.status(403).json({ error: "Email not verified", needVerification: true, userType: "Operator" });
       }
       return res.status(200).json({
         message: "Login successful",
         userType: "Both",
         userId: driver._id,
-        driver, // include full driver doc if you need it
+        driver,
+        operator,
+        // ✅ informational flags (do NOT block login)
+        needVerification: !(driver.isVerified && operator.isVerified),
+        isVerifiedDriver: !!driver.isVerified,
+        isVerifiedOperator: !!operator.isVerified,
       });
     }
 
-    // Driver-only success
-    if (driver && driverOk) {
-      if (!driver.isVerified) {
-        return res.status(403).json({ error: "Email not verified", needVerification: true, userType: "Driver" });
-      }
+    if (driver && driverPasswordMatch) {
       return res.status(200).json({
         message: "Login successful",
         userType: "Driver",
         userId: driver._id,
         driver,
+        // ✅ informational flag
+        needVerification: !driver.isVerified,
+        isVerifiedDriver: !!driver.isVerified,
       });
     }
 
-    // Operator-only success
-    if (operator && operatorOk) {
-      if (!operator.isVerified) {
-        return res.status(403).json({ error: "Email not verified", needVerification: true, userType: "Operator" });
-      }
+    if (operator && operatorPasswordMatch) {
       return res.status(200).json({
         message: "Login successful",
         userType: "Operator",
         userId: operator._id,
         operator,
+        // ✅ informational flag
+        needVerification: !operator.isVerified,
+        isVerifiedOperator: !!operator.isVerified,
       });
     }
 
-    // If we got here, at least one record exists but the password didn’t match
+    // if we got here, at least one account existed but password(s) didn’t match
     return res.status(400).json({ error: "Incorrect password" });
+
   } catch (error) {
     console.error("Driver login failed:", error);
-    return res.status(500).json({ error: "Server error", details: error.message });
+    res.status(500).json({ error: "Server error", details: error.message });
   }
 });
 
