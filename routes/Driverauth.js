@@ -144,6 +144,13 @@ router.post(
 );
 
 // ✅ Verify endpoint (works for driver or operator)
+
+const buildVerifyUrl = (id) => {
+  const token = jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
+  return `${process.env.BACKEND_BASE_URL}/api/auth/driver/verify-email?token=${encodeURIComponent(token)}`;
+};
+
+
 router.get("/verify-email", async (req, res) => {
   try {
     const { token } = req.query;
@@ -156,23 +163,16 @@ router.get("/verify-email", async (req, res) => {
       return res.status(400).send("Invalid or expired verification link");
     }
 
-    const { kind, id } = decoded;
+    const driver = await Driver.findById(decoded.id);
+    if (!driver) return res.status(404).send("Account not found");
 
-    if (kind === "driver") {
-      const doc = await Driver.findById(id);
-      if (!doc) return res.status(404).send("Driver not found");
-      if (!doc.isVerified) { doc.isVerified = true; await doc.save(); }
-      return res.send("✅ Driver email verified. You can now log in.");
-    } else if (kind === "operator") {
-      const doc = await Operator.findById(id);
-      if (!doc) return res.status(404).send("Operator not found");
-      if (!doc.isVerified) { doc.isVerified = true; await doc.save(); }
-      return res.send("✅ Operator email verified. You can now log in.");
-    } else {
-      return res.status(400).send("Invalid token payload");
-    }
+    if (driver.isVerified) return res.send("Already verified. You can log in.");
+    driver.isVerified = true;
+    await driver.save();
+
+    return res.send("✅ Driver email verified! You can now log in.");
   } catch (e) {
-    console.error("verify-email error:", e);
+    console.error("driver verify-email error:", e);
     return res.status(500).send("Server error");
   }
 });
@@ -183,30 +183,32 @@ router.post("/resend-verification", async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ message: "Email required" });
 
-    const baseUrl = getBaseUrl(req);
     const driver = await Driver.findOne({ email });
-    const operator = await Operator.findOne({ email });
+    if (!driver) return res.status(404).json({ message: "No driver found" });
+    if (driver.isVerified) return res.json({ message: "Already verified" });
 
-    if (!driver && !operator) return res.status(404).json({ message: "No account found" });
+    const verifyUrl = buildVerifyUrl(driver._id);
 
-    async function send(kind, id, to, name) {
-      const token = jwt.sign({ kind, id }, process.env.JWT_SECRET, { expiresIn: "1d" });
-      const verifyUrl = `${baseUrl}/api/auth/driver/verify-email?token=${encodeURIComponent(token)}`;
+    try {
       await sendMail({
-        to: driverEmail,                
+        to: driver.email,
         subject: "Verify your TodaGo Driver Account",
-        html: `<p>Click to verify: <a href="${verifyUrl}">${verifyUrl}</a></p>`,
-        text: `Verify: ${verifyUrl}`,   
+        html: `
+          <p>Hello ${driver.driverFirstName || "Driver"},</p>
+          <p>Please verify your account by clicking below (expires in 24 hours):</p>
+          <p><a href="${verifyUrl}" style="display:inline-block;padding:10px 16px;background:#1a73e8;color:#fff;border-radius:6px;text-decoration:none">Verify Email</a></p>
+          <p>If the button doesn't work, copy and paste:<br>${verifyUrl}</p>
+        `,
+        text: `Verify: ${verifyUrl}`,
       });
-
+    } catch (e) {
+      console.error("❌ driver resend sendMail failed:", e.message);
+      // still respond OK so the UI doesn't block
     }
 
-    if (driver && !driver.isVerified) await send("driver", driver._id, driver.email, driver.driverName);
-    if (operator && !operator.isVerified) await send("operator", operator._id, operator.email, operator.operatorName);
-
-    return res.json({ message: "Verification email sent if your account was unverified." });
+    return res.json({ message: "Verification email sent" });
   } catch (e) {
-    console.error("resend-verification error:", e);
+    console.error("driver resend-verification error:", e);
     return res.status(500).json({ message: "Server error" });
   }
 });
