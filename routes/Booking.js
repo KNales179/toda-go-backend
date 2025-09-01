@@ -62,6 +62,16 @@ router.post('/book', async (req, res) => {
   }
 });
 
+
+async function isDriverEffectivelyOnline(driverId) {
+  if (!driverId) return false;
+  const status = await DriverStatus.findOne({ driverId });
+  if (!status) return false;
+  const last = new Date(status.updatedAt).getTime();
+  return Boolean(status.isOnline) && (Date.now() - last < 60_000);
+}
+
+
 // --- DRIVER QUEUE: nearby pending bookings ---
 router.get('/waiting-bookings', async (req, res) => {
   try {
@@ -69,19 +79,23 @@ router.get('/waiting-bookings', async (req, res) => {
     const lng = Number(req.query.lng);
     const radiusKm = Math.max(0, Number(req.query.radiusKm ?? 5));
     const limit = Math.min(50, Math.max(1, Number(req.query.limit ?? 20)));
+    const driverId = req.query.driverId; // optional
 
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
       return res.status(400).json({ message: "lat/lng required" });
+    }
+
+    // If driverId provided, require that driver is effectively online
+    if (driverId) {
+      const ok = await isDriverEffectivelyOnline(driverId);
+      if (!ok) return res.status(403).json({ message: "Driver is offline" });
     }
 
     const center = { lat, lng };
     const out = bookings
       .filter(b => b && b.status === "pending")
       .map(b => {
-        const distM = haversineMeters(
-          center,
-          { lat: b.pickupLat, lng: b.pickupLng }
-        );
+        const distM = haversineMeters(center, { lat: b.pickupLat, lng: b.pickupLng });
         return {
           id: b.id,
           pickup: { lat: b.pickupLat, lng: b.pickupLng },
@@ -103,6 +117,7 @@ router.get('/waiting-bookings', async (req, res) => {
   }
 });
 
+
 // --- ACCEPT: require driverId + guard pending ---
 router.post('/accept-booking', async (req, res) => {
   try {
@@ -110,6 +125,12 @@ router.post('/accept-booking', async (req, res) => {
     const id = Number(bookingId);
     if (!Number.isFinite(id)) return res.status(400).json({ message: "Invalid bookingId" });
     if (!driverId) return res.status(400).json({ message: "driverId required" });
+
+    // Guard: driver must be effectively online (isOnline && heartbeat < 60s)
+    const ok = await isDriverEffectivelyOnline(driverId);
+    if (!ok) {
+      return res.status(409).json({ message: "Cannot accept: driver is offline (no recent heartbeat)" });
+    }
 
     const booking = bookings.find(b => b.id === id);
     if (!booking) return res.status(404).json({ message: "Booking not found" });
@@ -127,6 +148,7 @@ router.post('/accept-booking', async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
+
 
 // --- Existing helpers/endpoints (kept) ---
 router.get('/bookings', (req, res) => res.status(200).json(bookings));

@@ -6,6 +6,43 @@ const jwt = require("jsonwebtoken");
 const upload = require("../middleware/upload");
 const { sendMail } = require("../utils/mailer");
 
+
+function fullName(p) {
+  return [p.firstName, p.middleName, p.lastName].filter(Boolean).join(' ');
+}
+
+function verifyEmailTemplate({ name, verifyUrl }) {
+  return `
+  <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px;">
+    <h2 style="margin:0 0 12px;color:#111">Hello ${name || 'Passenger'},</h2>
+    <p style="margin:0 0 16px;color:#333;line-height:1.5">
+      Please verify your TodaGo account by clicking the button below.
+      This link expires in <strong>24 hours</strong>.
+    </p>
+
+    <p style="margin:24px 0">
+      <a href="${verifyUrl}"
+         style="display:inline-block;background:#1a73e8;color:#fff;text-decoration:none;
+                padding:12px 18px;border-radius:8px;font-weight:600">
+        Verify Email
+      </a>
+    </p>
+
+    <p style="margin:16px 0 8px;color:#333">If the button doesn’t work, copy and paste this link:</p>
+    <p style="margin:0;word-break:break-all">
+      <a href="${verifyUrl}" style="color:#1a73e8">${verifyUrl}</a>
+    </p>
+
+    <hr style="margin:24px 0;border:none;border-top:1px solid #eee" />
+
+    <p style="margin:0;color:#777;font-size:12px">
+      You’re receiving this email because an account was created with this address.
+      If this wasn’t you, you can safely ignore it.
+    </p>
+  </div>`;
+}
+
+
 // ---------- REGISTER ----------
 router.post("/register-passenger", async (req, res) => {
   try {
@@ -41,13 +78,15 @@ router.post("/register-passenger", async (req, res) => {
     await sendMail({
       to: passenger.email,
       subject: "Verify your TodaGo Account",
-      html: `
-        <p>Hello ${passenger.firstName || "Passenger"},</p>
-        <p>Please verify your account by clicking below (expires in 24 hours):</p>
-        <p><a href="${verifyUrl}" style="display:inline-block;padding:10px 16px;background:#1a73e8;color:#fff;border-radius:6px;text-decoration:none">Verify Email</a></p>
-        <p>If the button doesn't work, copy this URL:<br>${verifyUrl}</p>
-      `,
+      html: verifyEmailTemplate({
+        name: fullName(passenger),
+        verifyUrl,
+      }),
+      text: `Hello ${fullName(passenger) || 'Passenger'},\n\n` +
+            `Please verify your TodaGo account (expires in 24 hours):\n${verifyUrl}\n\n` +
+            `If you didn’t request this, you can ignore this email.`,
     });
+
 
     return res.status(201).json({ message: "Registered. Please check your email to verify." });
   } catch (error) {
@@ -55,6 +94,9 @@ router.post("/register-passenger", async (req, res) => {
     return res.status(500).json({ error: "Server error", details: error.message });
   }
 });
+
+
+
 
 // ---------- VERIFY EMAIL ----------
 router.get("/verify-email", async (req, res) => {
@@ -124,8 +166,15 @@ router.post("/resend-verification", async (req, res) => {
     await sendMail({
       to: passenger.email,
       subject: "Verify your TodaGo Account",
-      html: `<p>Click to verify: <a href="${verifyUrl}">${verifyUrl}</a></p>`,
+      html: verifyEmailTemplate({
+        name: fullName(passenger),
+        verifyUrl,
+      }),
+      text: `Hello ${fullName(passenger) || 'Passenger'},\n\n` +
+            `Please verify your TodaGo account (expires in 24 hours):\n${verifyUrl}\n\n` +
+            `If you didn’t request this, you can ignore this email.`,
     });
+
 
     return res.json({ message: "Verification email sent" });
   } catch (e) {
