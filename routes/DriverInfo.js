@@ -1,9 +1,10 @@
 // TOP of file
-const upload = require("../middleware/upload");
+const express = require("express");
+const router = express.Router();                  
+const Driver = require("../models/Drivers");
+const upload = require("../middleware/upload");   
 const path = require("path");
 
-// UPDATE text fields (no images)
-// PATCH /api/driver/:id
 router.patch("/driver/:id", async (req, res) => {
   try {
     const allowed = [
@@ -23,29 +24,26 @@ router.patch("/driver/:id", async (req, res) => {
   }
 });
 
-// UPLOAD selfie image (field name MUST be 'selfieImage')
-// POST /api/driver/:id/photo
+
+
 router.post("/driver/:id/photo", upload.single("selfieImage"), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ message: "No image uploaded" });
-    }
+    if (!req.file) return res.status(400).json({ message: "No image uploaded" });
 
-    const relPath = path.join("uploads", req.file.filename); // e.g. uploads/123.jpg
+    const relPath = path.join("uploads", req.file.filename); // e.g., uploads/123.jpg
     const driver = await Driver.findByIdAndUpdate(
       req.params.id,
       { selfieImage: relPath },
       { new: true }
     );
-    if (!driver) {
-      return res.status(404).json({ message: "Driver not found" });
-    }
+    if (!driver) return res.status(404).json({ message: "Driver not found" });
 
-    // Build a forward-slash URL your RN app can render
-    const avatarUrl = "/" + relPath.replace(/\\/g, "/"); // -> /uploads/123.jpg
+    const avatarUrl = "/" + relPath.replace(/\\/g, "/");      // -> /uploads/123.jpg
     return res.status(200).json({ driver, avatarUrl });
   } catch (err) {
     console.error("❌ Driver photo error:", err);
     return res.status(500).json({ message: "Server error" });
   }
 });
+
+module.exports = router;    
