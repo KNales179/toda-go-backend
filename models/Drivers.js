@@ -21,7 +21,7 @@ const DriverSchema = new mongoose.Schema({
   driverBirthdate: { type: String, required: true },
   driverPhone: { type: String, required: true },
   homeAddress: { type:String },
-
+  licenseId: { type: String },
   experienceYears: { type: String, enum: ["1-5 taon", "6-10 taon", "16-20 taon", "20 taon pataas"], required: true },
   rating: { type: Number, default: 0 },
   ratingCount: { type: Number, default: 0 },
