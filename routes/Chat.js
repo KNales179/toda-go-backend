@@ -3,31 +3,85 @@ const express = require("express");
 const router = express.Router();
 const ChatMessage = require("../models/ChatMessage");
 
-// --- GET MESSAGES FOR A BOOKING ---
-// Put the more specific endpoints first to avoid route conflicts
-router.get("/driver/:driverId", async (req, res) => {
+// --- SESSIONS: grouped by bookingId for a driver ---
+router.get("/sessions/driver/:driverId", async (req, res) => {
   try {
-    const chats = await ChatMessage.find({ senderId: req.params.driverId })
-      .sort({ createdAt: -1 });
-    return res.status(200).json(chats);
+    const driverId = req.params.driverId;
+    if (!driverId) return res.status(400).json({ message: "driverId required" });
+
+    // Group by bookingId, get latest message & participants
+    const sessions = await ChatMessage.aggregate([
+      { $match: { $or: [{ senderId: driverId }] } }, // messages sent by driver (driver participated)
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: "$bookingId",
+          lastMessage: { $first: "$message" },
+          lastSenderId: { $first: "$senderId" },
+          lastSenderRole: { $first: "$senderRole" },
+          lastAt: { $first: "$createdAt" },
+          participants: { $addToSet: "$senderId" },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { lastAt: -1 } },
+    ]);
+
+    return res.status(200).json(sessions.map(s => ({
+      bookingId: s._id,
+      lastMessage: s.lastMessage,
+      lastSenderId: s.lastSenderId,
+      lastSenderRole: s.lastSenderRole,
+      lastAt: s.lastAt,
+      participants: s.participants,
+      messageCount: s.count,
+    })));
   } catch (err) {
-    console.error("❌ Chat driver fetch error:", err);
-    return res.status(500).json({ message: "Error fetching driver chats" });
+    console.error("❌ Chat sessions (driver) error:", err);
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
-router.get("/passenger/:passengerId", async (req, res) => {
+// --- SESSIONS: grouped by bookingId for a passenger ---
+router.get("/sessions/passenger/:passengerId", async (req, res) => {
   try {
-    const chats = await ChatMessage.find({ senderId: req.params.passengerId })
-      .sort({ createdAt: -1 });
-    return res.status(200).json(chats);
+    const passengerId = req.params.passengerId;
+    if (!passengerId) return res.status(400).json({ message: "passengerId required" });
+
+    const sessions = await ChatMessage.aggregate([
+      { $match: { $or: [{ senderId: passengerId }] } }, // messages sent by passenger
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: "$bookingId",
+          lastMessage: { $first: "$message" },
+          lastSenderId: { $first: "$senderId" },
+          lastSenderRole: { $first: "$senderRole" },
+          lastAt: { $first: "$createdAt" },
+          participants: { $addToSet: "$senderId" },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { lastAt: -1 } },
+    ]);
+
+    return res.status(200).json(sessions.map(s => ({
+      bookingId: s._id,
+      lastMessage: s.lastMessage,
+      lastSenderId: s.lastSenderId,
+      lastSenderRole: s.lastSenderRole,
+      lastAt: s.lastAt,
+      participants: s.participants,
+      messageCount: s.count,
+    })));
   } catch (err) {
-    console.error("❌ Chat passenger fetch error:", err);
-    return res.status(500).json({ message: "Error fetching passenger chats" });
+    console.error("❌ Chat sessions (passenger) error:", err);
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
-// Booking ID endpoint — numeric booking ids expected
+// --- existing endpoints below (keep them) ---
+// Booking messages fetch
 router.get("/:bookingId", async (req, res) => {
   try {
     const bookingId = Number(req.params.bookingId);
@@ -45,7 +99,7 @@ router.get("/:bookingId", async (req, res) => {
   }
 });
 
-// --- SEND MESSAGE ---
+// Send message
 router.post("/send", async (req, res) => {
   try {
     const { bookingId, senderId, senderRole, message } = req.body;
