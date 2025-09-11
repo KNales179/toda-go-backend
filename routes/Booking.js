@@ -49,6 +49,7 @@ router.post('/book', async (req, res) => {
       driverId: null,
       status: "pending",
       createdAt: new Date(),
+      chat: [], // 💬 store chat messages here
     };
     bookings.push(bookingData);
 
@@ -147,6 +148,29 @@ router.post('/accept-booking', async (req, res) => {
     console.error("❌ accept-booking error:", e);
     return res.status(500).json({ message: "Server error" });
   }
+});
+
+
+// --- CHAT ENDPOINTS ---
+// Fetch messages for a booking
+router.get('/bookings/:id/chat', (req, res) => {
+  const id = Number(req.params.id);
+  const booking = bookings.find(b => b.id === id);
+  if (!booking) return res.status(404).json({ message: "Booking not found" });
+  return res.status(200).json(booking.chat);
+});
+
+// Post a new message to chat
+router.post('/bookings/:id/chat', (req, res) => {
+  const id = Number(req.params.id);
+  const { sender, text } = req.body;
+  const booking = bookings.find(b => b.id === id);
+  if (!booking) return res.status(404).json({ message: "Booking not found" });
+  if (!sender || !text) return res.status(400).json({ message: "sender and text required" });
+
+  const msg = { sender, text, ts: new Date() };
+  booking.chat.push(msg);
+  return res.status(200).json({ message: "Message added", chat: booking.chat });
 });
 
 
