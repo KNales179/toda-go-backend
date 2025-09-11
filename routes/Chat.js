@@ -42,4 +42,27 @@ router.get("/:bookingId", async (req, res) => {
   }
 });
 
+// Get all chats for a driver
+router.get("/driver/:driverId", async (req, res) => {
+  try {
+    const chats = await ChatMessage.find({ senderId: req.params.driverId })
+      .sort({ createdAt: -1 });
+    res.json(chats);
+  } catch (err) {
+    res.status(500).json({ message: "Error fetching driver chats" });
+  }
+});
+
+// Get all chats for a passenger
+router.get("/passenger/:passengerId", async (req, res) => {
+  try {
+    const chats = await ChatMessage.find({ senderId: req.params.passengerId })
+      .sort({ createdAt: -1 });
+    res.json(chats);
+  } catch (err) {
+    res.status(500).json({ message: "Error fetching passenger chats" });
+  }
+});
+
+
 module.exports = router;
