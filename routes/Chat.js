@@ -121,24 +121,32 @@ router.get("/sessions/passenger/:passengerId", async (req, res) => {
   try {
     const { passengerId } = req.params;
 
-    // Find all chats where this passenger is involved
-    const chats = await ChatMessage.find({ passengerId })
-      .sort({ createdAt: -1 });
+    const chats = await ChatMessage.find({ passengerId }).sort({ createdAt: -1 });
 
-    // Group by driverId → only keep latest message
     const sessionsMap = new Map();
-    chats.forEach((chat) => {
-      const key = chat.driverId;
-      if (!sessionsMap.has(key)) {
-        sessionsMap.set(key, {
+    for (const chat of chats) {
+      if (!sessionsMap.has(chat.driverId)) {
+        // Look up driver’s name
+        let driverName = "Driver";
+        try {
+          const d = await Driver.findById(chat.driverId).select("firstName middleName lastName driverName");
+          if (d) {
+            driverName =
+              d.driverName ||
+              [d.firstName, d.middleName, d.lastName].filter(Boolean).join(" ");
+          }
+        } catch {}
+
+        sessionsMap.set(chat.driverId, {
           bookingId: chat.bookingId || null,
           driverId: chat.driverId,
           passengerId: chat.passengerId,
+          driverName,
           lastMessage: chat.message,
           lastAt: chat.createdAt,
         });
       }
-    });
+    }
 
     return res.json(Array.from(sessionsMap.values()));
   } catch (err) {
@@ -152,22 +160,30 @@ router.get("/sessions/driver/:driverId", async (req, res) => {
   try {
     const { driverId } = req.params;
 
-    const chats = await ChatMessage.find({ driverId })
-      .sort({ createdAt: -1 });
+    const chats = await ChatMessage.find({ driverId }).sort({ createdAt: -1 });
 
     const sessionsMap = new Map();
-    chats.forEach((chat) => {
-      const key = chat.passengerId;
-      if (!sessionsMap.has(key)) {
-        sessionsMap.set(key, {
+    for (const chat of chats) {
+      if (!sessionsMap.has(chat.passengerId)) {
+        // Look up passenger’s name
+        let passengerName = "Passenger";
+        try {
+          const p = await Passenger.findById(chat.passengerId).select("firstName middleName lastName");
+          if (p) {
+            passengerName = [p.firstName, p.middleName, p.lastName].filter(Boolean).join(" ");
+          }
+        } catch {}
+
+        sessionsMap.set(chat.passengerId, {
           bookingId: chat.bookingId || null,
           driverId: chat.driverId,
           passengerId: chat.passengerId,
+          passengerName,
           lastMessage: chat.message,
           lastAt: chat.createdAt,
         });
       }
-    });
+    }
 
     return res.json(Array.from(sessionsMap.values()));
   } catch (err) {
