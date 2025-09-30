@@ -2,6 +2,9 @@
 const express = require("express");
 const router = express.Router();
 const ChatMessage = require("../models/ChatMessage");
+const Driver = require("../models/Driver");
+const Passenger = require("../models/Passenger");
+
 
 // --- FETCH MESSAGES FOR A DRIVER–PASSENGER PAIR ---
 router.get("/:driverId/:passengerId", async (req, res) => {
