@@ -2,7 +2,7 @@
 const express = require("express");
 const router = express.Router();
 const ChatMessage = require("../models/ChatMessage");
-const Driver = require("../models/Driver");
+const Driver = require("../models/Drivers");
 const Passenger = require("../models/Passenger");
 
 
