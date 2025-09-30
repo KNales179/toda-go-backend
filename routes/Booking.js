@@ -4,9 +4,7 @@ const router = express.Router();
 const DriverStatus = require("../models/DriverStatus");
 const Passenger = require("../models/Passenger");
 const RideHistory = require("../models/RideHistory");
-
-// In-memory store (unchanged for now)
-let bookings = [];
+const Booking = require("../models/Bookings");
 
 // --- Haversine helpers ---
 const toRad = (v) => (v * Math.PI) / 180;
@@ -23,39 +21,49 @@ const haversineMeters = (a, b) => {
 };
 
 // --- BOOK: create pending only (no auto-assign) ---
-router.post('/book', async (req, res) => {
+router.post("/book", async (req, res) => {
   try {
     const {
-      pickupLat, pickupLng,
-      destinationLat, destinationLng,
-      fare, paymentMethod, notes, passengerId,
+      pickupLat,
+      pickupLng,
+      destinationLat,
+      destinationLng,
+      fare,
+      paymentMethod,
+      notes,
+      passengerId,
     } = req.body;
 
     // Fetch nice-to-have passenger name
     let passengerName = "Anonymous";
     try {
-      const p = await Passenger.findById(passengerId).select("firstName middleName lastName");
-      if (p) passengerName = [p.firstName, p.middleName, p.lastName].filter(Boolean).join(" ");
+      const p = await Passenger.findById(passengerId).select(
+        "firstName middleName lastName"
+      );
+      if (p)
+        passengerName = [p.firstName, p.middleName, p.lastName]
+          .filter(Boolean)
+          .join(" ");
     } catch {}
 
-    const bookingId = bookings.length + 1;
-    const bookingData = {
-      id: bookingId,
-      pickupLat, pickupLng,
-      destinationLat, destinationLng,
-      fare, paymentMethod, notes,
-      passengerName,
-      passengerId: passengerId || null,
-      driverId: null,
+    const booking = new Booking({
+      passengerId,
+      pickupLat,
+      pickupLng,
+      destinationLat,
+      destinationLng,
+      fare,
+      paymentMethod,
+      notes,
       status: "pending",
-      createdAt: new Date(),
-      chat: [], // 💬 store chat messages here
-    };
-    bookings.push(bookingData);
+      passengerName,
+    });
+
+    await booking.save();
 
     return res.status(200).json({
       message: "Booking created. Waiting for a driver to accept.",
-      booking: bookingData
+      booking,
     });
   } catch (error) {
     console.error("❌ Error during booking:", error);
@@ -63,42 +71,37 @@ router.post('/book', async (req, res) => {
   }
 });
 
-
-async function isDriverEffectivelyOnline(driverId) {
-  if (!driverId) return false;
-  const status = await DriverStatus.findOne({ driverId });
-  if (!status) return false;
-  const last = new Date(status.updatedAt).getTime();
-  return Boolean(status.isOnline) && (Date.now() - last < 60_000);
-}
-
-
 // --- DRIVER QUEUE: nearby pending bookings ---
-router.get('/waiting-bookings', async (req, res) => {
+router.get("/waiting-bookings", async (req, res) => {
   try {
     const lat = Number(req.query.lat);
     const lng = Number(req.query.lng);
     const radiusKm = Math.max(0, Number(req.query.radiusKm ?? 5));
     const limit = Math.min(50, Math.max(1, Number(req.query.limit ?? 20)));
-    const driverId = req.query.driverId; // optional
+    const driverId = req.query.driverId;
 
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
       return res.status(400).json({ message: "lat/lng required" });
     }
 
-    // If driverId provided, require that driver is effectively online
     if (driverId) {
-      const ok = await isDriverEffectivelyOnline(driverId);
-      if (!ok) return res.status(403).json({ message: "Driver is offline" });
+      const status = await DriverStatus.findOne({ driverId });
+      if (!status || !status.isOnline) {
+        return res.status(403).json({ message: "Driver is offline" });
+      }
     }
 
     const center = { lat, lng };
+    const bookings = await Booking.find({ status: "pending" }).lean();
+
     const out = bookings
-      .filter(b => b && b.status === "pending")
-      .map(b => {
-        const distM = haversineMeters(center, { lat: b.pickupLat, lng: b.pickupLng });
+      .map((b) => {
+        const distM = haversineMeters(center, {
+          lat: b.pickupLat,
+          lng: b.pickupLng,
+        });
         return {
-          id: b.id,
+          bookingId: b.bookingId,
           pickup: { lat: b.pickupLat, lng: b.pickupLng },
           destination: { lat: b.destinationLat, lng: b.destinationLng },
           fare: b.fare,
@@ -107,8 +110,8 @@ router.get('/waiting-bookings', async (req, res) => {
           createdAt: b.createdAt,
         };
       })
-      .filter(r => r.distanceKm <= radiusKm)
-      .sort((a, b) => a.distanceKm - b.distanceKm || a.id - b.id)
+      .filter((r) => r.distanceKm <= radiusKm)
+      .sort((a, b) => a.distanceKm - b.distanceKm)
       .slice(0, limit);
 
     return res.status(200).json(out);
@@ -118,30 +121,26 @@ router.get('/waiting-bookings', async (req, res) => {
   }
 });
 
-
-// --- ACCEPT: require driverId + guard pending ---
-router.post('/accept-booking', async (req, res) => {
+// --- ACCEPT BOOKING ---
+router.post("/accept-booking", async (req, res) => {
   try {
     const { bookingId, driverId } = req.body;
-    const id = Number(bookingId);
-    if (!Number.isFinite(id)) return res.status(400).json({ message: "Invalid bookingId" });
+
+    if (!bookingId) return res.status(400).json({ message: "bookingId required" });
     if (!driverId) return res.status(400).json({ message: "driverId required" });
 
-    // Guard: driver must be effectively online (isOnline && heartbeat < 60s)
-    const ok = await isDriverEffectivelyOnline(driverId);
-    if (!ok) {
-      return res.status(409).json({ message: "Cannot accept: driver is offline (no recent heartbeat)" });
-    }
-
-    const booking = bookings.find(b => b.id === id);
+    const booking = await Booking.findOne({ bookingId });
     if (!booking) return res.status(404).json({ message: "Booking not found" });
 
     if (booking.status !== "pending") {
-      return res.status(409).json({ message: `Cannot accept. Current status: ${booking.status}` });
+      return res
+        .status(409)
+        .json({ message: `Cannot accept. Current status: ${booking.status}` });
     }
 
-    booking.driverId = String(driverId);
+    booking.driverId = driverId;
     booking.status = "accepted";
+    await booking.save();
 
     return res.status(200).json({ message: "Booking accepted", booking });
   } catch (e) {
@@ -149,6 +148,7 @@ router.post('/accept-booking', async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
+
 
 
 // --- CHAT ENDPOINTS ---
