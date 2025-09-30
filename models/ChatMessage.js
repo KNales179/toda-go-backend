@@ -3,26 +3,17 @@ const mongoose = require("mongoose");
 
 const ChatMessageSchema = new mongoose.Schema(
   {
-    bookingId: {
-      type: Number, // our Booking.js uses number id
-      required: true,
-    },
-    senderId: {
-      type: String,
-      required: true,
-    },
-    senderRole: {
-      type: String,
-      enum: ["passenger", "driver"],
-      required: true,
-    },
-    message: {
-      type: String,
-      required: true,
-      trim: true,
-    },
+    driverId: { type: String, required: true },
+    passengerId: { type: String, required: true },
+    bookingId: { type: Number }, // optional: tag which booking this was from
+    senderId: { type: String, required: true },
+    senderRole: { type: String, enum: ["passenger", "driver"], required: true },
+    message: { type: String, required: true, trim: true },
   },
-  { timestamps: true } // this gives us createdAt + updatedAt automatically
+  { timestamps: true }
 );
+
+// helpful index for fast lookups
+ChatMessageSchema.index({ driverId: 1, passengerId: 1, createdAt: 1 });
 
 module.exports = mongoose.model("ChatMessage", ChatMessageSchema);

@@ -47,13 +47,13 @@ router.patch("/passenger/:id", async (req, res) => {
       firstName,
       middleName,
       lastName,
-      gender,           // may be "Male/Female/Nonbinary/Prefer not to say/<custom>"
-      birthday,         // ISO string e.g., "2001-01-23"
-      phone,            // canonical
-      contact,          // legacy client may still send this
+      gender,           
+      birthday,       
+      phone,          
+      contact,          
       eContactName,
       eContactPhone,
-      email,            // optional; if you allow editing email
+      email,            
     } = req.body || {};
 
     const patch = {};
