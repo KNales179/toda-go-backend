@@ -35,19 +35,30 @@ router.post("/send", async (req, res) => {
     const newMsg = new ChatMessage({
       driverId,
       passengerId,
-      bookingId,     // optional; keep for tagging
+      bookingId, // optional tagging
       senderId,
       senderRole,
       message,
     });
 
     await newMsg.save();
+
+    // ⬇️ Push updates
+    const io = req.app.get("io");
+    // to the chat room (real-time messages)
+    io.to(`chat:${driverId}:${passengerId}`).emit("chat:new", newMsg);
+
+    // to the sessions lists (driver & passenger)
+    io.to(`sessions:driver:${driverId}`).emit("sessions:update", { driverId, passengerId });
+    io.to(`sessions:passenger:${passengerId}`).emit("sessions:update", { driverId, passengerId });
+
     return res.status(201).json(newMsg);
   } catch (err) {
     console.error("❌ Chat send error:", err);
     return res.status(500).json({ message: "Server error" });
   }
 });
+
 
 // Passenger sessions → all drivers they've chatted with
 router.get("/sessions/passenger/:passengerId", async (req, res) => {

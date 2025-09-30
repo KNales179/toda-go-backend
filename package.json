@@ -22,9 +22,11 @@
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.13.2",
-    "multer": "^1.4.5-lts.2"
+    "multer": "^1.4.5-lts.2",
+    "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
+    "@types/socket.io-client": "^1.4.36",
     "nodemon": "^3.1.9"
   }
 }
