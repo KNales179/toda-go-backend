@@ -115,4 +115,65 @@ router.get("/sessions/passenger/:passengerId", async (req, res) => {
   }
 });
 
+
+// Passenger sessions → all drivers they've chatted with
+router.get("/sessions/passenger/:passengerId", async (req, res) => {
+  try {
+    const { passengerId } = req.params;
+
+    // Find all chats where this passenger is involved
+    const chats = await ChatMessage.find({ passengerId })
+      .sort({ createdAt: -1 });
+
+    // Group by driverId → only keep latest message
+    const sessionsMap = new Map();
+    chats.forEach((chat) => {
+      const key = chat.driverId;
+      if (!sessionsMap.has(key)) {
+        sessionsMap.set(key, {
+          bookingId: chat.bookingId || null,
+          driverId: chat.driverId,
+          passengerId: chat.passengerId,
+          lastMessage: chat.message,
+          lastAt: chat.createdAt,
+        });
+      }
+    });
+
+    return res.json(Array.from(sessionsMap.values()));
+  } catch (err) {
+    console.error("❌ passenger sessions error:", err);
+    res.status(500).json({ message: "Server error fetching passenger sessions" });
+  }
+});
+
+// Driver sessions → all passengers they've chatted with
+router.get("/sessions/driver/:driverId", async (req, res) => {
+  try {
+    const { driverId } = req.params;
+
+    const chats = await ChatMessage.find({ driverId })
+      .sort({ createdAt: -1 });
+
+    const sessionsMap = new Map();
+    chats.forEach((chat) => {
+      const key = chat.passengerId;
+      if (!sessionsMap.has(key)) {
+        sessionsMap.set(key, {
+          bookingId: chat.bookingId || null,
+          driverId: chat.driverId,
+          passengerId: chat.passengerId,
+          lastMessage: chat.message,
+          lastAt: chat.createdAt,
+        });
+      }
+    });
+
+    return res.json(Array.from(sessionsMap.values()));
+  } catch (err) {
+    console.error("❌ driver sessions error:", err);
+    res.status(500).json({ message: "Server error fetching driver sessions" });
+  }
+});
+
 module.exports = router;
