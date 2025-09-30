@@ -35,7 +35,7 @@ router.post("/send", async (req, res) => {
     const newMsg = new ChatMessage({
       driverId,
       passengerId,
-      bookingId, // optional tagging
+      bookingId,
       senderId,
       senderRole,
       message,
@@ -43,14 +43,11 @@ router.post("/send", async (req, res) => {
 
     await newMsg.save();
 
-    // ⬇️ Push updates
-    const io = req.app.get("io");
-    // to the chat room (real-time messages)
-    io.to(`chat:${driverId}:${passengerId}`).emit("chat:new", newMsg);
-
-    // to the sessions lists (driver & passenger)
-    io.to(`sessions:driver:${driverId}`).emit("sessions:update", { driverId, passengerId });
-    io.to(`sessions:passenger:${passengerId}`).emit("sessions:update", { driverId, passengerId });
+    // 🚀 Emit socket event to notify both sides
+    req.io?.to(driverId)?.emit("sessions:update");
+    req.io?.to(passengerId)?.emit("sessions:update");
+    // fallback: broadcast to all
+    req.io?.emit("sessions:update");
 
     return res.status(201).json(newMsg);
   } catch (err) {
