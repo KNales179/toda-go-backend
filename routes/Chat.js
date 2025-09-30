@@ -148,11 +148,13 @@ router.get("/sessions/passenger/:passengerId", async (req, res) => {
           lastMessage: chat.message,
           lastAt: chat.createdAt,
         });
+        console.log(sessionsMap)
       }
     }
 
     return res.json(Array.from(sessionsMap.values()));
   } catch (err) {
+    
     console.error("❌ passenger sessions error:", err);
     res.status(500).json({ message: "Server error fetching passenger sessions" });
   }
@@ -185,6 +187,7 @@ router.get("/sessions/driver/:driverId", async (req, res) => {
           lastMessage: chat.message,
           lastAt: chat.createdAt,
         });
+        console.log(sessionsMap)
       }
     }
 
