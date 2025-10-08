@@ -8,6 +8,7 @@ const Booking = require("../models/Bookings");
 
 // --- Haversine helpers ---
 const toRad = (v) => (v * Math.PI) / 180;
+const isObjectId = (s) => mongoose.Types.ObjectId.isValid(String(s || ""));
 const EARTH_R_M = 6371000;
 const haversineMeters = (a, b) => {
   const dLat = toRad(b.lat - a.lat);
@@ -178,29 +179,27 @@ router.post('/bookings/:id/chat', (req, res) => {
 router.get('/bookings', (req, res) => res.status(200).json(bookings));
 
 // routes/Booking.js (or wherever this is)
-router.get('/driver-requests/:driverId', (req, res) => {
+router.get("/driver-requests/:driverId", async (req, res) => {
   try {
     const { driverId } = req.params;
 
     if (!driverId) {
       return res.status(400).json({ error: "driverId is required" });
     }
+    const match = isObjectId(driverId)
+      ? { driverId: new mongoose.Types.ObjectId(driverId) }
+      : { driverId: driverId }; // if stored as string
 
-    // Defensive filtering
-    const driverBookings = (bookings || []).filter(b => {
-      if (!b) return false;
-      return (
-        String(b.driverId || "") === String(driverId) &&
-        (b.status === "pending" || b.status === "accepted")
-      );
-    });
+    const driverBookings = await Booking.find({
+      ...match,
+      status: { $in: ["pending", "accepted"] },
+    }).lean();
 
-    // Sanitize output so front-end never crashes
-    const sanitized = driverBookings.map(b => ({
-      id: String(b.id || b._id || ""),
-      status: b.status || "pending",
-      driverId: String(b.driverId || ""),
-      passengerId: String(b.passengerId || ""),
+    const sanitized = (driverBookings || []).map((b) => ({
+      id: String(b._id ?? b.id ?? ""),
+      status: b.status ?? "pending",
+      driverId: b.driverId ? String(b.driverId) : "",
+      passengerId: b.passengerId ? String(b.passengerId) : "",
       pickupLat: Number(b.pickupLat) || 0,
       pickupLng: Number(b.pickupLng) || 0,
       destinationLat: Number(b.destinationLat) || 0,
@@ -215,10 +214,9 @@ router.get('/driver-requests/:driverId', (req, res) => {
     return res.status(200).json(sanitized);
   } catch (err) {
     console.error("❌ /driver-requests error:", err);
-    res.status(500).json({
-      error: "Internal Server Error",
-      message: err?.message || String(err),
-    });
+    return res
+      .status(500)
+      .json({ error: "Internal Server Error", message: err?.message || String(err) });
   }
 });
 
