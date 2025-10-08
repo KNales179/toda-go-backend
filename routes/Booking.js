@@ -286,9 +286,7 @@ router.post("/complete-booking", async (req, res) => {
       console.error("❌ Error saving ride history:", e);
     }
 
-    return res
-      .status(200)
-      .json({ message: "Booking marked as completed and history saved!", booking: b });
+    return res.status(200).json({ message: "Booking marked as completed and history saved!", booking: { ...doc, id: doc.bookingId } });
   } catch (e) {
     console.error("❌ complete-booking error:", e);
     return res.status(500).json({ message: "Server error" });
