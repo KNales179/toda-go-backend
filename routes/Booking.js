@@ -177,14 +177,51 @@ router.post('/bookings/:id/chat', (req, res) => {
 // --- Existing helpers/endpoints (kept) ---
 router.get('/bookings', (req, res) => res.status(200).json(bookings));
 
+// routes/Booking.js (or wherever this is)
 router.get('/driver-requests/:driverId', (req, res) => {
-  const { driverId } = req.params;
-  const driverBookings = bookings.filter(
-    (b) => String(b.driverId) === String(driverId) &&
-           (b.status === "pending" || b.status === "accepted")
-  );
-  res.status(200).json(driverBookings);
+  try {
+    const { driverId } = req.params;
+
+    if (!driverId) {
+      return res.status(400).json({ error: "driverId is required" });
+    }
+
+    // Defensive filtering
+    const driverBookings = (bookings || []).filter(b => {
+      if (!b) return false;
+      return (
+        String(b.driverId || "") === String(driverId) &&
+        (b.status === "pending" || b.status === "accepted")
+      );
+    });
+
+    // Sanitize output so front-end never crashes
+    const sanitized = driverBookings.map(b => ({
+      id: String(b.id || b._id || ""),
+      status: b.status || "pending",
+      driverId: String(b.driverId || ""),
+      passengerId: String(b.passengerId || ""),
+      pickupLat: Number(b.pickupLat) || 0,
+      pickupLng: Number(b.pickupLng) || 0,
+      destinationLat: Number(b.destinationLat) || 0,
+      destinationLng: Number(b.destinationLng) || 0,
+      fare: Number(b.fare) || 0,
+      paymentMethod: b.paymentMethod || "",
+      notes: b.notes || "",
+      passengerName: b.passengerName || "Passenger",
+      createdAt: b.createdAt || new Date(),
+    }));
+
+    return res.status(200).json(sanitized);
+  } catch (err) {
+    console.error("❌ /driver-requests error:", err);
+    res.status(500).json({
+      error: "Internal Server Error",
+      message: err?.message || String(err),
+    });
+  }
 });
+
 
 router.post('/driver-confirmed', (req, res) => {
   const { bookingId } = req.body;
