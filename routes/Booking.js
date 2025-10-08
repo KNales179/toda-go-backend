@@ -5,6 +5,8 @@ const DriverStatus = require("../models/DriverStatus");
 const Passenger = require("../models/Passenger");
 const RideHistory = require("../models/RideHistory");
 const Booking = require("../models/Bookings");
+const mongoose = require("mongoose");
+
 
 // --- Haversine helpers ---
 const toRad = (v) => (v * Math.PI) / 180;
