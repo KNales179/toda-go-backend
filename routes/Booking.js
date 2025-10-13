@@ -266,6 +266,7 @@ router.post("/complete-booking", async (req, res) => {
       { $set: { status: "completed" } },
       { new: true }
     );
+
     if (!b) return res.status(404).json({ message: "Booking not found" });
 
     // Save to ride history (best-effort)
@@ -286,12 +287,16 @@ router.post("/complete-booking", async (req, res) => {
       console.error("❌ Error saving ride history:", e);
     }
 
-    return res.status(200).json({ message: "Booking marked as completed and history saved!", booking: { ...doc, id: doc.bookingId } });
+    return res.status(200).json({
+      message: "Booking marked as completed and history saved!",
+      booking: { ...b.toObject?.() ?? b, id: b.bookingId },
+    });
   } catch (e) {
     console.error("❌ complete-booking error:", e);
-    return res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Server error", details: e.message });
   }
 });
+
 
 // ---------- (Optional) GET /bookings — debug only ----------
 router.get("/bookings", async (_req, res) => {
