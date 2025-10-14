@@ -79,7 +79,7 @@ app.use("/api", rideHistoryRoute);
 app.use(orsRoute);
 app.use(geocodeRoute);
 app.use("/api/chat", chatRoutes);
-app.use('/api', placesRoute);
+app.use(placesRoute);
 
 
 // Static uploads
