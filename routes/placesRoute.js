@@ -193,7 +193,7 @@ router.get('/api/pois', async (req, res) => {
 
     // 2) Dynamic caps (feel free to tune)
     const zoomBucket = zoom <= 13 ? 13 : zoom >= 17 ? 17 : Math.round(zoom);
-    const defaultTotalByZoom = ({13: 60, 14: 120, 15: 180, 16: 240, 17: 300}[zoomBucket]) || 180;
+    const defaultTotalByZoom = ({13: 30, 14: 60, 15: 120, 16: 180, 17: 200}[zoomBucket]) || 180;
 
     const totalLimit  = Math.max(10, Math.min( Number(req.query.limit)  || defaultTotalByZoom,  400 ));
     const perTypeHard = Math.max(8,  Math.min( Number(req.query.perTypeLimit) || Math.ceil(totalLimit / Math.max(types.length,1)), 120 ));
