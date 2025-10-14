@@ -3,193 +3,106 @@ const express = require('express');
 const axios = require('axios');
 const router = express.Router();
 
-/**
- * ====== CONFIG ======
- * Add these to Render Environment:
- * LOCATIONIQ_KEY, MAPBOX_TOKEN (optional fallback), OPENTRIPMAP_KEY
- */
-const LUCENA = {
-  minLat: 13.8800,
-  maxLat: 13.9600,
-  minLng: 121.5880,
-  maxLng: 121.6430,
+/** ===== Lucena hard bounds (apply everywhere) ===== */
+const LUCENA = { minLat: 13.8800, maxLat: 13.9600, minLng: 121.5900, maxLng: 121.6430 };
+const OVERPASS = 'https://overpass-api.de/api/interpreter';
+const TIMEOUT = 3000;
+
+/** ===== tiny in-memory cache ===== */
+const cache = new Map();
+const setCache = (k, v, ttlMs) => cache.set(k, { v, exp: Date.now() + ttlMs });
+const getCache = (k) => {
+  const hit = cache.get(k);
+  if (!hit || Date.now() > hit.exp) return null;
+  return hit.v;
 };
-const TIMEOUT_MS = 2500;
 
-const OVERPASS_URLS = [
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
-];
+const clamp = (n, a, b) => Math.max(a, Math.min(b, Number(n)));
+const centerOf = (b) => ({ lat: (b.minLat + b.maxLat) / 2, lng: (b.minLng + b.maxLng) / 2 });
+const within = (lat, lng) =>
+  lat >= LUCENA.minLat && lat <= LUCENA.maxLat && lng >= LUCENA.minLng && lng <= LUCENA.maxLng;
 
-/**
- * ====== SMALL UTILS ======
- */
-const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-
-function clampPoint(lat, lng) {
-  return {
-    lat: clamp(Number(lat), LUCENA.minLat, LUCENA.maxLat),
-    lng: clamp(Number(lng), LUCENA.minLng, LUCENA.maxLng),
-  };
-}
-
-function parseBboxParam(bboxStr) {
-  if (!bboxStr || typeof bboxStr !== 'string') return null;
-  const parts = bboxStr.split(',').map(s => parseFloat(s.trim()));
-  if (parts.length !== 4 || parts.some(n => !Number.isFinite(n))) return null;
-  let [minLng, minLat, maxLng, maxLat] = parts;
+function parseBbox(str) {
+  // minLng,minLat,maxLng,maxLat
+  if (!str) return null;
+  const p = str.split(',').map(s => parseFloat(s.trim()));
+  if (p.length !== 4 || p.some(x => !Number.isFinite(x))) return null;
+  let [minLng, minLat, maxLng, maxLat] = p;
   if (minLng > maxLng) [minLng, maxLng] = [maxLng, minLng];
   if (minLat > maxLat) [minLat, maxLat] = [maxLat, minLat];
+  // intersect with LUCENA
+  minLng = Math.max(minLng, LUCENA.minLng);
+  minLat = Math.max(minLat, LUCENA.minLat);
+  maxLng = Math.min(maxLng, LUCENA.maxLng);
+  maxLat = Math.min(maxLat, LUCENA.maxLat);
+  if (minLng >= maxLng || minLat >= maxLat) return { ...LUCENA };
   return { minLng, minLat, maxLng, maxLat };
 }
 
-function intersectBbox(a, b) {
-  const minLng = Math.max(a.minLng, b.minLng);
-  const minLat = Math.max(a.minLat, b.minLat);
-  const maxLng = Math.min(a.maxLng, b.maxLng);
-  const maxLat = Math.min(a.maxLat, b.maxLat);
-  if (minLng >= maxLng || minLat >= maxLat) return null; 
-  return { minLng, minLat, maxLng, maxLat };
-}
-
-function clampOrIntersectBbox(bbox) {
-  if (!bbox) return { ...LUCENA };
-  const clamped = intersectBbox(bbox, LUCENA);
-  return clamped || { ...LUCENA };
-}
-
-function withinLucena(lat, lng) {
-  return (
-    lat >= LUCENA.minLat && lat <= LUCENA.maxLat &&
-    lng >= LUCENA.minLng && lng <= LUCENA.maxLng
-  );
-}
-
+/* -------------------------------------------------------------------------- */
+/* 1) /api/places-search  (LocationIQ; Lucena-bounded)                         */
+/* -------------------------------------------------------------------------- */
 /**
- * ====== TINY IN-MEMORY CACHE ======
- */
-const cache = new Map();
-function setCache(key, data, ttlMs) {
-  cache.set(key, { data, exp: Date.now() + ttlMs });
-}
-
-function getCache(key) {
-  const v = cache.get(key);
-  if (!v) return null;
-  if (Date.now() > v.exp) { cache.delete(key); return null; }
-  return v.data;
-}
-
-/**
- * ====== /api/places-search (LocationIQ primary, Mapbox fallback) ======
- * Query: q (>=3), lat, lng (optional, clamped to Lucena)
- * Returns: [{ label, lat, lng, type, source }]
+ * Query: q (>=3), lat, lng (optional; clamped to Lucena)
+ * Returns: [{ label, lat, lng, type:'poi|address|place', source:'locationiq' }]
  */
 router.get('/api/places-search', async (req, res) => {
   try {
     const q = String(req.query.q || '').trim();
     if (q.length < 3) return res.status(400).json({ error: 'invalid_query' });
 
-    const lat = Number(req.query.lat);
-    const lng = Number(req.query.lng);
-    const hasPoint = Number.isFinite(lat) && Number.isFinite(lng);
-    const focus = hasPoint ? clampPoint(lat, lng) : {
-      lat: (LUCENA.minLat + LUCENA.maxLat) / 2,
-      lng: (LUCENA.minLng + LUCENA.maxLng) / 2,
-    };
+    const lat = clamp(req.query.lat ?? centerOf(LUCENA).lat, LUCENA.minLat, LUCENA.maxLat);
+    const lng = clamp(req.query.lng ?? centerOf(LUCENA).lng, LUCENA.minLng, LUCENA.maxLng);
 
-    const cacheKey = `places:${q}:${focus.lat.toFixed(4)}:${focus.lng.toFixed(4)}`;
+    const cacheKey = `liq:${q}:${lat.toFixed(4)}:${lng.toFixed(4)}`;
     const cached = getCache(cacheKey);
     if (cached) return res.json(cached);
 
-    const items = await searchPlaces(q, focus);
-    // Final Lucena clamp safety
-    const filtered = items.filter(it => withinLucena(it.lat, it.lng));
+    const key = process.env.LOCATIONIQ_KEY;
+    if (!key) return res.status(500).json({ error: 'Server misconfig: LOCATIONIQ_KEY missing' });
 
-    // Cache 10 minutes
-    setCache(cacheKey, filtered, 10 * 60 * 1000);
-    res.json(filtered);
+    // LocationIQ autocomplete with viewbox clamp
+    const url = new URL('https://us1.locationiq.com/v1/autocomplete');
+    url.searchParams.set('key', key);
+    url.searchParams.set('q', q);
+    url.searchParams.set('limit', '10');
+    // viewbox = west,north,east,south
+    url.searchParams.set('viewbox', [
+      LUCENA.minLng, LUCENA.maxLat, LUCENA.maxLng, LUCENA.minLat,
+    ].join(','));
+    url.searchParams.set('bounded', '1');
+    url.searchParams.set('accept-language', 'en');
+
+    const r = await axios.get(url.toString(), { timeout: TIMEOUT });
+    const raw = Array.isArray(r.data) ? r.data : [];
+
+    const items = raw.map(it => {
+      const item = {
+        label: it.display_name || it.name || it.display_place || 'Place',
+        lat: Number(it.lat),
+        lng: Number(it.lon),
+        type: it.type || 'place',
+        source: 'locationiq',
+      };
+      return item;
+    }).filter(it => Number.isFinite(it.lat) && Number.isFinite(it.lng) && within(it.lat, it.lng));
+
+    setCache(cacheKey, items, 10 * 60 * 1000); // 10 min
+    res.json(items);
   } catch (e) {
-    console.error('places-search error:', e.response?.data || e.message);
-    res.json([]);
+    console.error('places-search:', e.response?.data || e.message);
+    res.json([]); // safe empty
   }
 });
 
-async function searchPlaces(q, focus) {
-  const out = [];
-
-  // ===== LocationIQ primary =====
-  const LIQ_KEY = process.env.LOCATIONIQ_KEY;
-  if (LIQ_KEY) {
-    try {
-      const url = new URL('https://us1.locationiq.com/v1/autocomplete');
-      url.searchParams.set('key', LIQ_KEY);
-      url.searchParams.set('q', q);
-      url.searchParams.set('limit', '10');
-      // Bounded by Lucena viewbox
-      url.searchParams.set('viewbox', [
-        LUCENA.minLng, LUCENA.maxLat,
-        LUCENA.maxLng, LUCENA.minLat 
-      ].join(','));
-      url.searchParams.set('bounded', '1'); 
-      url.searchParams.set('accept-language', 'en');
-
-      const r = await axios.get(url.toString(), { timeout: TIMEOUT_MS });
-      const arr = Array.isArray(r.data) ? r.data : [];
-      for (const it of arr) {
-        const lat = Number(it.lat);
-        const lng = Number(it.lon);
-        if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-        out.push({
-          label: it.display_name || it.address?.name || it.name || it?.display_place || 'Place',
-          lat, lng,
-          type: it.type || 'place',
-          source: 'locationiq',
-        });
-      }
-      if (out.length >= 3) return out;
-    } catch (e) {
-    }
-  }
-
-  // ===== Mapbox fallback =====
-  const MAPBOX = process.env.MAPBOX_TOKEN;
-  if (MAPBOX) {
-    try {
-      const bbox = [LUCENA.minLng, LUCENA.minLat, LUCENA.maxLng, LUCENA.maxLat].join(',');
-      const url = new URL(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(q)}.json`);
-      url.searchParams.set('access_token', MAPBOX);
-      url.searchParams.set('proximity', `${focus.lng},${focus.lat}`);
-      url.searchParams.set('bbox', bbox);
-      url.searchParams.set('limit', '10');
-      url.searchParams.set('types', 'poi,address,place');
-
-      const r = await axios.get(url.toString(), { timeout: TIMEOUT_MS });
-      const feats = r.data?.features || [];
-      for (const f of feats) {
-        const [lng, lat] = f.center || [];
-        if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-        out.push({
-          label: f.place_name || f.text || 'Place',
-          lat, lng,
-          type: (f.place_type && f.place_type[0]) || 'place',
-          source: 'mapbox',
-        });
-      }
-    } catch (e) {
-      // console.warn('Mapbox fallback failed:', e.message);
-    }
-  }
-
-  return out;
-}
-
+/* -------------------------------------------------------------------------- */
+/* 2) /api/pois  (Overpass; no key)                                            */
+/* -------------------------------------------------------------------------- */
 /**
- * ====== /api/pois (Overpass) ======
  * Query:
- *  - types: CSV from whitelist (e.g. cafe,convenience,pharmacy)
- *  - bbox: optional; format minLng,minLat,maxLng,maxLat (intersected with Lucena)
- * Returns: [{ id, name, lat, lng, category, source: 'overpass' }]
+ *  - types CSV from whitelist (default: cafe,convenience,pharmacy)
+ *  - bbox optional (minLng,minLat,maxLng,maxLat); intersected with Lucena
+ * Returns: [{ id, name, lat, lng, category, source:'overpass' }]
  */
 const TYPE_TO_TAGS = {
   cafe: [{ k: 'amenity', v: 'cafe' }],
@@ -214,175 +127,137 @@ const TYPE_TO_TAGS = {
 
 router.get('/api/pois', async (req, res) => {
   try {
-    const csv = String(req.query.types || '').trim();
-    const types = csv
-      ? csv.split(',').map(s => s.trim()).filter(Boolean)
-      : ['cafe', 'convenience', 'pharmacy'];
+    const types = String(req.query.types || 'cafe,convenience,pharmacy')
+      .split(',').map(s => s.trim()).filter(Boolean);
 
-    // Build tag blocks
-    const tagBlocks = [];
+    const bbox = parseBbox(String(req.query.bbox || '')) || { ...LUCENA };
+    const { minLng, minLat, maxLng, maxLat } = bbox;
+
+    const blocks = [];
     for (const t of types) {
       const pairs = TYPE_TO_TAGS[t];
       if (!pairs) continue;
       for (const p of pairs) {
-        tagBlocks.push(blockForTag(p.k, p.v));
+        blocks.push(`
+          node["${p.k}"="${p.v}"](${minLat},${minLng},${maxLat},${maxLng});
+          way["${p.k}"="${p.v}"](${minLat},${minLng},${maxLat},${maxLng});
+          relation["${p.k}"="${p.v}"](${minLat},${minLng},${maxLat},${maxLng});
+        `);
       }
     }
-    if (!tagBlocks.length) return res.json([]);
+    if (!blocks.length) return res.json([]);
 
-    const bboxStr = String(req.query.bbox || '');
-    const reqBbox = parseBboxParam(bboxStr);
-    const bbox = clampOrIntersectBbox(reqBbox || LUCENA);
-    const { minLng, minLat, maxLng, maxLat } = bbox;
+    const query = `
+      [out:json][timeout:25];
+      (
+        ${blocks.join('\n')}
+      );
+      out center 200;
+    `;
 
-    const ql = wrapOverpassQuery(tagBlocks.join('\n'), { S: minLat, W: minLng, N: maxLat, E: maxLng });
-
-    // Simple per-key rate limit via cache (3s)
     const cacheKey = `pois:${types.sort().join('|')}:${minLng.toFixed(3)},${minLat.toFixed(3)},${maxLng.toFixed(3)},${maxLat.toFixed(3)}`;
     const cached = getCache(cacheKey);
     if (cached) return res.json(cached);
 
-    const data = await callOverpass(ql);
-    const elements = Array.isArray(data?.elements) ? data.elements : [];
-    const out = elements.map(e => normalizeOverpassElement(e)).filter(Boolean);
+    const resp = await axios.post(OVERPASS, query, {
+      headers: { 'Content-Type': 'text/plain' },
+      timeout: 6000,
+    });
 
-    // 20 min cache
-    setCache(cacheKey, out, 20 * 60 * 1000);
+    const out = (resp.data?.elements || [])
+      .map(e => {
+        const lat = Number(e.lat ?? e.center?.lat);
+        const lng = Number(e.lon ?? e.center?.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng) || !within(lat, lng)) return null;
+        return {
+          id: `osm:${e.type}/${e.id}`,
+          name: e.tags?.name || e.tags?.brand || e.tags?.operator || 'Unnamed',
+          lat, lng,
+          category: e.tags?.amenity || e.tags?.shop || e.tags?.tourism || 'poi',
+          source: 'overpass',
+        };
+      })
+      .filter(Boolean);
+
+    setCache(cacheKey, out, 20 * 60 * 1000); // 20 min
     res.json(out);
   } catch (e) {
-    console.error('pois error:', e.response?.data || e.message);
+    console.error('pois:', e.response?.data || e.message);
     res.json([]); // safe empty
   }
 });
 
-function blockForTag(k, v) {
-  // returns a union block (node/way/relation) for a single tag in a bbox placeholder
-  return `
-  node["${k}"="${v}"]({{S}},{{W}},{{N}},{{E}});
-  way["${k}"="${v}"]({{S}},{{W}},{{N}},{{E}});
-  relation["${k}"="${v}"]({{S}},{{W}},{{N}},{{E}});`;
-}
-
-function wrapOverpassQuery(body, bbox) {
-  // bbox placeholders: {{S}} {{W}} {{N}} {{E}}
-  const q = `
-  [out:json][timeout:25];
-  (
-    ${body}
-  );
-  out center 200;
-  `;
-  return q
-    .replaceAll('{{S}}', String(bbox.S))
-    .replaceAll('{{W}}', String(bbox.W))
-    .replaceAll('{{N}}', String(bbox.N))
-    .replaceAll('{{E}}', String(bbox.E));
-}
-
-async function callOverpass(query) {
-  // try primary, then fallback
-  for (const base of OVERPASS_URLS) {
-    try {
-      const r = await axios.post(
-        base,
-        new URLSearchParams({ data: query }).toString(),
-        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 6000 }
-      );
-      return r.data;
-    } catch (e) {
-      // try next mirror
-      // console.warn('Overpass failed on', base, e.message);
-    }
-  }
-  throw new Error('All Overpass endpoints failed');
-}
-
-function normalizeOverpassElement(e) {
-  // For nodes: lat/lon present. For ways/relations: center.lat/center.lon present (because of "out center").
-  const lat = Number(e.lat ?? e.center?.lat);
-  const lng = Number(e.lon ?? e.center?.lon);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-  if (!withinLucena(lat, lng)) return null;
-
-  const name = e.tags?.name || e.tags?.brand || e.tags?.operator || 'Unknown';
-  // Try to guess category from tags minimalistically (optional)
-  const category =
-    e.tags?.amenity || e.tags?.shop || e.tags?.tourism || e.tags?.leisure || 'poi';
-
-  return {
-    id: `osm:${e.type}/${e.id}`,
-    name,
-    lat,
-    lng,
-    category,
-    source: 'overpass',
-  };
-}
-
+/* -------------------------------------------------------------------------- */
+/* 3) /api/landmarks  (Overpass; no key)                                       */
+/* -------------------------------------------------------------------------- */
 /**
- * ====== /api/landmarks (OpenTripMap) ======
- * Query:
- *  - bbox optional (same format), clamped to Lucena if provided
- *  - limit (default 50, max 100)
- * Returns: [{ id, name, lat, lng, kinds, source: 'opentripmap' }]
+ * Landmarks/Explore using OSM tags (parks, attractions, monuments, churches, etc.)
+ * Query: optional bbox (minLng,minLat,maxLng,maxLat)
+ * Returns: [{ id, name, lat, lng, category, source:'overpass' }]
  */
 router.get('/api/landmarks', async (req, res) => {
   try {
-    const paramBbox = parseBboxParam(String(req.query.bbox || ''));
-    const bbox = clampOrIntersectBbox(paramBbox || LUCENA);
-    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10) || 50, 1), 100);
+    const bbox = parseBbox(String(req.query.bbox || '')) || { ...LUCENA };
+    const { minLng, minLat, maxLng, maxLat } = bbox;
 
-    const cacheKey = `landmarks:${bbox.minLng.toFixed(3)},${bbox.minLat.toFixed(3)},${bbox.maxLng.toFixed(3)},${bbox.maxLat.toFixed(3)}:${limit}`;
+    // Tourism/amenity tags that behave like “landmarks”
+    const body = `
+      node["tourism"~"attraction|museum|artwork|viewpoint|information"](${minLat},${minLng},${maxLat},${maxLng});
+      way["tourism"~"attraction|museum|artwork|viewpoint|information"](${minLat},${minLng},${maxLat},${maxLng});
+      relation["tourism"~"attraction|museum|artwork|viewpoint|information"](${minLat},${minLng},${maxLat},${maxLng});
+
+      node["amenity"~"park|place_of_worship|theatre|arts_centre|fountain"](${minLat},${minLng},${maxLat},${maxLng});
+      way["amenity"~"park|place_of_worship|theatre|arts_centre|fountain"](${minLat},${minLng},${maxLat},${maxLng});
+      relation["amenity"~"park|place_of_worship|theatre|arts_centre|fountain"](${minLat},${minLng},${maxLat},${maxLng});
+
+      node["historic"~"monument|memorial|ruins"](${minLat},${minLng},${maxLat},${maxLng});
+      way["historic"~"monument|memorial|ruins"](${minLat},${minLng},${maxLat},${maxLng});
+      relation["historic"~"monument|memorial|ruins"](${minLat},${minLng},${maxLat},${maxLng});
+    `;
+
+    const query = `
+      [out:json][timeout:25];
+      (
+        ${body}
+      );
+      out center 200;
+    `;
+
+    const cacheKey = `landmarks:${minLng.toFixed(3)},${minLat.toFixed(3)},${maxLng.toFixed(3)},${maxLat.toFixed(3)}`;
     const cached = getCache(cacheKey);
     if (cached) return res.json(cached);
 
-    const out = await fetchOpenTripMap(bbox, limit);
+    const resp = await axios.post(OVERPASS, query, {
+      headers: { 'Content-Type': 'text/plain' },
+      timeout: 6000,
+    });
+
+    const out = (resp.data?.elements || [])
+      .map(e => {
+        const lat = Number(e.lat ?? e.center?.lat);
+        const lng = Number(e.lon ?? e.center?.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng) || !within(lat, lng)) return null;
+
+        const tags = e.tags || {};
+        const category =
+          tags.tourism || tags.amenity || tags.historic || tags.leisure || 'landmark';
+
+        return {
+          id: `osm:${e.type}/${e.id}`,
+          name: tags.name || tags.brand || tags.operator || 'Landmark',
+          lat, lng,
+          category,
+          source: 'overpass',
+        };
+      })
+      .filter(Boolean);
+
     setCache(cacheKey, out, 3 * 60 * 60 * 1000); // 3 hours
     res.json(out);
   } catch (e) {
-    console.error('landmarks error:', e.response?.data || e.message);
-    res.json([]); 
+    console.error('landmarks:', e.response?.data || e.message);
+    res.json([]); // safe empty
   }
 });
-
-async function fetchOpenTripMap(bbox, limit) {
-  const KEY = process.env.OPENTRIPMAP_KEY;
-  if (!KEY) return [];
-
-  const url = new URL('https://api.opentripmap.com/0.1/en/places/bbox');
-  url.searchParams.set('lon_min', String(bbox.minLng));
-  url.searchParams.set('lat_min', String(bbox.minLat));
-  url.searchParams.set('lon_max', String(bbox.maxLng));
-  url.searchParams.set('lat_max', String(bbox.maxLat));
-  url.searchParams.set('kinds', 'interesting_places');
-  url.searchParams.set('limit', String(limit));
-  url.searchParams.set('apikey', KEY);
-
-  try {
-    const r = await axios.get(url.toString(), { timeout: TIMEOUT_MS });
-    const arr = Array.isArray(r.data?.features) ? r.data.features : [];
-    const out = [];
-    for (const f of arr) {
-      const coords = f.geometry?.coordinates;
-      if (!Array.isArray(coords) || coords.length < 2) continue;
-      const lng = Number(coords[0]);
-      const lat = Number(coords[1]);
-      if (!withinLucena(lat, lng)) continue;
-
-      out.push({
-        id: f.id ? `otm:${f.id}` : 'otm:unknown',
-        name: f.properties?.name || 'Landmark',
-        lat,
-        lng,
-        kinds: (f.properties?.kinds || '').split(',').filter(Boolean),
-        source: 'opentripmap',
-      });
-    }
-    return out;
-  } catch (e) {
-    // console.warn('OpenTripMap failed:', e.message);
-    return [];
-  }
-}
 
 module.exports = router;
