@@ -248,12 +248,10 @@ function thinPoisAdaptive(pois, { zoom = 15, clat, clng, bbox }) {
   const cellM = cellMetersForZoom(zoom);
   const keepPerCell = perCellMaxForZoom(zoom);
   const center = (clat != null && clng != null) ? { lat: Number(clat), lng: Number(clng) } : null;
-  console.log(zoom, cellM, keepPerCell, center);
 
   const latRef = center?.lat ?? (bbox ? (bbox.minLat + bbox.maxLat) / 2 : 0);
   const degLat = metersToDegLat(cellM);
   const degLng = metersToDegLng(cellM, latRef);
-  console.log(latRef, degLat, degLng);
 
   const grid = new Map();
   for (const p of pois) {
@@ -269,10 +267,45 @@ function thinPoisAdaptive(pois, { zoom = 15, clat, clng, bbox }) {
     const chosen = chooseInCell(arr, center, keepPerCell);
     selected.push(...chosen);
   }
-  console.log(selected)
   return selected;
 }
 // ----------------------------------------------------------
+
+function snapTo(v, step = 0.01) {
+  return Math.round(v / step) * step;
+}
+
+function overscanBbox(b, factor = 0.15) {
+  const { minLng, minLat, maxLng, maxLat } = b;
+  const dLng = (maxLng - minLng) * factor;
+  const dLat = (maxLat - minLat) * factor;
+  return {
+    minLng: minLng - dLng,
+    minLat: minLat - dLat,
+    maxLng: maxLng + dLng,
+    maxLat: maxLat + dLat,
+  };
+}
+
+/** Snap a bbox to a grid so nearby pans reuse cache */
+function snapBbox(b, step = 0.01) {
+  return {
+    minLng: snapTo(b.minLng, step),
+    minLat: snapTo(b.minLat, step),
+    maxLng: snapTo(b.maxLng, step),
+    maxLat: snapTo(b.maxLat, step),
+  };
+}
+
+const pending = new Map(); 
+
+async function getOrStart(cacheKey, starter) {
+  if (pending.has(cacheKey)) return pending.get(cacheKey);
+  const p = starter().finally(() => pending.delete(cacheKey));
+  pending.set(cacheKey, p);
+  return p;
+}
+
 
 router.get('/api/pois', async (req, res) => {
   try {
@@ -281,7 +314,10 @@ router.get('/api/pois', async (req, res) => {
       .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 
     const bbox = parseBbox(String(req.query.bbox || '')) || { ...LUCENA };
+    const snapped = snapBbox(bbox, 0.01);         
+    const expanded = overscanBbox(snapped, 0.20); 
     const { minLng, minLat, maxLng, maxLat } = bbox;
+    
 
     const zoom = Number(req.query.zoom) || 15;
     const clat = req.query.clat != null ? Number(req.query.clat) : null;
@@ -290,7 +326,7 @@ router.get('/api/pois', async (req, res) => {
 
     // 2) Soft global caps (still applied after thinning)
     const zoomBucket = zoom <= 13 ? 13 : zoom >= 19 ? 19 : Math.round(zoom);
-    const defaultTotalByZoom = ({ 13: 5, 14: 8, 15: 10, 16: 15, 17: 18 }[zoomBucket]) || 3;
+    const defaultTotalByZoom = ({ 13: 10, 14: 15, 15: 20, 16: 25, 17: 30 }[zoomBucket]) || 15;
 
     const totalLimit  = Math.min(Number(req.query.limit) || defaultTotalByZoom, 400);
     const perTypeHard = Math.min(
@@ -328,10 +364,13 @@ router.get('/api/pois', async (req, res) => {
     }
 
     // 4) Cache raw Overpass results for this bbox+types
-    const cacheKey = `poisRaw:${types.sort().join('|')}:${minLng.toFixed(3)},${minLat.toFixed(3)},${maxLng.toFixed(3)},${maxLat.toFixed(3)}`;
+    const cacheKey = `poisRaw:${types.sort().join('|')}:${minLng.toFixed(2)},${minLat.toFixed(2)},${maxLng.toFixed(2)},${maxLat.toFixed(2)}`;
     let raw = getCache(cacheKey);
     if (!raw) {
-      const data = await callOverpass(ql);
+      const data = await getOrStart(cacheKey, async () => {
+        const d = await callOverpass(ql);
+        return d;
+      });
       raw = (data?.elements || []).map(e => {
         const lat = Number(e.lat ?? e.center?.lat);
         const lng = Number(e.lon ?? e.center?.lon);
@@ -341,9 +380,11 @@ router.get('/api/pois', async (req, res) => {
           name: (tags.name || tags.brand || tags.operator || '').trim() || 'Unnamed',
           lat, lng,
           category: (tags.amenity || tags.shop || tags.tourism || 'poi').toLowerCase(),
+          _tags: tags,
         };
       }).filter(it => Number.isFinite(it.lat) && Number.isFinite(it.lng) && withinLucena(it.lat, it.lng));
-      setCache(cacheKey, raw, 2 * 60 * 1000); // 2 min
+      const ttl = zoom < 15 ? 5 * 60 * 1000 : 2 * 60 * 1000;
+      setCache(cacheKey, raw, ttl); 
     }
 
     // 5) center-first sorting + soft duplicate collapse
