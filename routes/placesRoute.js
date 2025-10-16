@@ -177,6 +177,100 @@ const TYPE_TO_TAGS = {
   ],
 };
 
+
+function metersToDegLat(m) { return m / 111_320; }
+function metersToDegLng(m, lat) {
+  const c = Math.cos((lat * Math.PI) / 180);
+  return m / (111_320 * Math.max(c, 0.2));
+}
+function distM(a, b) {
+  const R = 6371000;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+  const s =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+}
+function cellMetersForZoom(z) {
+  if (z <= 12) return 240;
+  if (z === 13) return 200;
+  if (z === 14) return 150;
+  if (z === 15) return 110;
+  if (z === 16) return 80;
+  if (z === 17) return 55;
+  if (z === 18) return 35;
+  return 28; // 19+
+}
+function perCellMaxForZoom(z) {
+  if (z <= 14) return 1;
+  if (z <= 16) return 2;
+  return 3;
+}
+function jitter(it) {
+  const m = 6 + Math.random() * 4; // 6-10m
+  const ang = Math.random() * Math.PI * 2;
+  const dLat = metersToDegLat(m * Math.sin(ang));
+  const dLng = metersToDegLng(m * Math.cos(ang), it.lat);
+  return { ...it, lat: it.lat + dLat, lng: it.lng + dLng };
+}
+function chooseInCell(items, center, keep) {
+  const seenCat = new Set();
+  const scored = items.map((it) => {
+    const hasName = it.name && it.name !== 'Unnamed';
+    const d = center ? distM(center, { lat: it.lat, lng: it.lng }) : 0;
+    return { it, score: (hasName ? 2 : 0) - d / 1000 };
+  });
+  scored.sort((a, b) => b.score - a.score);
+
+  const out = [];
+  // first pass: promote category diversity
+  for (const s of scored) {
+    if (out.length >= keep) break;
+    if (!seenCat.has(s.it.category)) {
+      seenCat.add(s.it.category);
+      out.push(jitter(s.it));
+    }
+  }
+  // second: fill remaining slots by score
+  if (out.length < keep) {
+    for (const s of scored) {
+      if (out.length >= keep) break;
+      if (!out.find((x) => x.id === s.it.id)) out.push(jitter(s.it));
+    }
+  }
+  return out;
+}
+function thinPoisAdaptive(pois, { zoom = 15, clat, clng, bbox }) {
+  if (!pois?.length) return [];
+  const cellM = cellMetersForZoom(zoom);
+  const keepPerCell = perCellMaxForZoom(zoom);
+  const center = (clat != null && clng != null) ? { lat: Number(clat), lng: Number(clng) } : null;
+
+  const latRef = center?.lat ?? (bbox ? (bbox.minLat + bbox.maxLat) / 2 : 0);
+  const degLat = metersToDegLat(cellM);
+  const degLng = metersToDegLng(cellM, latRef);
+
+  const grid = new Map();
+  for (const p of pois) {
+    const cx = Math.floor(p.lng / degLng);
+    const cy = Math.floor(p.lat / degLat);
+    const key = `${cx}:${cy}`;
+    if (!grid.has(key)) grid.set(key, []);
+    grid.get(key).push(p);
+  }
+
+  const selected = [];
+  for (const arr of grid.values()) {
+    const chosen = chooseInCell(arr, center, keepPerCell);
+    selected.push(...chosen);
+  }
+  return selected;
+}
+// ----------------------------------------------------------
+
 router.get('/api/pois', async (req, res) => {
   try {
     // 1) Parse inputs
@@ -191,12 +285,12 @@ router.get('/api/pois', async (req, res) => {
     const clng = req.query.clng != null ? Number(req.query.clng) : null;
     const hasCenter = Number.isFinite(clat) && Number.isFinite(clng);
 
-    // 2) Dynamic caps (feel free to tune)
+    // 2) Soft global caps (still applied after thinning)
     const zoomBucket = zoom <= 13 ? 13 : zoom >= 17 ? 17 : Math.round(zoom);
-    const defaultTotalByZoom = ({13: 5, 14: 5, 15: 10, 16: 15, 17: 15}[zoomBucket]) || 15;
+    const defaultTotalByZoom = ({ 13: 2, 14: 2, 15: 5, 16: 5, 17: 10 }[zoomBucket]) || 5;
 
-    const totalLimit  = Math.max(10, Math.min( Number(req.query.limit)  || defaultTotalByZoom,  400 ));
-    const perTypeHard = Math.max(8,  Math.min( Number(req.query.perTypeLimit) || Math.ceil(totalLimit / Math.max(types.length,1)), 120 ));
+    const totalLimit  = Math.max(20, Math.min(Number(req.query.limit) || defaultTotalByZoom, 400));
+    const perTypeHard = Math.max(4,  Math.min(Number(req.query.perTypeLimit) || Math.ceil(totalLimit / Math.max(types.length,1)), 120));
 
     // 3) Build Overpass QL blocks per requested type
     const blocks = [];
@@ -228,7 +322,7 @@ router.get('/api/pois', async (req, res) => {
       });
     }
 
-    // 4) Cache (cache raw results for bbox+types; sort/limit per-request)
+    // 4) Cache raw Overpass results for this bbox+types
     const cacheKey = `poisRaw:${types.sort().join('|')}:${minLng.toFixed(3)},${minLat.toFixed(3)},${maxLng.toFixed(3)},${maxLat.toFixed(3)}`;
     let raw = getCache(cacheKey);
     if (!raw) {
@@ -242,70 +336,73 @@ router.get('/api/pois', async (req, res) => {
           name: (tags.name || tags.brand || tags.operator || '').trim() || 'Unnamed',
           lat, lng,
           category: (tags.amenity || tags.shop || tags.tourism || 'poi').toLowerCase(),
-          _tags: tags, // keep for light post-filter if needed
         };
       }).filter(it => Number.isFinite(it.lat) && Number.isFinite(it.lng) && withinLucena(it.lat, it.lng));
-      // 2 minutes cache: fast pan ≙ reuse
-      setCache(cacheKey, raw, 2 * 60 * 1000);
+      setCache(cacheKey, raw, 2 * 60 * 1000); // 2 min
     }
 
-    // 5) Center-aware distance + de-dup
+    // 5) center-first sorting + soft duplicate collapse
     const toRad = x => x * Math.PI / 180;
     const hav = (aLat, aLng, bLat, bLng) => {
       const R = 6371000;
       const dLat = toRad(bLat - aLat), dLng = toRad(bLng - aLng);
       const s1 = Math.sin(dLat/2)**2 +
                  Math.cos(toRad(aLat))*Math.cos(toRad(bLat))*Math.sin(dLng/2)**2;
-      return 2*R*Math.asin(Math.sqrt(s1)); // meters
+      return 2*R*Math.asin(Math.sqrt(s1));
     };
 
-    // Soft de-dup: same rounded name within 25m → keep closest
     const byKey = new Map();
     for (const it of raw) {
+      if (!types.includes(it.category)) continue; // defensive
       const nameKey = it.name.toLowerCase().replace(/\s+/g, ' ').trim();
       const k = `${nameKey}|${it.category}`;
       if (!byKey.has(k)) { byKey.set(k, it); continue; }
       const kept = byKey.get(k);
-      const dKeep = hasCenter ? hav(clat, clng, kept.lat, kept.lng) : 0;
-      const dNew  = hasCenter ? hav(clat, clng, it.lat,  it.lng)  : Infinity; // prefer nearer when centered
-      // Also consider true proximity between kept/new to collapse exact duplicates
       const mutual = hav(kept.lat, kept.lng, it.lat, it.lng);
-      if (mutual <= 25 && dNew < dKeep) byKey.set(k, it);
+      if (mutual <= 25) {
+        if (hasCenter) {
+          const dKeep = hav(clat, clng, kept.lat, kept.lng);
+          const dNew  = hav(clat, clng, it.lat,  it.lng);
+          if (dNew < dKeep) byKey.set(k, it);
+        }
+      } else {
+        // different place, keep both
+        byKey.set(`${k}|${it.id}`, it);
+      }
     }
     let items = Array.from(byKey.values());
 
-    // 6) Sort (center first) and light zoom-based prioritization
     if (hasCenter) {
       for (const it of items) it._dist = hav(clat, clng, it.lat, it.lng);
       items.sort((a, b) => a._dist - b._dist);
     }
 
-    // 7) Per-type cap then global cap
-    const buckets = new Map(); // cat -> array
+    // 6) per-type hard cap (nearest first)
+    const buckets = new Map();
     for (const it of items) {
-      // Only keep requested types (defensive; Overpass query should already filter)
-      if (!types.includes(it.category)) continue;
       if (!buckets.has(it.category)) buckets.set(it.category, []);
       const arr = buckets.get(it.category);
       if (arr.length < perTypeHard) arr.push(it);
     }
-
     let merged = Array.from(buckets.values()).flat();
+
+    // 7) **adaptive thinning**: one-per-cell (zoom-aware) with slight jitter
+    merged = thinPoisAdaptive(merged, { zoom, clat, clng, bbox });
+
+    // 8) final global cap (closest first if center provided)
     if (merged.length > totalLimit) {
-      // keep the closest totalLimit overall (distance already computed if center provided)
       if (hasCenter) merged.sort((a, b) => a._dist - b._dist);
       merged = merged.slice(0, totalLimit);
     }
 
-    // 8) Clean output
     const out = merged.map(({ id, name, lat, lng, category }) => ({
       id, name, lat, lng, category, source: 'overpass'
     }));
 
+    res.set('X-POI-Count', String(out.length));
     return res.json(out);
   } catch (e) {
     console.error('pois:', e.response?.data || e.message);
-    // No hard fail for the app—just return empty array
     return res.json([]);
   }
 });
