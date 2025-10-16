@@ -453,13 +453,6 @@ router.get('/api/pois', async (req, res) => {
   }
 });
 
-/* =========================
-   3) /api/landmarks  (Overpass)
-   =========================
-   Rich “Explore” layer: parks, places of worship, attractions, monuments, beaches, etc.
-   Query: optional bbox (minLng,minLat,maxLng,maxLat)
-   Returns: [{ id, name, lat, lng, category, source: 'overpass' }]
-*/
 router.get('/api/landmarks', async (req, res) => {
   try {
     const bbox = parseBbox(String(req.query.bbox || '')) || { ...LUCENA };
@@ -490,13 +483,7 @@ router.get('/api/landmarks', async (req, res) => {
       relation["historic"~"monument|memorial|ruins"](${minLat},${minLng},${maxLat},${maxLng});
     `;
 
-    const ql = `
-      [out:json][timeout:25];
-      (
-        ${body}
-      );
-      out center 200;
-    `;
+    const ql = `[out:json][timeout:25]; (${body}); out center 200;`;
 
     if (req.query.debug === '1') {
       return res.json({ bbox, queryBuilt: ql });
@@ -507,31 +494,86 @@ router.get('/api/landmarks', async (req, res) => {
     if (cached) return res.json(cached);
 
     const data = await callOverpass(ql);
-    const out = (data?.elements || [])
+    let items = (data?.elements || [])
       .map(e => {
         const lat = Number(e.lat ?? e.center?.lat);
         const lng = Number(e.lon ?? e.center?.lon);
         if (!Number.isFinite(lat) || !Number.isFinite(lng) || !withinLucena(lat, lng)) return null;
-
         const tags = e.tags || {};
-        const category = tags.tourism || tags.amenity || tags.historic || tags.leisure || tags.natural || 'landmark';
-
+        const category =
+          tags.tourism || tags.amenity || tags.historic || tags.leisure || tags.natural || 'landmark';
         return {
           id: `osm:${e.type}/${e.id}`,
           name: tags.name || tags.brand || tags.operator || 'Landmark',
-          lat, lng,
+          lat,
+          lng,
           category,
           source: 'overpass',
         };
       })
       .filter(Boolean);
 
-    setCache(cacheKey, out, 3 * 60 * 60 * 1000);
-    res.json(out);
+    // -----------------------------
+    // 🔍 Filtering logic starts here
+    // -----------------------------
+    const DROP_CATEGORIES = new Set([
+      'parking', 'townhall', 'sports_centre', 'playground',
+      'library', 'information', 'wood'
+    ]);
+    const WORSHIP_KEEP = /(Cathedral|Parish|Basilica|Shrine|Mosque|Iglesia\s*ni\s*Cristo)/i;
+    const MONUMENT_KEEP = /(Quezon|Bonifacio|Mabini|Luna|Del\s*Pilar|Fausta|Gomburza)/i;
+
+    const isPlaceholder = (name) => !name || !name.trim() || /^landmark$/i.test(name.trim());
+    const toRad = (d) => d * Math.PI / 180;
+    const haversine = (a, b) => {
+      const R = 6371000;
+      const dLat = toRad(b.lat - a.lat);
+      const dLng = toRad(b.lng - a.lng);
+      const s1 = Math.sin(dLat/2), s2 = Math.sin(dLng/2);
+      return 2 * R * Math.asin(Math.sqrt(s1*s1 + Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*s2*s2));
+    };
+
+    const keep = (it) => {
+      const { name, category } = it;
+      if (isPlaceholder(name)) return false;
+      if (DROP_CATEGORIES.has(category)) return false;
+      if (category === 'place_of_worship' && !WORSHIP_KEEP.test(name)) return false;
+      if ((category === 'artwork' || category === 'fountain') && name.length < 3) return false;
+      if ((category === 'memorial' || category === 'monument') && !MONUMENT_KEEP.test(name)) return false;
+      return true;
+    };
+
+    // ✅ Apply filtering
+    items = items.filter(keep);
+
+    // ✅ De-duplicate by name & proximity (~80m)
+    const deduped = [];
+    for (const it of items) {
+      const dup = deduped.find(o =>
+        o.name.toLowerCase() === it.name.toLowerCase() &&
+        haversine(o, it) < 80
+      );
+      if (!dup) deduped.push(it);
+    }
+
+    // ✅ Sort by category weight
+    const weight = {
+      park: 1, garden: 1, botanical_garden: 1, beach: 1, museum: 1, attraction: 1,
+      memorial: 2, monument: 2, place_of_worship: 2, artwork: 3, fountain: 3
+    };
+    deduped.sort((a, b) => (weight[a.category] ?? 9) - (weight[b.category] ?? 9));
+
+    // ✅ Cap total count
+    const MAX = 150;
+    const finalOut = deduped.slice(0, MAX);
+
+    setCache(cacheKey, finalOut, 3 * 60 * 60 * 1000);
+    res.json(finalOut);
   } catch (e) {
     console.error('landmarks:', e.response?.data || e.message);
-    res.json([]); // safe empty
+    res.json([]);
   }
 });
+
 
 module.exports = router;
