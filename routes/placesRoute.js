@@ -281,6 +281,7 @@ router.get('/api/pois', async (req, res) => {
     const { minLng, minLat, maxLng, maxLat } = bbox;
 
     const zoom = Number(req.query.zoom) || 15;
+    console.log('[SERVER] /api/pois zoom=', zoom, 'clat=', req.query.clat, 'clng=', req.query.clng);
     const clat = req.query.clat != null ? Number(req.query.clat) : null;
     const clng = req.query.clng != null ? Number(req.query.clng) : null;
     const hasCenter = Number.isFinite(clat) && Number.isFinite(clng);
