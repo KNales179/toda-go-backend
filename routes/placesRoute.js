@@ -248,10 +248,12 @@ function thinPoisAdaptive(pois, { zoom = 15, clat, clng, bbox }) {
   const cellM = cellMetersForZoom(zoom);
   const keepPerCell = perCellMaxForZoom(zoom);
   const center = (clat != null && clng != null) ? { lat: Number(clat), lng: Number(clng) } : null;
+  console.log(zoom, cellM, keepPerCell, center);
 
   const latRef = center?.lat ?? (bbox ? (bbox.minLat + bbox.maxLat) / 2 : 0);
   const degLat = metersToDegLat(cellM);
   const degLng = metersToDegLng(cellM, latRef);
+  console.log(latRef, degLat, degLng);
 
   const grid = new Map();
   for (const p of pois) {
@@ -267,6 +269,7 @@ function thinPoisAdaptive(pois, { zoom = 15, clat, clng, bbox }) {
     const chosen = chooseInCell(arr, center, keepPerCell);
     selected.push(...chosen);
   }
+  console.log(selected)
   return selected;
 }
 // ----------------------------------------------------------
