@@ -287,7 +287,7 @@ router.get('/api/pois', async (req, res) => {
 
     // 2) Soft global caps (still applied after thinning)
     const zoomBucket = zoom <= 13 ? 13 : zoom >= 17 ? 17 : Math.round(zoom);
-    const defaultTotalByZoom = ({ 13: 2, 14: 2, 15: 5, 16: 5, 17: 10 }[zoomBucket]) || 5;
+    const defaultTotalByZoom = ({ 13: 2, 14: 2, 15: 5, 16: 5, 17: 10 }[zoomBucket]) || 1;
 
     const totalLimit  = Math.max(20, Math.min(Number(req.query.limit) || defaultTotalByZoom, 400));
     const perTypeHard = Math.max(4,  Math.min(Number(req.query.perTypeLimit) || Math.ceil(totalLimit / Math.max(types.length,1)), 120));
