@@ -289,9 +289,11 @@ router.get('/api/pois', async (req, res) => {
     const zoomBucket = zoom <= 13 ? 13 : zoom >= 17 ? 17 : Math.round(zoom);
     const defaultTotalByZoom = ({ 13: 2, 14: 2, 15: 5, 16: 5, 17: 10 }[zoomBucket]) || 1;
 
-    const totalLimit  = Math.max(20, Math.min(Number(req.query.limit) || defaultTotalByZoom, 400));
-    const perTypeHard = Math.max(4,  Math.min(Number(req.query.perTypeLimit) || Math.ceil(totalLimit / Math.max(types.length,1)), 120));
-
+    const totalLimit  = Math.min(Number(req.query.limit) || defaultTotalByZoom, 400);
+    const perTypeHard = Math.min(
+      Number(req.query.perTypeLimit) || Math.ceil((totalLimit || 1) / Math.max(types.length,1)),
+      50
+    );
     // 3) Build Overpass QL blocks per requested type
     const blocks = [];
     for (const t of types) {
