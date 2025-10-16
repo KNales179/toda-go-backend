@@ -195,13 +195,13 @@ function distM(a, b) {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
 }
 function cellMetersForZoom(z) {
-  if (z <= 12) return 240;
-  if (z === 13) return 200;
-  if (z === 14) return 150;
-  if (z === 15) return 110;
-  if (z === 16) return 80;
-  if (z === 17) return 55;
-  if (z === 18) return 35;
+  if (z <= 12) return 500;
+  if (z === 13) return 450;
+  if (z === 14) return 400;
+  if (z === 15) return 300;
+  if (z === 16) return 200;
+  if (z === 17) return 100;
+  if (z === 18) return 50;
   return 28; // 19+
 }
 function perCellMaxForZoom(z) {
@@ -281,15 +281,13 @@ router.get('/api/pois', async (req, res) => {
     const { minLng, minLat, maxLng, maxLat } = bbox;
 
     const zoom = Number(req.query.zoom) || 15;
-    console.log(zoom);
     const clat = req.query.clat != null ? Number(req.query.clat) : null;
     const clng = req.query.clng != null ? Number(req.query.clng) : null;
     const hasCenter = Number.isFinite(clat) && Number.isFinite(clng);
 
     // 2) Soft global caps (still applied after thinning)
-    const zoomBucket = zoom <= 13 ? 13 : zoom >= 17 ? 17 : Math.round(zoom);
-    console.log(zoomBucket)
-    const defaultTotalByZoom = ({ 13: 2, 14: 2, 15: 5, 16: 5, 17: 10 }[zoomBucket]) || 3;
+    const zoomBucket = zoom <= 13 ? 13 : zoom >= 19 ? 19 : Math.round(zoom);
+    const defaultTotalByZoom = ({ 13: 5, 14: 8, 15: 10, 16: 15, 17: 18 }[zoomBucket]) || 3;
 
     const totalLimit  = Math.min(Number(req.query.limit) || defaultTotalByZoom, 400);
     const perTypeHard = Math.min(
