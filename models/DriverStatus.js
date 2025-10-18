@@ -1,3 +1,4 @@
+// models/DriverStatus.js
 const mongoose = require('mongoose');
 
 const DriverStatusSchema = new mongoose.Schema({
@@ -7,18 +8,26 @@ const DriverStatusSchema = new mongoose.Schema({
     required: true,
     unique: true, // Only one status per driver
   },
-  isOnline: {
-    type: Boolean,
-    default: false,
-  },
+
+  isOnline: { type: Boolean, default: false },
+
   location: {
     latitude: Number,
     longitude: Number,
   },
-  updatedAt: {
-    type: Date,
-    default: Date.now,
-  }
+
+  // ▶️ NEW: Capacity + Solo lock
+  capacityTotal: { type: Number, enum: [4, 6], default: 4 },
+  capacityUsed: { type: Number, default: 0 },
+  lockedSolo: { type: Boolean, default: false },
+
+  // (Optional helper for debugging/recovery)
+  activeBookingIds: { type: [String], default: [] },
+
+  updatedAt: { type: Date, default: Date.now },
 });
+
+// Small helper index for quick lookups
+DriverStatusSchema.index({ driverId: 1 });
 
 module.exports = mongoose.model('DriverStatus', DriverStatusSchema);
