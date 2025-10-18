@@ -532,11 +532,18 @@ router.get('/api/landmarks', async (req, res) => {
       const s1 = Math.sin(dLat/2), s2 = Math.sin(dLng/2);
       return 2 * R * Math.asin(Math.sqrt(s1*s1 + Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*s2*s2));
     };
+    const NAME_BLACKLIST = [
+      /eco\s*park/i,
+      /botanical\s*garden/i,
+      /camp\s*baculi/i,
+      /carabao\s*fountain/i
+    ];
 
     const keep = (it) => {
       const { name, category } = it;
       if (isPlaceholder(name)) return false;
       if (DROP_CATEGORIES.has(category)) return false;
+      if (NAME_BLACKLIST.some(r => r.test(name))) return false;
       if (category === 'place_of_worship' && !WORSHIP_KEEP.test(name)) return false;
       if ((category === 'artwork' || category === 'fountain') && name.length < 3) return false;
       if ((category === 'memorial' || category === 'monument') && !MONUMENT_KEEP.test(name)) return false;
