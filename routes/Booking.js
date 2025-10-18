@@ -272,25 +272,25 @@ router.get("/waiting-bookings", async (req, res) => {
       return res.status(400).json({ message: "lat/lng required" });
     }
 
-    // Lazily clean expired reservations
     await cleanupExpiredReservations(driverId || null);
 
-    // If driverId provided, ensure driver is online and capacity allows
     let ds = null;
     if (driverId) {
       ds = await DriverStatus.findOne({ driverId }).lean();
       if (!ds || !ds.isOnline) {
+        console.log("🛑 waiting-bookings: driver offline", { driverId });
         return res.status(403).json({ message: "Driver is offline" });
       }
     }
 
     const center = { lat, lng };
-    const pending = await Booking.find({ status: "pending" }).lean();
 
-    // If driver context exists, filter by capacity & solo lock rules
+    // IMPORTANT: only pending
+    const pending = await Booking.find({ status: "pending" }).lean();
+    console.log("📥 waiting-bookings: pending count", pending.length);
+
     const filtered = (pending || []).filter((b) => {
-      if (!driverId || !ds) return true; // no driver context → show nearby pending
-      // Simulate if it fits the driver's current capacity/lock
+      if (!driverId || !ds) return true;
       return fitsCapacity(b, ds);
     });
 
@@ -308,7 +308,6 @@ router.get("/waiting-bookings", async (req, res) => {
           passengerPreview: { name: b.passengerName || "Passenger" },
           distanceKm: distM / 1000,
           createdAt: b.createdAt,
-          // NEW: expose type + seats to driver UI
           bookingType: b.bookingType,
           partySize: b.partySize,
           isShareable: b.isShareable,
@@ -318,12 +317,14 @@ router.get("/waiting-bookings", async (req, res) => {
       .sort((a, b) => a.distanceKm - b.distanceKm)
       .slice(0, limit);
 
+    console.log("📤 waiting-bookings: returned", out.length, "items");
     return res.status(200).json(out);
   } catch (e) {
     console.error("❌ waiting-bookings error:", e);
     return res.status(500).json({ message: "Server error" });
   }
 });
+
 
 // ---------- POST /accept-booking ----------
 router.post("/accept-booking", async (req, res) => {
@@ -440,13 +441,19 @@ router.post("/driver-confirmed", async (req, res) => {
 router.post("/cancel-booking", async (req, res) => {
   try {
     const { bookingId } = req.body;
-    if (!bookingId) return res.status(400).json({ message: "bookingId required" });
+    console.log("▶️ /cancel-booking hit", { bookingId });
+    if (!bookingId) {
+      console.log("⛔ /cancel-booking missing bookingId");
+      return res.status(400).json({ message: "bookingId required" });
+    };
 
     const b = await Booking.findOne({ bookingId }).lean();
+    console.log("🔎 /cancel-booking findOne", b ? { status: b.status, driverId: b.driverId } : "NOT_FOUND");
     if (!b) return res.status(404).json({ message: "Booking not found" });
 
     // If it was accepted and has a driver, release seats
     if (b.status === "accepted" && b.driverId) {
+      console.log("↩️ releasing seats for accepted booking", { driverId: b.driverId, bookingId });
       await releaseSeats({ driverId: b.driverId, booking: b, reason: "cancel" });
     }
 
