@@ -24,7 +24,7 @@ const haversineMeters = (a, b) => {
 const isObjectId = (s) => mongoose.Types.ObjectId.isValid(String(s || ""));
 
 // Config
-const RESERVATION_SECONDS = 75;
+const RESERVATION_SECONDS = null;
 
 // --- Capacity utils ---
 async function getDriverStatusOrInit(driverId) {
@@ -94,14 +94,12 @@ async function reserveSeatsAtomic({ driverId, booking }) {
   }
 
   // Now atomically claim booking if still pending
-  const reservationExpiresAt = new Date(Date.now() + RESERVATION_SECONDS * 1000);
   const claimed = await Booking.findOneAndUpdate(
     { bookingId: booking.bookingId, status: "pending" },
     {
       $set: {
         status: "accepted",
         driverId: String(driverId),
-        reservationExpiresAt,
         driverLock: booking.bookingType === "SOLO",
       },
     },
@@ -142,15 +140,17 @@ async function releaseSeats({ driverId, booking, reason = "release" }) {
 }
 
 async function cleanupExpiredReservations(targetDriverId = null) {
+  // 🚫 Skip reservation cleanup entirely if disabled
+  if (!RESERVATION_SECONDS) return;
+
   const now = new Date();
   const match = {
     status: "accepted",
     reservationExpiresAt: { $ne: null, $lt: now },
   };
-  const expired = await Booking.find(match).lean();
 
+  const expired = await Booking.find(match).lean();
   for (const b of expired) {
-    // Revert booking back to pending
     const updated = await Booking.findOneAndUpdate(
       { bookingId: b.bookingId, status: "accepted" },
       {
@@ -164,17 +164,14 @@ async function cleanupExpiredReservations(targetDriverId = null) {
       { new: true }
     ).lean();
 
-    if (updated) {
-      // Release seats from the previous driver
-      if (b.driverId) {
-        // If a targetDriverId was passed, skip non-matching to reduce work
-        if (!targetDriverId || String(targetDriverId) === String(b.driverId)) {
-          await releaseSeats({ driverId: b.driverId, booking: b, reason: "expire" });
-        }
+    if (updated && b.driverId) {
+      if (!targetDriverId || String(targetDriverId) === String(b.driverId)) {
+        await releaseSeats({ driverId: b.driverId, booking: b, reason: "expire" });
       }
     }
   }
 }
+
 
 // ---------- POST /book ----------
 router.post("/book", async (req, res) => {
@@ -278,7 +275,6 @@ router.get("/waiting-bookings", async (req, res) => {
     if (driverId) {
       ds = await DriverStatus.findOne({ driverId }).lean();
       if (!ds || !ds.isOnline) {
-        console.log("🛑 waiting-bookings: driver offline", { driverId });
         return res.status(403).json({ message: "Driver is offline" });
       }
     }
@@ -287,7 +283,6 @@ router.get("/waiting-bookings", async (req, res) => {
 
     // IMPORTANT: only pending
     const pending = await Booking.find({ status: "pending" }).lean();
-    console.log("📥 waiting-bookings: pending count", pending.length);
 
     const filtered = (pending || []).filter((b) => {
       if (!driverId || !ds) return true;
@@ -317,7 +312,6 @@ router.get("/waiting-bookings", async (req, res) => {
       .sort((a, b) => a.distanceKm - b.distanceKm)
       .slice(0, limit);
 
-    console.log("📤 waiting-bookings: returned", out.length, "items");
     return res.status(200).json(out);
   } catch (e) {
     console.error("❌ waiting-bookings error:", e);
@@ -441,19 +435,15 @@ router.post("/driver-confirmed", async (req, res) => {
 router.post("/cancel-booking", async (req, res) => {
   try {
     const { bookingId } = req.body;
-    console.log("▶️ /cancel-booking hit", { bookingId });
     if (!bookingId) {
-      console.log("⛔ /cancel-booking missing bookingId");
       return res.status(400).json({ message: "bookingId required" });
     };
 
     const b = await Booking.findOne({ bookingId }).lean();
-    console.log("🔎 /cancel-booking findOne", b ? { status: b.status, driverId: b.driverId } : "NOT_FOUND");
     if (!b) return res.status(404).json({ message: "Booking not found" });
 
     // If it was accepted and has a driver, release seats
     if (b.status === "accepted" && b.driverId) {
-      console.log("↩️ releasing seats for accepted booking", { driverId: b.driverId, bookingId });
       await releaseSeats({ driverId: b.driverId, booking: b, reason: "cancel" });
     }
 
@@ -471,7 +461,6 @@ router.post("/cancel-booking", async (req, res) => {
       { new: true }
     ).lean();
 
-    console.log("❌ Booking cancelled by passenger:", bookingId);
     return res.status(200).json({ message: "Booking cancelled", booking: updated });
   } catch (e) {
     console.error("❌ cancel-booking error:", e);

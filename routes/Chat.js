@@ -86,7 +86,6 @@ router.get("/sessions/passenger/:passengerId", async (req, res) => {
           lastMessage: chat.message,
           lastAt: chat.createdAt,
         });
-        console.log(sessionsMap)
       }
     }
 
@@ -125,7 +124,6 @@ router.get("/sessions/driver/:driverId", async (req, res) => {
           lastMessage: chat.message,
           lastAt: chat.createdAt,
         });
-        console.log(sessionsMap)
       }
     }
 

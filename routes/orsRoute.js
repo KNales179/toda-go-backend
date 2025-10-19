@@ -54,7 +54,6 @@ router.post('/api/route', async (req, res) => {
       return res.status(400).json({ error: "INVALID_INPUT", details: "Provide valid coordinates or start/end" });
     }
 
-    console.log('[ROUTE] POST →', coords);
     const r = await callORS(coords, ORS_KEY);
     if (!r.data?.features?.length) {
       console.error('[ROUTE] ORS_NO_FEATURES', r.data);
@@ -80,7 +79,6 @@ router.get('/api/route', async (req, res) => {
     }
 
     const coords = [start, end];
-    console.log('[ROUTE] GET →', coords);
     const r = await callORS(coords, ORS_KEY);
     if (!r.data?.features?.length) {
       console.error('[ROUTE] ORS_NO_FEATURES', r.data);

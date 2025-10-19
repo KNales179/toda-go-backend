@@ -46,7 +46,6 @@ function verifyEmailTemplate({ name, verifyUrl }) {
 // ---------- REGISTER ----------
 router.post("/register-passenger", async (req, res) => {
   try {
-    console.log("register-passenger → body:", req.body);
 
     const { firstName, middleName, lastName, birthday, email, password } = req.body;
 
@@ -72,7 +71,6 @@ router.post("/register-passenger", async (req, res) => {
     // Build token & link
     const token = jwt.sign({ id: passenger._id }, process.env.JWT_SECRET, { expiresIn: "1d" });
     const verifyUrl = `${process.env.BACKEND_BASE_URL}/api/auth/passenger/verify-email?token=${encodeURIComponent(token)}`;
-    console.log("register-passenger → verifyUrl:", verifyUrl);
 
     // Send email (OBJECT shape)
     await sendMail({
