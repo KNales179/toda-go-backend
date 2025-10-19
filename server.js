@@ -33,14 +33,18 @@ app.use(compression());
 
 // Health & warmup
 app.get("/health", (req, res) => res.status(200).send("ok"));
-app.get("/warmup", async (req, res) => {
+app.get('/warmup', async (req, res) => {
   try {
+    if (!mongoose.connection.readyState) {
+      return res.status(202).send('starting'); // 0=disconnected, 2=connecting
+    }
     await mongoose.connection.db.admin().ping();
-    res.send("warmed");
+    res.send('warmed');
   } catch {
-    res.status(500).send("warmup-failed");
+    res.status(202).send('warming');
   }
 });
+
 
 // --- Socket.IO setup ---
 const server = http.createServer(app);
@@ -104,6 +108,7 @@ app.use("/uploads", express.static("uploads"));
 
 // --- DB Connection (single, at startup) ---
 mongoose.set("strictQuery", true);
+mongoose.set("autoIndex", false);
 mongoose
   .connect(process.env.MONGO_URI, {
     serverSelectionTimeoutMS: 5000, // faster fail on cold DB
