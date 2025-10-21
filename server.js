@@ -82,6 +82,7 @@ const orsRoute = require("./routes/orsRoute");
 const geocodeRoute = require("./routes/geocodeRoute");
 const chatRoutes = require("./routes/Chat");
 const placesRoute = require("./routes/placesRoute");
+const warmup = require("./routes/warmup");
 
 // Mount routes AFTER io is attached
 app.use("/api/auth/passenger", passengerRoutes);
@@ -102,6 +103,7 @@ app.use(orsRoute);
 app.use(geocodeRoute);
 app.use("/api/chat", chatRoutes);
 app.use(placesRoute);
+app.use(warmup);
 
 // Static uploads
 app.use("/uploads", express.static("uploads"));
