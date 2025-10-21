@@ -1,7 +1,10 @@
-// --- Health & Warmup (deduped + TTL) ---
-const rateLimit = require("express-rate-limit");
-const WARM_TTL_MS = 10 * 60 * 1000; // consider "warm" for 10 minutes
+// routes/warmup.js
+const express = require("express");
+const mongoose = require("mongoose");
+const rateLimit = require("express-rate-limit"); // remove if you don't want it
+const router = express.Router();
 
+const WARM_TTL_MS = 10 * 60 * 1000; // 10 minutes
 let warming = false;
 let warmUntil = 0; // ms timestamp
 
@@ -15,15 +18,11 @@ function withTimeout(promise, ms, label = "op") {
 }
 
 async function ensureMongoConnected() {
-  // 0=disconnected, 1=connected, 2=connecting, 3=disconnecting
-  const state = mongoose.connection.readyState;
-
-  if (state === 1) return; // already connected
+  const state = mongoose.connection.readyState; // 0,1,2,3
+  if (state === 1) return;
   if (state === 0) {
-    // initiate connect with a timeout
     await withTimeout(
       mongoose.connect(process.env.MONGODB_URI, {
-        // keep it light; your existing options are fine too
         serverSelectionTimeoutMS: 5000,
       }),
       7000,
@@ -31,41 +30,21 @@ async function ensureMongoConnected() {
     );
     return;
   }
-  // if connecting/disconnecting, wait a bit
-  await withTimeout(
-    new Promise((r) => setTimeout(r, 1000)),
-    1500,
-    "mongo.wait"
-  );
+  await withTimeout(new Promise((r) => setTimeout(r, 1000)), 1500, "mongo.wait");
 }
 
 async function doWarmup() {
-  // 1) Ensure DB up
   await ensureMongoConnected();
-
-  // 2) Ping DB fast
-  await withTimeout(
-    mongoose.connection.db.admin().ping(),
-    1500,
-    "mongo.ping"
-  );
-
-  // 3) (Optional) Prime any hot path cache here (keep < 1–2s total)
-  // e.g., await cache.primeMinimal();
+  await withTimeout(mongoose.connection.db.admin().ping(), 1500, "mongo.ping");
+  // (optional) prime caches here
 }
 
-// ---------- ROUTES ----------
-
-// Cheap health: 200 if warm TTL says we’re warm; otherwise try a tiny ping.
-// Never do heavy work here.
-app.get("/health", async (req, res) => {
+// Cheap health: fast 200 if warm, else tiny ping.
+router.get("/health", async (req, res) => {
   if (Date.now() < warmUntil) return res.status(200).send("OK");
-
   try {
-    // tiny reality check (fast timeout)
     if (!mongoose.connection.readyState) await ensureMongoConnected();
     await withTimeout(mongoose.connection.db.admin().ping(), 1200, "health.ping");
-    // half TTL so health can extend warmth a bit after a successful ping
     warmUntil = Date.now() + Math.floor(WARM_TTL_MS / 2);
     return res.status(200).send("OK");
   } catch {
@@ -73,8 +52,8 @@ app.get("/health", async (req, res) => {
   }
 });
 
-// Optional: small rate limit so bots can’t hammer /warmup
-app.use(
+// Optional: rate limit only this path
+router.use(
   "/warmup",
   rateLimit({
     windowMs: 60_000,
@@ -84,12 +63,11 @@ app.use(
   })
 );
 
-// Idempotent warmup: only one active; others get 202 quickly
-app.post("/warmup", async (req, res) => {
+// Idempotent warmup: only one runs; others get 202 quickly
+router.post("/warmup", async (req, res) => {
   if (warming) return res.status(202).send("WARMING");
-
   warming = true;
-  res.status(202).send("WARMING"); // reply immediately; do work async
+  res.status(202).send("WARMING"); // respond immediately
 
   try {
     await withTimeout(doWarmup(), 10_000, "doWarmup");
@@ -101,3 +79,5 @@ app.post("/warmup", async (req, res) => {
     warming = false;
   }
 });
+
+module.exports = router;
