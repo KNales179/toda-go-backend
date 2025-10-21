@@ -29,21 +29,7 @@ app.use((req, res, next) => {
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(compression());
-
-// Health & warmup
-app.get("/health", (req, res) => res.status(200).send("ok"));
-app.get('/warmup', async (req, res) => {
-  try {
-    if (!mongoose.connection.readyState) {
-      return res.status(202).send('starting'); // 0=disconnected, 2=connecting
-    }
-    await mongoose.connection.db.admin().ping();
-    res.send('warmed');
-  } catch {
-    res.status(202).send('warming');
-  }
-});
+app.use(compression()); 
 
 
 // --- Socket.IO setup ---
