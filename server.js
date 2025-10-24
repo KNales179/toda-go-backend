@@ -114,6 +114,19 @@ process.on("uncaughtException", (err) => {
   console.error("UNCAUGHT EXCEPTION:", err);
 });
 
+// TRUST RENDER'S PROXY (needed for X-Forwarded-For to be valid)
+app.set('trust proxy', 1);
+
+// GLOBAL RATE LIMIT (tune numbers as you prefer)
+const rateLimit = require('express-rate-limit');
+const limiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use(limiter);
+
 // Run server (use `server.listen`, not app.listen!)
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);

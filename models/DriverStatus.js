@@ -27,7 +27,4 @@ const DriverStatusSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now },
 });
 
-// Small helper index for quick lookups
-DriverStatusSchema.index({ driverId: 1 });
-
 module.exports = mongoose.model('DriverStatus', DriverStatusSchema);

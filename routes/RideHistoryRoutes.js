@@ -1,104 +1,107 @@
 // routes/RideHistory.js
 const express = require("express");
+const mongoose = require("mongoose");
 const router = express.Router();
+
 const RideHistory = require("../models/RideHistory");
+const Driver = require("../models/Drivers"); // <-- for name lookup
 
-// Optional: simple request logger (keeps it local to this file)
-router.use((req, _res, next) => {
-  console.log(`🛰️  [RideHistory] ${req.method} ${req.originalUrl}`);
-  next();
-});
-
-/* ADMIN — all rides */
-router.get("/rides", async (req, res) => {
-  const t0 = Date.now();
+/* ADMIN — unchanged: returns all rides */
+router.get("/rides", async (_req, res) => {
   try {
     const rides = await RideHistory.find().sort({ completedAt: -1 }).lean();
-    if (rides.length > 0) {
-      console.log("🧩 sample[0]:", {
-        _id: String(rides[0]._id),
-        passengerId: rides[0].passengerId,
-        driverId: rides[0].driverId,
-        fare: rides[0].fare,
-        completedAt: rides[0].completedAt,
-      });
-    }
     res.status(200).json(rides);
   } catch (error) {
-    console.error("❌ /rides error:", error);
+    console.error("❌ Failed to fetch all ride history:", error);
     res.status(500).json({ message: "Server error" });
   }
 });
 
-/* PASSENGER/DRIVER — filtered, no pagination */
+/* PASSENGER/DRIVER — sanitized: returns driverName only (no driverId) */
 router.get("/ridehistory", async (req, res) => {
-  const t0 = Date.now();
   try {
     const { passengerId = "", driverId = "" } = req.query;
     const filter = {};
     if (passengerId) filter.passengerId = String(passengerId).trim();
     if (driverId) filter.driverId = String(driverId).trim();
 
-  
+    console.log("🎯 Fetching ridehistory with filter:", filter);
+
     const rides = await RideHistory.find(filter)
       .sort({ completedAt: -1, _id: -1 })
       .lean();
 
+    console.log("🧾 Raw rides fetched:", rides.length);
     if (rides.length > 0) {
-      console.log("🧩 sample[0]:", {
-        _id: String(rides[0]._id),
-        passengerId: rides[0].passengerId,
-        driverId: rides[0].driverId,
-        fare: rides[0].fare,
-        completedAt: rides[0].completedAt,
+      console.log("Example ride sample:", rides[0]);
+    }
+
+    const driverIds = [...new Set(rides.map(r => r.driverId).filter(Boolean))];
+    console.log("🆔 Distinct driverIds:", driverIds);
+
+    const toObjectIds = driverIds
+      .map(id => (mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : null))
+      .filter(Boolean);
+
+    let driversById = new Map();
+    if (toObjectIds.length) {
+      const drivers = await Driver.find({ _id: { $in: toObjectIds } })
+        .select("driverName driverFirstName driverMiddleName driverLastName")
+        .lean();
+
+      console.log("👨‍✈️ Drivers found for mapping:", drivers.length);
+      drivers.forEach(d => {
+        const composed =
+          d.driverName ||
+          [d.driverFirstName, d.driverMiddleName, d.driverLastName]
+            .filter(Boolean)
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        driversById.set(String(d._id), composed || "Driver");
       });
     }
 
-    const items = rides.map((r) => ({
-      _id: String(r._id),
-      bookingId: r.bookingId,
-      passengerId: r.passengerId,
-      driverId: r.driverId,
-      pickupLabel:
-        r.pickupLat != null && r.pickupLng != null
-          ? `${r.pickupLat.toFixed(5)}, ${r.pickupLng.toFixed(5)}`
-          : "Pickup",
-      destinationLabel:
-        r.destinationLat != null && r.destinationLng != null
-          ? `${r.destinationLat.toFixed(5)}, ${r.destinationLng.toFixed(5)}`
-          : "Destination",
-      fare: r.fare || 0,
-      paymentMethod: r.paymentMethod || "",
-      notes: r.notes || "",
-      createdAt: r.completedAt || r.createdAt || new Date(),
-    }));
+    const items = rides.map(r => {
+      const driverName = driversById.get(String(r.driverId)) || "Driver";
+      return {
+        _id: String(r._id),
+        bookingId: r.bookingId,
+        passengerId: r.passengerId,
+        pickupLabel:
+          r.pickupPlace || r.pickupLabel || r.pickupName || r.pickupAddress || "Pickup location",
+        destinationLabel:
+          r.destinationPlace || r.destinationLabel || r.destinationName || r.destinationAddress || "Destination",
+        fare: r.fare ?? 0,
+        paymentMethod: r.paymentMethod || "",
+        notes: r.notes || "",
+        createdAt: r.completedAt || r.createdAt || new Date(),
+        driverName, // ✅ only this
+      };
+    });
+
+    console.log("✅ Final ridehistory items (trimmed sample):", items.slice(0, 2));
 
     res.json({ items, total: items.length });
   } catch (error) {
-    console.error("❌ /ridehistory error:", error);
-    res.status(500).json({ error: "server_error" });
-  }
-});
-router.delete("/ridehistory/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    await RideHistory.findByIdAndDelete(id);
-    res.json({ ok: true });
-  } catch (e) {
+    console.error("❌ Failed to fetch user ride history:", error);
     res.status(500).json({ error: "server_error" });
   }
 });
 
-router.post("/ridehistory/:id/report", async (req, res) => {
+
+router.delete("/ridehistory/:id", async (req, res) => {
   try {
-    const { id } = req.params;
-    const { reason = "" } = req.body || {};
-    console.log("⚠️ Report ride:", id, "reason:", reason);
-    // Optionally: save to a separate Report collection
+    await RideHistory.findByIdAndDelete(req.params.id);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: "server_error" });
   }
 });
+/* (Optional) keep your delete & report endpoints here if you added them
+router.delete("/ridehistory/:id", async (req, res) => { ... })
+router.post("/ridehistory/:id/report", async (req, res) => { ... })
+*/
 
 module.exports = router;

@@ -9,11 +9,22 @@ router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    let driver = await Driver.findOne({ email }) || null;
-    let operator = await Operator.findOne({ email }) || null;
+    const T0 = Date.now();
 
-    const driverPasswordMatch = driver ? await bcrypt.compare(password, driver.password || "") : false;
-    const operatorPasswordMatch = operator ? await bcrypt.compare(password, operator.password || "") : false;
+    const [driver, operator] = await Promise.all([
+      Driver.findOne({ email })
+        .select('_id password isVerified profileID driverName')
+        .lean(),
+      Operator.findOne({ email })
+        .select('_id password isVerified profileID operatorName')
+        .lean(),
+    ]);
+    console.log('[DLogin] findOne both(ms):', Date.now() - T0);
+
+    const T1 = Date.now();
+    const driverPasswordMatch = driver ? await bcrypt.compare(password, driver.password || '') : false;
+    const operatorPasswordMatch = operator ? await bcrypt.compare(password, operator.password || '') : false;
+    console.log('[DLogin] bcrypt total(ms):', Date.now() - T1, 'total(ms):', Date.now() - T0);
 
     if (!driver && !operator) {
       return res.status(404).json({ error: "Email does not exist" });

@@ -24,7 +24,7 @@ const passengerSchema = new mongoose.Schema({
   homeAddress: { type:String },
 
   // From original app
-  email: { type: String, unique: true, required: true },
+  email: { type: String, unique: true, required: true, index: true },
   password: { type: String, required: true },
   isVerified: { type: Boolean, default: false }
 });
