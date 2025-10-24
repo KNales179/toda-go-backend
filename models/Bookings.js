@@ -11,9 +11,8 @@ const BookingSchema = new mongoose.Schema(
     },
 
     // Who
-    passengerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Passenger', required: true },
-    driverId: { type: mongoose.Schema.Types.ObjectId, ref: 'Driver', default: null },
-
+    passengerId: { type: String, required: true },
+    driverId: { type: String, default: null },
 
     // Where
     pickupLat: Number,
