@@ -176,6 +176,7 @@ async function cleanupExpiredReservations(targetDriverId = null) {
 // ---------- POST /book ----------
 router.post("/book", async (req, res) => {
   try {
+
     const {
       pickupLat,
       pickupLng,
@@ -185,11 +186,12 @@ router.post("/book", async (req, res) => {
       paymentMethod,
       notes,
       passengerId,
-
-      // ▶️ NEW from client
+      pickupPlace,         
+      destinationPlace,   
       bookingType = "CLASSIC",
       partySize,
     } = req.body;
+
 
     if (
       ![pickupLat, pickupLng, destinationLat, destinationLng].every((n) =>
@@ -233,6 +235,8 @@ router.post("/book", async (req, res) => {
       fare,
       paymentMethod,
       notes,
+      pickupPlace,
+      destinationPlace,
 
       // NEW
       bookingType: type,
@@ -490,23 +494,46 @@ router.post("/complete-booking", async (req, res) => {
       { new: true }
     );
 
-    // Save to ride history (best-effort)
     try {
+      const niceType = (t => {
+        const up = String(t || "CLASSIC").toUpperCase();
+        if (up === "GROUP") return "Group";
+        if (up === "SOLO")  return "Solo";
+        return "Classic";
+      })(updated.bookingType);
+
+      const seats = Number(updated.partySize || 1);
+      const baseFare = Number(updated.fare || 0);
+      const totalFare =
+        niceType === "Group" ? baseFare * (Number.isFinite(seats) ? seats : 1) : baseFare;
+
       await RideHistory.create({
         bookingId: updated.bookingId,
         passengerId: updated.passengerId,
         driverId: updated.driverId,
+
         pickupLat: updated.pickupLat,
         pickupLng: updated.pickupLng,
         destinationLat: updated.destinationLat,
         destinationLng: updated.destinationLng,
-        fare: updated.fare,
+
+        pickupPlace: updated.pickupPlace || null,
+        destinationPlace: updated.destinationPlace || null,
+
+        fare: baseFare,
+        totalFare,                            
         paymentMethod: updated.paymentMethod,
         notes: updated.notes,
+
+        bookingType: niceType,              
+        groupCount: Number.isFinite(seats) ? seats : 1,
+
+        completedAt: new Date(),
       });
     } catch (e) {
       console.error("❌ Error saving ride history:", e);
     }
+
 
     return res.status(200).json({
       message: "Booking marked as completed and history saved!",

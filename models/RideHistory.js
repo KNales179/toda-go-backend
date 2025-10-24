@@ -1,17 +1,55 @@
+// models/RideHistory.js
 const mongoose = require("mongoose");
 
-const RideHistorySchema = new mongoose.Schema({
-  bookingId: String,
-  passengerId: String,
-  driverId: String,
-  pickupLat: Number,
-  pickupLng: Number,
-  destinationLat: Number,
-  destinationLng: Number,
-  fare: Number,
-  paymentMethod: String,
-  notes: String,
-  completedAt: { type: Date, default: Date.now },
-});
+const RideHistorySchema = new mongoose.Schema(
+  {
+    bookingId: String,
+    passengerId: String,
+
+    // store ID internally for joins; do NOT expose in sanitized route
+    driverId: String,
+
+    // coordinates (kept)
+    pickupLat: Number,
+    pickupLng: Number,
+    destinationLat: Number,
+    destinationLng: Number,
+
+    // ✅ human-friendly labels/names (prefer these in UI)
+    pickupPlace: String,
+    pickupAddress: String,
+    pickupLabel: String,
+    pickupName: String,
+
+    destinationPlace: String,
+    destinationAddress: String,
+    destinationLabel: String,
+    destinationName: String,
+
+    // fares
+    fare: Number,         // legacy single-seat fare
+    totalFare: Number,    // ✅ final fare charged (Group = fare * groupCount, else = fare)
+
+    paymentMethod: String,
+    notes: String,
+
+    // ✅ booking meta
+    bookingType: {
+      type: String,
+      enum: ["Classic", "Group", "Solo"], // Title Case for clean UI
+      default: "Classic",
+    },
+    groupCount: { type: Number, default: 1 },
+
+    completedAt: { type: Date, default: Date.now },
+    createdAt:   { type: Date, default: Date.now },
+  },
+  { timestamps: true }
+);
+
+// quick helpers
+RideHistorySchema.index({ passengerId: 1, completedAt: -1 });
+RideHistorySchema.index({ driverId: 1, completedAt: -1 });
+RideHistorySchema.index({ bookingId: 1 }, { unique: false });
 
 module.exports = mongoose.model("RideHistory", RideHistorySchema);
