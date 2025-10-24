@@ -92,13 +92,30 @@ router.get("/ridehistory", async (req, res) => {
 
 
 router.delete("/ridehistory/:id", async (req, res) => {
+  const { id } = req.params;
   try {
-    await RideHistory.findByIdAndDelete(req.params.id);
-    res.json({ ok: true });
+    console.log("🗑️  DELETE /ridehistory/:id", { id });
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      console.log("⛔ invalid ObjectId:", id);
+      return res.status(400).json({ error: "invalid_id" });
+    }
+
+    const result = await RideHistory.deleteOne({ _id: new mongoose.Types.ObjectId(id) });
+    console.log("📉 deleteOne result:", result); // { acknowledged: true, deletedCount: N }
+
+    if (result.deletedCount === 0) {
+      console.log("🔎 not found:", id);
+      return res.status(404).json({ error: "not_found" });
+    }
+
+    return res.json({ ok: true, deletedCount: result.deletedCount });
   } catch (e) {
+    console.error("❌ delete error:", e);
     res.status(500).json({ error: "server_error" });
   }
 });
+
 /* (Optional) keep your delete & report endpoints here if you added them
 router.delete("/ridehistory/:id", async (req, res) => { ... })
 router.post("/ridehistory/:id/report", async (req, res) => { ... })
