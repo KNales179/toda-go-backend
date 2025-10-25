@@ -238,7 +238,6 @@ router.post("/book", async (req, res) => {
       pickupPlace,
       destinationPlace,
 
-      // NEW
       bookingType: type,
       partySize: size,
       isShareable,
@@ -530,6 +529,7 @@ router.post("/complete-booking", async (req, res) => {
 
         completedAt: new Date(),
       });
+      console.log("Saved Content",RideHistory)
     } catch (e) {
       console.error("❌ Error saving ride history:", e);
     }

@@ -20,6 +20,9 @@ const BookingSchema = new mongoose.Schema(
     destinationLat: Number,
     destinationLng: Number,
 
+    pickupPlace: { type: String, default: null },
+    destinationPlace: { type: String, default: null },
+
     // Fare & misc (pricing handled later by Admin—kept for compatibility)
     fare: Number,
     paymentMethod: String,

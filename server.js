@@ -21,7 +21,6 @@ app.use((req, res, next) => {
   const t0 = process.hrtime.bigint();
   res.on("finish", () => {
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-    console.log(`[RT] ${req.method} ${req.originalUrl} -> ${res.statusCode} in ${ms.toFixed(1)}ms`);
   });
   next();
 });

@@ -16,12 +16,12 @@ const RideHistorySchema = new mongoose.Schema(
     destinationLng: Number,
 
     // ✅ human-friendly labels/names (prefer these in UI)
-    pickupPlace: String,
+    pickupPlace: { type: String, default: null },
     pickupAddress: String,
     pickupLabel: String,
     pickupName: String,
 
-    destinationPlace: String,
+    destinationPlace: { type: String, default: null },
     destinationAddress: String,
     destinationLabel: String,
     destinationName: String,
