@@ -1,6 +1,6 @@
 // routes/cloudinaryPing.js
 const router = require("express").Router();
-const cloudinary = require("../utils/cloudinaryConfig");
+const cloudinary = require("");
 
 router.get("/health/cloudinary", async (req, res) => {
   try {

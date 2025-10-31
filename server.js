@@ -30,6 +30,8 @@ app.use(cors());
 app.use(express.json());
 app.use(compression());
 
+app.set("trust proxy", 1); 
+
 // --- Socket.IO setup ---
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });

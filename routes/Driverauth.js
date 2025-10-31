@@ -1,12 +1,12 @@
 const express = require("express");
 const router = express.Router();
-const Driver = require("../models/Drivers");   // ← your file name
+const Driver = require("../models/Drivers");
 const Operator = require("../models/Operator");
 const { v4: uuidv4 } = require("uuid");
 const jwt = require("jsonwebtoken");
 const { sendMail } = require("../utils/mailer");
 
-// Cloudinary + Multer (memory) + streamifier
+// ⬇️ NEW: Cloudinary + Multer (memory) + streamifier
 const multer = require("multer");
 const streamifier = require("streamifier");
 const cloudinary = require("../utils/cloudinaryConfig");
@@ -14,10 +14,10 @@ const cloudinary = require("../utils/cloudinaryConfig");
 // Use memory storage so we can stream buffers directly to Cloudinary
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit; adjust if needed
 });
 
-// base URL helper (Render / local)
+// helper: consistent base URL
 function getBaseUrl(req) {
   return (
     process.env.BACKEND_BASE_URL ||
@@ -25,7 +25,7 @@ function getBaseUrl(req) {
   );
 }
 
-// stream buffer → Cloudinary
+// helper: upload a single buffer to Cloudinary
 function uploadBufferToCloudinary(buffer, options = {}) {
   return new Promise((resolve, reject) => {
     const up = cloudinary.uploader.upload_stream(options, (err, result) => {
@@ -57,8 +57,8 @@ router.post(
         experienceYears, isLucenaVoter, votingLocation, capacity,
       } = req.body;
 
-      // require Voter ID (as before)
-      if (!req.files?.votersIDImage?.[0]) {
+      // basic validation (you previously required voter's ID)
+      if (!req.files?.votersIDImage) {
         return res.status(400).json({ error: "Voter's ID image is required" });
       }
 
@@ -75,38 +75,76 @@ router.post(
       const profileID = uuidv4();
       const cap = Math.min(6, Math.max(1, Number(capacity) || 4));
 
-      // Upload each provided image to Cloudinary
-      async function maybeUpload(file, folder) {
-        if (!file) return null;
-        const r = await uploadBufferToCloudinary(file.buffer, {
-          folder,
+      // ⬇️ NEW: Upload each provided image to Cloudinary
+      // NOTE: we KEEP your original field names in MongoDB, but now store Cloudinary URLs.
+      // Optionally also store their public_id (recommended for future delete/replace).
+      const savedImgs = {};
+
+      if (req.files?.votersIDImage?.[0]) {
+        const r = await uploadBufferToCloudinary(req.files.votersIDImage[0].buffer, {
+          folder: "toda-go/ids",
           resource_type: "image",
           transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
         });
-        return r.secure_url;
+        savedImgs.votersIDImage = r.secure_url;
+        savedImgs.votersIDImagePublicId = r.public_id;
       }
 
-      const votersIDImageUrl = await maybeUpload(req.files?.votersIDImage?.[0], "toda-go/ids");
-      const driversLicenseImageUrl = await maybeUpload(req.files?.driversLicenseImage?.[0], "toda-go/licenses");
-      const orcrImageUrl = await maybeUpload(req.files?.orcrImage?.[0], "toda-go/orcr");
-      const selfieImageUrl = await maybeUpload(req.files?.selfie?.[0], "toda-go/selfies");
+      if (req.files?.driversLicenseImage?.[0]) {
+        const r = await uploadBufferToCloudinary(req.files.driversLicenseImage[0].buffer, {
+          folder: "toda-go/licenses",
+          resource_type: "image",
+          transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
+        });
+        savedImgs.driversLicenseImage = r.secure_url;
+        savedImgs.driversLicenseImagePublicId = r.public_id;
+      }
 
-      // Build Operator doc
+      if (req.files?.orcrImage?.[0]) {
+        const r = await uploadBufferToCloudinary(req.files.orcrImage[0].buffer, {
+          folder: "toda-go/orcr",
+          resource_type: "image",
+          transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
+        });
+        savedImgs.orcrImage = r.secure_url;
+        savedImgs.orcrImagePublicId = r.public_id;
+      }
+
+      if (req.files?.selfie?.[0]) {
+        const r = await uploadBufferToCloudinary(req.files.selfie[0].buffer, {
+          folder: "toda-go/selfies",
+          resource_type: "image",
+          transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
+        });
+        savedImgs.selfieImage = r.secure_url;
+        savedImgs.selfieImagePublicId = r.public_id;
+      }
+
+
+      // Build Operator doc (as before)
       const newOperator = new Operator({
         profileID, franchiseNumber, todaName, sector,
         operatorFirstName, operatorMiddleName, operatorLastName, operatorSuffix,
         operatorName: `${operatorFirstName} ${operatorMiddleName} ${operatorLastName} ${operatorSuffix || ""}`.trim(),
         operatorBirthdate, operatorPhone,
-        votersIDImage: votersIDImageUrl || null,
-        driversLicenseImage: driversLicenseImageUrl || null,
-        orcrImage: orcrImageUrl || null,
-        selfieImage: selfieImageUrl || null, // ← field name matches Operator schema
+        capacity: cap,
+        // store Cloudinary URLs with your existing field names for minimal refactor:
+        votersIDImage: savedImgs.votersIDImage,
+        driversLicenseImage: savedImgs.driversLicenseImage,
+        orcrImage: savedImgs.orcrImage,
+        selfieImage: savedImgs.selfieImage,
+        // keep public_ids too (add fields in schema if you want to delete later)
+        votersIDImagePublicId: savedImgs.votersIDImagePublicId,
+        driversLicenseImagePublicId: savedImgs.driversLicenseImagePublicId,
+        orcrImagePublicId: savedImgs.orcrImagePublicId,
+        selfieImagePublicId: savedImgs.selfieImagePublicId,
+
         ...( (role === "Operator" || role === "Both") && operatorEmail ? { email: operatorEmail } : {} ),
         ...( (role === "Operator" || role === "Both") && operatorPassword ? { password: operatorPassword } : {} ),
         isVerified: false,
       });
 
-      // Build Driver doc (Both copies operator info)
+      // Build Driver doc
       const dFirst = role === "Both" ? operatorFirstName : driverFirstName;
       const dMiddle = role === "Both" ? operatorMiddleName : driverMiddleName;
       const dLast  = role === "Both" ? operatorLastName : driverLastName;
@@ -124,30 +162,33 @@ router.post(
         driverBirthdate: dBirth,
         driverPhone: dPhone,
         experienceYears, isLucenaVoter, votingLocation,
-        capacity: cap,
-        votersIDImage: votersIDImageUrl || null,
-        driversLicenseImage: driversLicenseImageUrl || null,
-        orcrImage: orcrImageUrl || null,
-        selfieImage: selfieImageUrl || null, // ← field name matches Driver schema
+
+        // Cloudinary URLs:
+        votersIDImage: savedImgs.votersIDImage,
+        driversLicenseImage: savedImgs.driversLicenseImage,
+        orcrImage: savedImgs.orcrImage,
+        selfieImage: savedImgs.selfieImage,
+        // optional public_ids:
+        votersIDImagePublicId: savedImgs.votersIDImagePublicId,
+        driversLicenseImagePublicId: savedImgs.driversLicenseImagePublicId,
+        orcrImagePublicId: savedImgs.orcrImagePublicId,
+        selfieImagePublicId: savedImgs.selfieImagePublicId,
+
         ...( (role === "Driver" || role === "Both") && driverEmail ? { email: driverEmail } : {} ),
         ...( (role === "Driver" || role === "Both") && driverPassword ? { password: driverPassword } : {} ),
         isVerified: false,
       });
 
-      // Save both
+      // Save to DB
       await newOperator.save();
       await newDriver.save();
 
-      // Send verification emails (Driver + Operator if provided)
+      // Send verification emails (unchanged)
       const baseUrl = getBaseUrl(req);
-      const buildVerifyUrl = (id) => {
-        const token = jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
-        return `${baseUrl}/api/auth/driver/verify-email?token=${encodeURIComponent(token)}`;
-      };
-
-      async function sendVerify(toEmail, displayName) {
+      async function sendVerify(kind, id, toEmail, displayName) {
         if (!toEmail) return;
-        const verifyUrl = buildVerifyUrl(newDriver._id); // verifying the Driver account for the app
+        const token = jwt.sign({ kind, id }, process.env.JWT_SECRET, { expiresIn: "1d" });
+        const verifyUrl = `${baseUrl}/api/auth/driver/verify-email?token=${encodeURIComponent(token)}`;
         await sendMail({
           to: toEmail,
           subject: "Verify your TodaGo Driver Account",
@@ -161,22 +202,26 @@ router.post(
       }
 
       if (role === "Driver" || role === "Both") {
-        await sendVerify(driverEmail, newDriver.driverName);
+        await sendVerify("driver", newDriver._id, driverEmail, newDriver.driverName);
       }
       if (role === "Operator" || role === "Both") {
-        // Optional: also email operator if you want
-        // await sendVerify(operatorEmail, newOperator.operatorName);
+        await sendVerify("operator", newOperator._id, operatorEmail, newOperator.operatorName);
       }
 
       return res.status(201).json({ message: "Registration successful. Please verify your email. Check your Spam Mail" });
     } catch (error) {
       console.error("Driver registration failed:", error);
-      return res.status(500).json({ error: "Server error", details: error.message });
+      res.status(500).json({ error: "Server error", details: error.message });
     }
   }
 );
 
-// ---- Verify endpoint (Driver) ----
+// ✅ Verify endpoint (kept as you had, works for tokens generated above)
+const buildVerifyUrl = (id) => {
+  const token = jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
+  return `${process.env.BACKEND_BASE_URL}/api/auth/driver/verify-email?token=${encodeURIComponent(token)}`;
+};
+
 router.get("/verify-email", async (req, res) => {
   try {
     const { token } = req.query;
@@ -203,7 +248,6 @@ router.get("/verify-email", async (req, res) => {
   }
 });
 
-// ---- Resend verification (Driver) ----
 router.post("/resend-verification", async (req, res) => {
   try {
     const { email } = req.body;
@@ -213,10 +257,7 @@ router.post("/resend-verification", async (req, res) => {
     if (!driver) return res.status(404).json({ message: "No driver found" });
     if (driver.isVerified) return res.json({ message: "Already verified" });
 
-    const baseUrl = process.env.BACKEND_BASE_URL || "";
-    const token = jwt.sign({ id: driver._id }, process.env.JWT_SECRET, { expiresIn: "1d" });
-    const verifyUrl = `${baseUrl || ""}/api/auth/driver/verify-email?token=${encodeURIComponent(token)}`;
-
+    const verifyUrl = buildVerifyUrl(driver._id);
     try {
       await sendMail({
         to: driver.email,
@@ -231,7 +272,7 @@ router.post("/resend-verification", async (req, res) => {
       });
     } catch (e) {
       console.error("❌ driver resend sendMail failed:", e.message);
-      // Still return OK so UI doesn't block
+      // still respond OK so the UI doesn't block
     }
 
     return res.json({ message: "Verification email sent" });

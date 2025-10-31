@@ -5,7 +5,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const upload = require("../middleware/upload");
 const { sendMail } = require("../utils/mailer");
-
+const { uploadMem, uploadBufferToCloudinary } = require("../utils/media");
 
 function fullName(p) {
   return [p.firstName, p.middleName, p.lastName].filter(Boolean).join(' ');
@@ -180,6 +180,52 @@ router.post("/resend-verification", async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
+
+router.get("/:id", async (req, res) => {
+  try {
+    const p = await Passenger.findById(req.params.id);
+    if (!p) return res.status(404).json({ message: "Passenger not found" });
+    return res.json({ passenger: p });
+  } catch (e) {
+    console.error("get passenger error:", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.post(
+  "/:id/photo",
+  uploadMem.fields([
+    { name: "selfie", maxCount: 1 },
+    { name: "profileImage", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      const passenger = await Passenger.findById(req.params.id);
+      if (!passenger) return res.status(404).json({ message: "Passenger not found" });
+
+      const file =
+        (req.files?.selfie && req.files.selfie[0]) ||
+        (req.files?.profileImage && req.files.profileImage[0]);
+
+      if (!file) return res.status(400).json({ message: "No image uploaded" });
+
+      const up = await uploadBufferToCloudinary(file.buffer, {
+        folder: "toda-go/passengers",
+        resource_type: "image",
+        transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
+      });
+
+      passenger.profileImage = up.secure_url;
+      passenger.profileImagePublicId = up.public_id; // optional: add this field in your schema
+      await passenger.save();
+
+      return res.status(200).json({ passenger, message: "Profile image updated!" });
+    } catch (e) {
+      console.error("passenger photo upload error:", e);
+      return res.status(500).json({ message: "Server error" });
+    }
+  }
+);
 
 // ---------- PROFILE IMAGE (unchanged) ----------
 router.patch("/:id/update-profile-image", upload.single("profileImage"), async (req, res) => {

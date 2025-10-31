@@ -27,8 +27,8 @@ const RideHistorySchema = new mongoose.Schema(
     destinationName: String,
 
     // fares
-    fare: Number,         // legacy single-seat fare
-    totalFare: Number,    // ✅ final fare charged (Group = fare * groupCount, else = fare)
+    fare: Number,        
+    totalFare: Number,  
 
     paymentMethod: String,
     notes: String,
