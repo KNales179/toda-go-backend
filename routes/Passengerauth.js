@@ -3,9 +3,28 @@ const router = express.Router();
 const Passenger = require("../models/Passenger");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const upload = require("../middleware/upload");
 const { sendMail } = require("../utils/mailer");
 const { uploadMem, uploadBufferToCloudinary } = require("../utils/media");
+const multer = require("multer");
+const streamifier = require("streamifier");
+const cloudinary = require("../utils/cloudinaryConfig");
+
+const uploadMem = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+});
+
+
+function uploadBufferToCloudinary(buffer, options = {}) {
+  return new Promise((resolve, reject) => {
+    const up = cloudinary.uploader.upload_stream(options, (err, result) => {
+      if (err) return reject(err);
+      resolve(result); // has secure_url, public_id
+    });
+    streamifier.createReadStream(buffer).pipe(up);
+  });
+}
+
 
 function fullName(p) {
   return [p.firstName, p.middleName, p.lastName].filter(Boolean).join(' ');
@@ -192,57 +211,36 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-router.post(
-  "/:id/photo",
-  uploadMem.fields([
-    { name: "selfie", maxCount: 1 },
-    { name: "profileImage", maxCount: 1 },
-  ]),
-  async (req, res) => {
-    try {
-      const passenger = await Passenger.findById(req.params.id);
-      if (!passenger) return res.status(404).json({ message: "Passenger not found" });
-
-      const file =
-        (req.files?.selfie && req.files.selfie[0]) ||
-        (req.files?.profileImage && req.files.profileImage[0]);
-
-      if (!file) return res.status(400).json({ message: "No image uploaded" });
-
-      const up = await uploadBufferToCloudinary(file.buffer, {
-        folder: "toda-go/passengers",
-        resource_type: "image",
-        transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
-      });
-
-      passenger.profileImage = up.secure_url;
-      passenger.profileImagePublicId = up.public_id; // optional: add this field in your schema
-      await passenger.save();
-
-      return res.status(200).json({ passenger, message: "Profile image updated!" });
-    } catch (e) {
-      console.error("passenger photo upload error:", e);
-      return res.status(500).json({ message: "Server error" });
-    }
-  }
-);
-
-// ---------- PROFILE IMAGE (unchanged) ----------
-router.patch("/:id/update-profile-image", upload.single("profileImage"), async (req, res) => {
+// NEW: Cloudinary upload
+router.post("/:id/photo", uploadMem.single("profileImage"), async (req, res) => {
   try {
     const passengerId = req.params.id;
-    const passenger = await Passenger.findById(passengerId);
-    if (!passenger) return res.status(404).json({ message: "Passenger not found" });
-    if (!req.file) return res.status(400).json({ message: "No image uploaded." });
+    const p = await Passenger.findById(passengerId);
+    if (!p) return res.status(404).json({ message: "Passenger not found" });
+    if (!req.file) return res.status(400).json({ message: "No image uploaded (profileImage)" });
 
-    passenger.profileImage = req.file.path;
-    await passenger.save();
+    // If replacing, delete previous asset (optional but recommended)
+    if (p.profileImagePublicId) {
+      try { await cloudinary.uploader.destroy(p.profileImagePublicId); } catch {}
+    }
 
-    return res.status(200).json({ passenger, message: "Profile image updated!" });
+    const result = await uploadBufferToCloudinary(req.file.buffer, {
+      folder: "toda-go/passengers",
+      resource_type: "image",
+      transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
+    });
+
+    p.profileImage = result.secure_url;       // Cloudinary URL
+    p.profileImagePublicId = result.public_id; // store for future replace/delete
+    await p.save();
+
+    // return fresh passenger (use timestamps to help cache-bust on client)
+    return res.status(200).json({ passenger: p, message: "Profile image updated!" });
   } catch (error) {
-    console.error("update-profile-image error:", error);
-    return res.status(500).json({ message: "Server error" });
+    console.error("passenger photo upload error:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
   }
 });
+
 
 module.exports = router;
