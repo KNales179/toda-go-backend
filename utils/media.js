@@ -12,7 +12,7 @@ function uploadBufferToCloudinary(buffer, options = {}) {
   return new Promise((resolve, reject) => {
     const up = cloudinary.uploader.upload_stream(options, (err, result) => {
       if (err) return reject(err);
-      resolve(result); // { secure_url, public_id, ... }
+      resolve(result); 
     });
     streamifier.createReadStream(buffer).pipe(up);
   });
