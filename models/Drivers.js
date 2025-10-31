@@ -1,9 +1,10 @@
-// ✅ Driver.js (Fixed)
+// ✅ models/Driver.js
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
 const DriverSchema = new mongoose.Schema({
   profileID: { type: String, required: true },
+
   email: { type: String, unique: true, sparse: true },
   password: { type: String },
   isVerified: { type: Boolean, default: false },
@@ -17,29 +18,37 @@ const DriverSchema = new mongoose.Schema({
   driverLastName: { type: String, required: true },
   driverSuffix: { type: String },
   driverName: { type: String, required: true },
-  gender: { type:String },
+  gender: { type: String },
   driverBirthdate: { type: String, required: true },
   driverPhone: { type: String, required: true },
-  homeAddress: { type:String },
+  homeAddress: { type: String },
   licenseId: { type: String },
-  experienceYears: { type: String, enum: ["1-5 taon", "6-10 taon", "16-20 taon", "20 taon pataas"], required: true },
+
+  experienceYears: {
+    type: String,
+    enum: ["1-5 taon", "6-10 taon", "16-20 taon", "20 taon pataas"], // keep your current set
+    required: true
+  },
+
   rating: { type: Number, default: 0 },
   ratingCount: { type: Number, default: 0 },
+
   isLucenaVoter: { type: String, enum: ["Oo", "Hindi"], required: true },
   votingLocation: { type: String },
 
+  // 🔗 Cloudinary URLs
   votersIDImage: { type: String },
   driversLicenseImage: { type: String },
   orcrImage: { type: String },
   selfieImage: { type: String },
 
-  capacity: {
-    type: Number,
-    min: 1,
-    max: 6,
-    default: 4,  
-    required: true,
-  },
+  // 🆔 Cloudinary public_ids (so you can delete/replace later)
+  votersIDImagePublicId: { type: String },
+  driversLicenseImagePublicId: { type: String },
+  orcrImagePublicId: { type: String },
+  selfieImagePublicId: { type: String },
+
+  capacity: { type: Number, min: 1, max: 6, default: 4, required: true },
 }, { timestamps: true });
 
 DriverSchema.pre("save", async function (next) {

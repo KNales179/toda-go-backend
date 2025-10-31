@@ -67,6 +67,8 @@ const geocodeRoute = require("./routes/geocodeRoute");
 const chatRoutes = require("./routes/Chat");
 const placesRoute = require("./routes/placesRoute");
 const warmup = require("./routes/warmup");
+const cloudinary = require("./routes/cloudinaryPing");
+const media = require("./routes/driverMedia");
 
 // Mount routes AFTER io is attached
 app.use("/api/auth/passenger", passengerRoutes);
@@ -88,7 +90,9 @@ app.use(geocodeRoute);
 app.use("/api/chat", chatRoutes);
 app.use(placesRoute);
 app.use(warmup);
-app.use("/api", require("./routes/cloudinaryPing"));
+app.use("/api", cloudinary);
+app.use("/api/driver", media);
+
 
 
 // Static uploads
