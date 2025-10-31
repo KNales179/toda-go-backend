@@ -88,6 +88,8 @@ app.use(geocodeRoute);
 app.use("/api/chat", chatRoutes);
 app.use(placesRoute);
 app.use(warmup);
+app.use("/api", require("./routes/cloudinaryPing"));
+
 
 // Static uploads
 app.use("/uploads", express.static("uploads"));
