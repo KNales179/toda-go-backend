@@ -116,9 +116,10 @@ router.post(
           resource_type: "image",
           transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
         });
-        savedImgs.selfie = r.secure_url;
-        savedImgs.selfiePublicId = r.public_id;
+        savedImgs.selfieImage = r.secure_url;
+        savedImgs.selfieImagePublicId = r.public_id;
       }
+
 
       // Build Operator doc (as before)
       const newOperator = new Operator({
@@ -131,12 +132,12 @@ router.post(
         votersIDImage: savedImgs.votersIDImage,
         driversLicenseImage: savedImgs.driversLicenseImage,
         orcrImage: savedImgs.orcrImage,
-        selfie: savedImgs.selfie,
+        selfieImage: savedImgs.selfieImage,
         // keep public_ids too (add fields in schema if you want to delete later)
         votersIDImagePublicId: savedImgs.votersIDImagePublicId,
         driversLicenseImagePublicId: savedImgs.driversLicenseImagePublicId,
         orcrImagePublicId: savedImgs.orcrImagePublicId,
-        selfiePublicId: savedImgs.selfiePublicId,
+        selfieImagePublicId: savedImgs.selfieImagePublicId,
 
         ...( (role === "Operator" || role === "Both") && operatorEmail ? { email: operatorEmail } : {} ),
         ...( (role === "Operator" || role === "Both") && operatorPassword ? { password: operatorPassword } : {} ),
@@ -166,12 +167,12 @@ router.post(
         votersIDImage: savedImgs.votersIDImage,
         driversLicenseImage: savedImgs.driversLicenseImage,
         orcrImage: savedImgs.orcrImage,
-        selfie: savedImgs.selfie,
+        selfieImage: savedImgs.selfieImage,
         // optional public_ids:
         votersIDImagePublicId: savedImgs.votersIDImagePublicId,
         driversLicenseImagePublicId: savedImgs.driversLicenseImagePublicId,
         orcrImagePublicId: savedImgs.orcrImagePublicId,
-        selfiePublicId: savedImgs.selfiePublicId,
+        selfieImagePublicId: savedImgs.selfieImagePublicId,
 
         ...( (role === "Driver" || role === "Both") && driverEmail ? { email: driverEmail } : {} ),
         ...( (role === "Driver" || role === "Both") && driverPassword ? { password: driverPassword } : {} ),
@@ -207,7 +208,7 @@ router.post(
         await sendVerify("operator", newOperator._id, operatorEmail, newOperator.operatorName);
       }
 
-      return res.status(201).json({ message: "Registration successful. Please verify your email." });
+      return res.status(201).json({ message: "Registration successful. Please verify your email. Check your Spam Mail" });
     } catch (error) {
       console.error("Driver registration failed:", error);
       res.status(500).json({ error: "Server error", details: error.message });
