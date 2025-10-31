@@ -5,25 +5,6 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { sendMail } = require("../utils/mailer");
 const { uploadMem, uploadBufferToCloudinary } = require("../utils/media");
-const multer = require("multer");
-const streamifier = require("streamifier");
-const cloudinary = require("../utils/cloudinaryConfig");
-
-const uploadMem = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
-});
-
-
-function uploadBufferToCloudinary(buffer, options = {}) {
-  return new Promise((resolve, reject) => {
-    const up = cloudinary.uploader.upload_stream(options, (err, result) => {
-      if (err) return reject(err);
-      resolve(result); // has secure_url, public_id
-    });
-    streamifier.createReadStream(buffer).pipe(up);
-  });
-}
 
 
 function fullName(p) {
