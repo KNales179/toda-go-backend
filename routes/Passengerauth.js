@@ -5,6 +5,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { sendMail } = require("../utils/mailer");
 const { uploadMem, uploadBufferToCloudinary } = require("../utils/media");
+const cloudinary = require("../utils/cloudinaryConfig");
 
 
 function fullName(p) {
@@ -192,17 +193,35 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// NEW: Cloudinary upload
 router.post("/:id/photo", uploadMem.single("profileImage"), async (req, res) => {
   try {
     const passengerId = req.params.id;
     const p = await Passenger.findById(passengerId);
     if (!p) return res.status(404).json({ message: "Passenger not found" });
-    if (!req.file) return res.status(400).json({ message: "No image uploaded (profileImage)" });
+    if (!req.file) {
+      return res.status(400).json({ message: "No image uploaded (profileImage)" });
+    }
 
-    // If replacing, delete previous asset (optional but recommended)
+    // 🔍 debug logs (temporary)
+    console.log("[PPhoto] id:", passengerId);
+    console.log("[PPhoto] file:", {
+      size: req.file.size,
+      mimetype: req.file.mimetype,
+      originalname: req.file.originalname,
+    });
+
+    if (!req.file.mimetype?.startsWith("image/")) {
+      return res.status(400).json({ message: "Only image uploads are allowed" });
+    }
+
+    // delete old asset if exists (best-effort)
     if (p.profileImagePublicId) {
-      try { await cloudinary.uploader.destroy(p.profileImagePublicId); } catch {}
+      try {
+        await cloudinary.uploader.destroy(p.profileImagePublicId);
+        console.log("[PPhoto] destroyed old:", p.profileImagePublicId);
+      } catch (e) {
+        console.warn("[PPhoto] destroy old failed:", e?.message || e);
+      }
     }
 
     const result = await uploadBufferToCloudinary(req.file.buffer, {
@@ -211,11 +230,16 @@ router.post("/:id/photo", uploadMem.single("profileImage"), async (req, res) => 
       transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
     });
 
-    p.profileImage = result.secure_url;       // Cloudinary URL
-    p.profileImagePublicId = result.public_id; // store for future replace/delete
+    // 🔍 debug log (temporary)
+    console.log("[PPhoto] cloudinary result:", {
+      secure_url: result.secure_url,
+      public_id: result.public_id,
+    });
+
+    p.profileImage = result.secure_url;       // full https URL
+    p.profileImagePublicId = result.public_id;
     await p.save();
 
-    // return fresh passenger (use timestamps to help cache-bust on client)
     return res.status(200).json({ passenger: p, message: "Profile image updated!" });
   } catch (error) {
     console.error("passenger photo upload error:", error);

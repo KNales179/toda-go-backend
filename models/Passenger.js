@@ -20,7 +20,8 @@ const passengerSchema = new mongoose.Schema({
   eContactName: { type: String },    
   eContactPhone: { type: String },   
   civil_status: { type: String },
-  profileImage: { type: String, default: "" },
+  profileImage: { type: String },
+  profileImagePublicId: { type: String },
   homeAddress: { type:String },
 
   // From original app
