@@ -39,29 +39,44 @@ function normalizePHMobile(input) {
   if (s.startsWith("09") && s.length === 11) return s;
   return null;
 }
+// helper: safe destroy
+async function safeDestroy(publicId){
+  if (!publicId) return;
+  try {
+    await cloudinary.uploader.destroy(publicId, { resource_type: "image", invalidate: true });
+  } catch (e) {
+    console.warn("⚠️ Cloudinary destroy failed:", publicId, e?.message);
+  }
+}
 
 router.post("/:id/gcash-qr", upload.single("qr"), async (req, res) => {
   try {
     const { id } = req.params;
     if (!req.file?.buffer) return res.status(400).json({ ok:false, error:"No image uploaded" });
 
-    const fixedPublicId = `toda-go/gcash-qrs/driver_${id}_gcashqr`;
+    const current = await Driver.findById(id).select("gcashQRPublicId");
+    if (!current) return res.status(404).json({ ok:false, error:"Driver not found" });
+    const oldPublicId = current.gcashQRPublicId || null;
 
+    // upload NEW asset with a unique public_id
     const r = await uploadBufferToCloudinary(req.file.buffer, {
-      public_id: fixedPublicId,     
-      folder: undefined, 
+      folder: "toda-go/gcash-qrs",
       resource_type: "image",
-      overwrite: true,  
-      invalidate: true, 
       transformation: [{ quality:"auto" }, { fetch_format:"auto" }],
+      public_id: `driver_${id}_gcashqr_${Date.now()}`,
     });
 
+    // save the new one
     const driver = await Driver.findByIdAndUpdate(
       id,
       { gcashQRUrl: r.secure_url, gcashQRPublicId: r.public_id },
       { new: true, select: "_id driverName gcashQRUrl gcashQRPublicId" }
     );
-    if (!driver) return res.status(404).json({ ok:false, error:"Driver not found" });
+
+    // after successful update, try deleting the old image (if different)
+    if (oldPublicId && oldPublicId !== r.public_id) {
+      safeDestroy(oldPublicId); // fire-and-forget
+    }
 
     return res.json({ ok:true, gcashQRUrl: driver.gcashQRUrl });
   } catch (err) {
@@ -69,6 +84,7 @@ router.post("/:id/gcash-qr", upload.single("qr"), async (req, res) => {
     return res.status(500).json({ ok:false, error:"Upload failed" });
   }
 });
+
 
 router.post("/:id/gcash-number", async (req, res) => {
   try {
