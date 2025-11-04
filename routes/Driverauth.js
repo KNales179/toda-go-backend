@@ -6,18 +6,15 @@ const { v4: uuidv4 } = require("uuid");
 const jwt = require("jsonwebtoken");
 const { sendMail } = require("../utils/mailer");
 
-// ⬇️ NEW: Cloudinary + Multer (memory) + streamifier
 const multer = require("multer");
 const streamifier = require("streamifier");
 const cloudinary = require("../utils/cloudinaryConfig");
 
-// Use memory storage so we can stream buffers directly to Cloudinary
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit; adjust if needed
+  limits: { fileSize: 10 * 1024 * 1024 },
 });
 
-// helper: consistent base URL
 function getBaseUrl(req) {
   return (
     process.env.BACKEND_BASE_URL ||
@@ -25,12 +22,11 @@ function getBaseUrl(req) {
   );
 }
 
-// helper: upload a single buffer to Cloudinary
 function uploadBufferToCloudinary(buffer, options = {}) {
   return new Promise((resolve, reject) => {
     const up = cloudinary.uploader.upload_stream(options, (err, result) => {
       if (err) return reject(err);
-      resolve(result); // { secure_url, public_id, ... }
+      resolve(result); 
     });
     streamifier.createReadStream(buffer).pipe(up);
   });
@@ -39,47 +35,41 @@ function uploadBufferToCloudinary(buffer, options = {}) {
 function normalizePHMobile(input) {
   if (!input) return null;
   let s = String(input).replace(/[^\d+0-9]/g, "");
-  if (s.startsWith("+639") && s.length === 13) return "0" + s.slice(3); // +639xxxxxxxxx -> 09xxxxxxxxx
+  if (s.startsWith("+639") && s.length === 13) return "0" + s.slice(3); 
   if (s.startsWith("09") && s.length === 11) return s;
   return null;
 }
 
-// Upload driver's GCash QR image to Cloudinary and save url to Driver.gcashQRUrl
-router.post(
-  "/:id/gcash-qr",
-  upload.single("qr"),
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      if (!req.file?.buffer) {
-        return res.status(400).json({ ok: false, error: "No image uploaded" });
-      }
+router.post("/:id/gcash-qr", upload.single("qr"), async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!req.file?.buffer) return res.status(400).json({ ok:false, error:"No image uploaded" });
 
-      // Upload buffer to Cloudinary (folder consistent with your structure)
-      const r = await uploadBufferToCloudinary(req.file.buffer, {
-        folder: "toda-go/gcash-qrs",
-        resource_type: "image",
-        transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
-        public_id: `driver_${id}_gcashqr_${Date.now()}`
-      });
+    const fixedPublicId = `toda-go/gcash-qrs/driver_${id}_gcashqr`;
 
-      const driver = await Driver.findByIdAndUpdate(
-        id,
-        { gcashQRUrl: r.secure_url, gcashQRPublicId: r.public_id },
-        { new: true, select: "_id driverName gcashQRUrl" }
-      );
+    const r = await uploadBufferToCloudinary(req.file.buffer, {
+      public_id: fixedPublicId,     
+      folder: undefined, 
+      resource_type: "image",
+      overwrite: true,  
+      invalidate: true, 
+      transformation: [{ quality:"auto" }, { fetch_format:"auto" }],
+    });
 
-      if (!driver) return res.status(404).json({ ok: false, error: "Driver not found" });
-      res.json({ ok: true, gcashQRUrl: driver.gcashQRUrl });
-    } catch (err) {
-      console.error("GCASH_QR_UPLOAD", err);
-      res.status(500).json({ ok: false, error: "Upload failed" });
-    }
+    const driver = await Driver.findByIdAndUpdate(
+      id,
+      { gcashQRUrl: r.secure_url, gcashQRPublicId: r.public_id },
+      { new: true, select: "_id driverName gcashQRUrl gcashQRPublicId" }
+    );
+    if (!driver) return res.status(404).json({ ok:false, error:"Driver not found" });
+
+    return res.json({ ok:true, gcashQRUrl: driver.gcashQRUrl });
+  } catch (err) {
+    console.error("GCASH_QR_UPLOAD", err);
+    return res.status(500).json({ ok:false, error:"Upload failed" });
   }
-);
+});
 
-
-// Save / update driver's GCash number (normalized)
 router.post("/:id/gcash-number", async (req, res) => {
   try {
     const { id } = req.params;
@@ -102,8 +92,6 @@ router.post("/:id/gcash-number", async (req, res) => {
   }
 });
 
-
-// Public-ish payment info (secure enough for MVP; lock down later if needed)
 router.get("/:id/payment-info", async (req, res) => {
   try {
     const driver = await Driver.findById(req.params.id).select("gcashQRUrl gcashNumber");
@@ -119,9 +107,6 @@ router.get("/:id/payment-info", async (req, res) => {
   }
 });
 
-
-
-// POST /api/auth/driver/register-driver
 router.post(
   "/register-driver",
   upload.fields([
@@ -142,12 +127,10 @@ router.post(
         experienceYears, isLucenaVoter, votingLocation, capacity,
       } = req.body;
 
-      // basic validation (you previously required voter's ID)
       if (!req.files?.votersIDImage) {
         return res.status(400).json({ error: "Voter's ID image is required" });
       }
 
-      // uniqueness checks
       if ((role === "Driver" || role === "Both") && driverEmail) {
         const exists = await Driver.findOne({ email: driverEmail });
         if (exists) return res.status(400).json({ error: "Driver already exists" });
@@ -159,10 +142,6 @@ router.post(
 
       const profileID = uuidv4();
       const cap = Math.min(6, Math.max(1, Number(capacity) || 4));
-
-      // ⬇️ NEW: Upload each provided image to Cloudinary
-      // NOTE: we KEEP your original field names in MongoDB, but now store Cloudinary URLs.
-      // Optionally also store their public_id (recommended for future delete/replace).
       const savedImgs = {};
 
       if (req.files?.votersIDImage?.[0]) {
@@ -213,12 +192,10 @@ router.post(
         operatorName: `${operatorFirstName} ${operatorMiddleName} ${operatorLastName} ${operatorSuffix || ""}`.trim(),
         operatorBirthdate, operatorPhone,
         capacity: cap,
-        // store Cloudinary URLs with your existing field names for minimal refactor:
         votersIDImage: savedImgs.votersIDImage,
         driversLicenseImage: savedImgs.driversLicenseImage,
         orcrImage: savedImgs.orcrImage,
         selfieImage: savedImgs.selfieImage,
-        // keep public_ids too (add fields in schema if you want to delete later)
         votersIDImagePublicId: savedImgs.votersIDImagePublicId,
         driversLicenseImagePublicId: savedImgs.driversLicenseImagePublicId,
         orcrImagePublicId: savedImgs.orcrImagePublicId,
@@ -229,7 +206,6 @@ router.post(
         isVerified: false,
       });
 
-      // Build Driver doc
       const dFirst = role === "Both" ? operatorFirstName : driverFirstName;
       const dMiddle = role === "Both" ? operatorMiddleName : driverMiddleName;
       const dLast  = role === "Both" ? operatorLastName : driverLastName;
@@ -248,12 +224,10 @@ router.post(
         driverPhone: dPhone,
         experienceYears, isLucenaVoter, votingLocation,
 
-        // Cloudinary URLs:
         votersIDImage: savedImgs.votersIDImage,
         driversLicenseImage: savedImgs.driversLicenseImage,
         orcrImage: savedImgs.orcrImage,
         selfieImage: savedImgs.selfieImage,
-        // optional public_ids:
         votersIDImagePublicId: savedImgs.votersIDImagePublicId,
         driversLicenseImagePublicId: savedImgs.driversLicenseImagePublicId,
         orcrImagePublicId: savedImgs.orcrImagePublicId,
@@ -264,11 +238,9 @@ router.post(
         isVerified: false,
       });
 
-      // Save to DB
       await newOperator.save();
       await newDriver.save();
 
-      // Send verification emails (unchanged)
       const baseUrl = getBaseUrl(req);
       async function sendVerify(kind, id, toEmail, displayName) {
         if (!toEmail) return;
@@ -301,7 +273,6 @@ router.post(
   }
 );
 
-// ✅ Verify endpoint (kept as you had, works for tokens generated above)
 const buildVerifyUrl = (id) => {
   const token = jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
   return `${process.env.BACKEND_BASE_URL}/api/auth/driver/verify-email?token=${encodeURIComponent(token)}`;
@@ -357,7 +328,6 @@ router.post("/resend-verification", async (req, res) => {
       });
     } catch (e) {
       console.error("❌ driver resend sendMail failed:", e.message);
-      // still respond OK so the UI doesn't block
     }
 
     return res.json({ message: "Verification email sent" });
