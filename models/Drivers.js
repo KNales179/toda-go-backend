@@ -23,6 +23,9 @@ const DriverSchema = new mongoose.Schema({
   driverPhone: { type: String, required: true },
   homeAddress: { type: String },
   licenseId: { type: String },
+  gcashQRUrl: String,
+  gcashNumber: String,
+
 
   experienceYears: {
     type: String,

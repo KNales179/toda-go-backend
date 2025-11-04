@@ -36,6 +36,91 @@ function uploadBufferToCloudinary(buffer, options = {}) {
   });
 }
 
+function normalizePHMobile(input) {
+  if (!input) return null;
+  let s = String(input).replace(/[^\d+0-9]/g, "");
+  if (s.startsWith("+639") && s.length === 13) return "0" + s.slice(3); // +639xxxxxxxxx -> 09xxxxxxxxx
+  if (s.startsWith("09") && s.length === 11) return s;
+  return null;
+}
+
+// Upload driver's GCash QR image to Cloudinary and save url to Driver.gcashQRUrl
+router.post(
+  "/:id/gcash-qr",
+  upload.single("qr"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      if (!req.file?.buffer) {
+        return res.status(400).json({ ok: false, error: "No image uploaded" });
+      }
+
+      // Upload buffer to Cloudinary (folder consistent with your structure)
+      const r = await uploadBufferToCloudinary(req.file.buffer, {
+        folder: "toda-go/gcash-qrs",
+        resource_type: "image",
+        transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
+        public_id: `driver_${id}_gcashqr_${Date.now()}`
+      });
+
+      const driver = await Driver.findByIdAndUpdate(
+        id,
+        { gcashQRUrl: r.secure_url, gcashQRPublicId: r.public_id },
+        { new: true, select: "_id driverName gcashQRUrl" }
+      );
+
+      if (!driver) return res.status(404).json({ ok: false, error: "Driver not found" });
+      res.json({ ok: true, gcashQRUrl: driver.gcashQRUrl });
+    } catch (err) {
+      console.error("GCASH_QR_UPLOAD", err);
+      res.status(500).json({ ok: false, error: "Upload failed" });
+    }
+  }
+);
+
+
+// Save / update driver's GCash number (normalized)
+router.post("/:id/gcash-number", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const normalized = normalizePHMobile(req.body?.gcashNumber);
+    if (!normalized) {
+      return res.status(400).json({ ok: false, error: "Invalid PH mobile. Use 09xxxxxxxxx or +639xxxxxxxxx" });
+    }
+
+    const driver = await Driver.findByIdAndUpdate(
+      id,
+      { gcashNumber: normalized },
+      { new: true, select: "_id driverName gcashNumber" }
+    );
+
+    if (!driver) return res.status(404).json({ ok: false, error: "Driver not found" });
+    res.json({ ok: true, gcashNumber: driver.gcashNumber });
+  } catch (err) {
+    console.error("GCASH_NUM_SAVE", err);
+    res.status(500).json({ ok: false, error: "Save failed" });
+  }
+});
+
+
+// Public-ish payment info (secure enough for MVP; lock down later if needed)
+router.get("/:id/payment-info", async (req, res) => {
+  try {
+    const driver = await Driver.findById(req.params.id).select("gcashQRUrl gcashNumber");
+    if (!driver) return res.status(404).json({ ok: false, error: "Driver not found" });
+    res.json({
+      ok: true,
+      gcashQRUrl: driver.gcashQRUrl || null,
+      gcashNumber: driver.gcashNumber || null
+    });
+  } catch (err) {
+    console.error("GCASH_INFO", err);
+    res.status(500).json({ ok: false, error: "Lookup failed" });
+  }
+});
+
+
+
 // POST /api/auth/driver/register-driver
 router.post(
   "/register-driver",
@@ -281,5 +366,7 @@ router.post("/resend-verification", async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
+
+
 
 module.exports = router;
