@@ -7,6 +7,8 @@ const DriverStatus = require("../models/DriverStatus");
 const Passenger = require("../models/Passenger");
 const RideHistory = require("../models/RideHistory");
 const Booking = require("../models/Bookings");
+const Driver = require("../models/Drivers");
+
 
 // ---------- helpers ----------
 const toRad = (v) => (v * Math.PI) / 180;
@@ -325,7 +327,6 @@ router.get("/waiting-bookings", async (req, res) => {
 });
 
 
-// ---------- POST /accept-booking ----------
 router.post("/accept-booking", async (req, res) => {
   try {
     const { bookingId, driverId } = req.body;
@@ -377,7 +378,6 @@ router.post("/accept-booking", async (req, res) => {
         }
       }
     } catch (e) {
-      // Keep silent: payment snapshot failure shouldn't block acceptance
       console.warn("GCash snapshot failed:", e?.message || e);
     }
 
