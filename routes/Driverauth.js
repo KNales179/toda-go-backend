@@ -1,20 +1,27 @@
+// routes/Driverauth.js
 const express = require("express");
 const router = express.Router();
+
 const Driver = require("../models/Drivers");
 const Operator = require("../models/Operator");
+
 const { v4: uuidv4 } = require("uuid");
 const jwt = require("jsonwebtoken");
 const { sendMail } = require("../utils/mailer");
 
+// --- Cloudinary + Multer (memory) ---
 const multer = require("multer");
 const streamifier = require("streamifier");
 const cloudinary = require("../utils/cloudinaryConfig");
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
 });
 
+const log = (...a) => console.log("[DRIVERAUTH]", ...a);
+
+// ---------- helpers ----------
 function getBaseUrl(req) {
   return (
     process.env.BACKEND_BASE_URL ||
@@ -26,7 +33,7 @@ function uploadBufferToCloudinary(buffer, options = {}) {
   return new Promise((resolve, reject) => {
     const up = cloudinary.uploader.upload_stream(options, (err, result) => {
       if (err) return reject(err);
-      resolve(result); 
+      resolve(result); // { secure_url, public_id, ... }
     });
     streamifier.createReadStream(buffer).pipe(up);
   });
@@ -35,63 +42,65 @@ function uploadBufferToCloudinary(buffer, options = {}) {
 function normalizePHMobile(input) {
   if (!input) return null;
   let s = String(input).replace(/[^\d+0-9]/g, "");
-  if (s.startsWith("+639") && s.length === 13) return "0" + s.slice(3); 
+  if (s.startsWith("+639") && s.length === 13) return "0" + s.slice(3);
   if (s.startsWith("09") && s.length === 11) return s;
   return null;
 }
-// helper: safe destroy
-async function safeDestroy(publicId){
+
+async function safeDestroy(publicId) {
   if (!publicId) return;
   try {
-    await cloudinary.uploader.destroy(publicId, { resource_type: "image", invalidate: true });
+    await cloudinary.uploader.destroy(publicId, {
+      resource_type: "image",
+      invalidate: true,
+    });
+    log("destroyed old Cloudinary asset:", publicId);
   } catch (e) {
     console.warn("⚠️ Cloudinary destroy failed:", publicId, e?.message);
   }
 }
 
-router.post("/:id/gcash-qr", upload.single("qr"), async (req, res) => {
+// ===================================================================
+// ================ G C A S H   E N D P O I N T S =====================
+// ===================================================================
+
+/**
+ * GET /api/auth/driver/:id/payment-info
+ * Returns: { ok, gcashNumber, gcashQRUrl, gcashQRPublicId }
+ */
+router.get("/:id/payment-info", async (req, res) => {
   try {
-    const { id } = req.params;
-    if (!req.file?.buffer) return res.status(400).json({ ok:false, error:"No image uploaded" });
-
-    const current = await Driver.findById(id).select("gcashQRPublicId");
-    if (!current) return res.status(404).json({ ok:false, error:"Driver not found" });
-    const oldPublicId = current.gcashQRPublicId || null;
-
-    // upload NEW asset with a unique public_id
-    const r = await uploadBufferToCloudinary(req.file.buffer, {
-      folder: "toda-go/gcash-qrs",
-      resource_type: "image",
-      transformation: [{ quality:"auto" }, { fetch_format:"auto" }],
-      public_id: `driver_${id}_gcashqr_${Date.now()}`,
-    });
-
-    // save the new one
-    const driver = await Driver.findByIdAndUpdate(
-      id,
-      { gcashQRUrl: r.secure_url, gcashQRPublicId: r.public_id },
-      { new: true, select: "_id driverName gcashQRUrl gcashQRPublicId" }
+    const d = await Driver.findById(req.params.id).select(
+      "gcashNumber gcashQRUrl gcashQRPublicId"
     );
+    if (!d) return res.status(404).json({ ok: false, error: "Driver not found" });
 
-    // after successful update, try deleting the old image (if different)
-    if (oldPublicId && oldPublicId !== r.public_id) {
-      safeDestroy(oldPublicId); // fire-and-forget
-    }
-
-    return res.json({ ok:true, gcashQRUrl: driver.gcashQRUrl });
-  } catch (err) {
-    console.error("GCASH_QR_UPLOAD", err);
-    return res.status(500).json({ ok:false, error:"Upload failed" });
+    return res.json({
+      ok: true,
+      gcashNumber: d.gcashNumber || "",
+      gcashQRUrl: d.gcashQRUrl || null,
+      gcashQRPublicId: d.gcashQRPublicId || null,
+    });
+  } catch (e) {
+    console.error("payment-info error:", e);
+    return res.status(500).json({ ok: false, error: "Server error" });
   }
 });
 
-
+/**
+ * POST /api/auth/driver/:id/gcash-number
+ * Body: { gcashNumber }
+ * Normalizes and saves.
+ */
 router.post("/:id/gcash-number", async (req, res) => {
   try {
     const { id } = req.params;
     const normalized = normalizePHMobile(req.body?.gcashNumber);
     if (!normalized) {
-      return res.status(400).json({ ok: false, error: "Invalid PH mobile. Use 09xxxxxxxxx or +639xxxxxxxxx" });
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid PH mobile. Use 09xxxxxxxxx or +639xxxxxxxxx",
+      });
     }
 
     const driver = await Driver.findByIdAndUpdate(
@@ -101,27 +110,67 @@ router.post("/:id/gcash-number", async (req, res) => {
     );
 
     if (!driver) return res.status(404).json({ ok: false, error: "Driver not found" });
-    res.json({ ok: true, gcashNumber: driver.gcashNumber });
+
+    return res.json({ ok: true, gcashNumber: driver.gcashNumber });
   } catch (err) {
     console.error("GCASH_NUM_SAVE", err);
-    res.status(500).json({ ok: false, error: "Save failed" });
+    return res.status(500).json({ ok: false, error: "Save failed" });
   }
 });
 
-router.get("/:id/payment-info", async (req, res) => {
+/**
+ * POST /api/auth/driver/:id/gcash-qr
+ * FormData: field "qr" (image)
+ * Uploads new QR to Cloudinary, saves URL + public_id, deletes the old image.
+ */
+router.post("/:id/gcash-qr", upload.single("qr"), async (req, res) => {
   try {
-    const driver = await Driver.findById(req.params.id).select("gcashQRUrl gcashNumber");
-    if (!driver) return res.status(404).json({ ok: false, error: "Driver not found" });
-    res.json({
+    const { id } = req.params;
+
+    if (!req.file?.buffer) {
+      return res.status(400).json({ ok: false, error: "No image uploaded" });
+    }
+
+    // Get current to know old public id
+    const current = await Driver.findById(id).select("gcashQRPublicId");
+    if (!current) return res.status(404).json({ ok: false, error: "Driver not found" });
+
+    const oldPublicId = current.gcashQRPublicId || null;
+
+    // Upload new asset (unique id so we can safely delete old)
+    const up = await uploadBufferToCloudinary(req.file.buffer, {
+      folder: "toda-go/gcash-qrs",
+      resource_type: "image",
+      transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
+      public_id: `driver_${id}_gcashqr_${Date.now()}`,
+    });
+
+    // Persist new values
+    const driver = await Driver.findByIdAndUpdate(
+      id,
+      { gcashQRUrl: up.secure_url, gcashQRPublicId: up.public_id },
+      { new: true, select: "_id driverName gcashQRUrl gcashQRPublicId" }
+    );
+
+    // Fire-and-forget delete old image
+    if (oldPublicId && oldPublicId !== up.public_id) {
+      safeDestroy(oldPublicId);
+    }
+
+    return res.json({
       ok: true,
-      gcashQRUrl: driver.gcashQRUrl || null,
-      gcashNumber: driver.gcashNumber || null
+      gcashQRUrl: driver.gcashQRUrl,
+      gcashQRPublicId: driver.gcashQRPublicId,
     });
   } catch (err) {
-    console.error("GCASH_INFO", err);
-    res.status(500).json({ ok: false, error: "Lookup failed" });
+    console.error("GCASH_QR_UPLOAD", err);
+    return res.status(500).json({ ok: false, error: "Upload failed" });
   }
 });
+
+// ===================================================================
+// ==================== R E G I S T R A T I O N ======================
+// ===================================================================
 
 router.post(
   "/register-driver",
@@ -143,10 +192,12 @@ router.post(
         experienceYears, isLucenaVoter, votingLocation, capacity,
       } = req.body;
 
+      // basic validation
       if (!req.files?.votersIDImage) {
         return res.status(400).json({ error: "Voter's ID image is required" });
       }
 
+      // uniqueness checks
       if ((role === "Driver" || role === "Both") && driverEmail) {
         const exists = await Driver.findOne({ email: driverEmail });
         if (exists) return res.status(400).json({ error: "Driver already exists" });
@@ -200,28 +251,30 @@ router.post(
         savedImgs.selfieImagePublicId = r.public_id;
       }
 
-
-      // Build Operator doc (as before)
+      // Operator doc
       const newOperator = new Operator({
         profileID, franchiseNumber, todaName, sector,
         operatorFirstName, operatorMiddleName, operatorLastName, operatorSuffix,
         operatorName: `${operatorFirstName} ${operatorMiddleName} ${operatorLastName} ${operatorSuffix || ""}`.trim(),
         operatorBirthdate, operatorPhone,
         capacity: cap,
+
         votersIDImage: savedImgs.votersIDImage,
         driversLicenseImage: savedImgs.driversLicenseImage,
         orcrImage: savedImgs.orcrImage,
         selfieImage: savedImgs.selfieImage,
+
         votersIDImagePublicId: savedImgs.votersIDImagePublicId,
         driversLicenseImagePublicId: savedImgs.driversLicenseImagePublicId,
         orcrImagePublicId: savedImgs.orcrImagePublicId,
         selfieImagePublicId: savedImgs.selfieImagePublicId,
 
-        ...( (role === "Operator" || role === "Both") && operatorEmail ? { email: operatorEmail } : {} ),
-        ...( (role === "Operator" || role === "Both") && operatorPassword ? { password: operatorPassword } : {} ),
+        ...((role === "Operator" || role === "Both") && operatorEmail ? { email: operatorEmail } : {}),
+        ...((role === "Operator" || role === "Both") && operatorPassword ? { password: operatorPassword } : {}),
         isVerified: false,
       });
 
+      // Driver doc (handle "Both")
       const dFirst = role === "Both" ? operatorFirstName : driverFirstName;
       const dMiddle = role === "Both" ? operatorMiddleName : driverMiddleName;
       const dLast  = role === "Both" ? operatorLastName : driverLastName;
@@ -244,19 +297,21 @@ router.post(
         driversLicenseImage: savedImgs.driversLicenseImage,
         orcrImage: savedImgs.orcrImage,
         selfieImage: savedImgs.selfieImage,
+
         votersIDImagePublicId: savedImgs.votersIDImagePublicId,
         driversLicenseImagePublicId: savedImgs.driversLicenseImagePublicId,
         orcrImagePublicId: savedImgs.orcrImagePublicId,
         selfieImagePublicId: savedImgs.selfieImagePublicId,
 
-        ...( (role === "Driver" || role === "Both") && driverEmail ? { email: driverEmail } : {} ),
-        ...( (role === "Driver" || role === "Both") && driverPassword ? { password: driverPassword } : {} ),
+        ...((role === "Driver" || role === "Both") && driverEmail ? { email: driverEmail } : {}),
+        ...((role === "Driver" || role === "Both") && driverPassword ? { password: driverPassword } : {}),
         isVerified: false,
       });
 
       await newOperator.save();
       await newDriver.save();
 
+      // send verification emails
       const baseUrl = getBaseUrl(req);
       async function sendVerify(kind, id, toEmail, displayName) {
         if (!toEmail) return;
@@ -281,13 +336,19 @@ router.post(
         await sendVerify("operator", newOperator._id, operatorEmail, newOperator.operatorName);
       }
 
-      return res.status(201).json({ message: "Registration successful. Please verify your email. Check your Spam Mail" });
+      return res.status(201).json({
+        message: "Registration successful. Please verify your email. Check your Spam Mail",
+      });
     } catch (error) {
       console.error("Driver registration failed:", error);
       res.status(500).json({ error: "Server error", details: error.message });
     }
   }
 );
+
+// ===================================================================
+// ======================= V E R I F I C A T I O N ====================
+// ===================================================================
 
 const buildVerifyUrl = (id) => {
   const token = jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
@@ -352,7 +413,5 @@ router.post("/resend-verification", async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
-
-
 
 module.exports = router;
