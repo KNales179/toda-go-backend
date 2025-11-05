@@ -191,6 +191,7 @@ router.post("/book", async (req, res) => {
       bookingType = "CLASSIC",
       partySize,
     } = req.body;
+    const paymentStatus = String(paymentMethod || "").toLowerCase() === "gcash" ? "awaiting" : "none";
 
 
     if (
@@ -246,6 +247,7 @@ router.post("/book", async (req, res) => {
 
       status: "pending",
       passengerName,
+      paymentStatus,
     });
 
     const plain = booking.toObject();
@@ -353,9 +355,37 @@ router.post("/accept-booking", async (req, res) => {
       return res.status(409).json({ message: msg });
     }
 
+    // 🔵 If this is a GCash ride, snapshot driver's payment info into the booking
+    try {
+      const method = String(result.booking?.paymentMethod || "").toLowerCase();
+      if (method === "gcash") {
+        const d = await Driver.findById(driverId).select("gcashNumber gcashQRUrl gcashQRPublicId");
+        if (d) {
+          await Booking.updateOne(
+            { bookingId },
+            {
+              $set: {
+                paymentStatus: "awaiting",
+                driverPayment: {
+                  number: d.gcashNumber || "",
+                  qrUrl: d.gcashQRUrl || null,
+                  qrPublicId: d.gcashQRPublicId || null,
+                },
+              },
+            }
+          );
+        }
+      }
+    } catch (e) {
+      // Keep silent: payment snapshot failure shouldn't block acceptance
+      console.warn("GCash snapshot failed:", e?.message || e);
+    }
+
+    // Return fresh booking (now includes any driverPayment/paymentStatus)
+    const fresh = await Booking.findOne({ bookingId }).lean();
     return res.status(200).json({
       message: "Booking accepted",
-      booking: result.booking,
+      booking: fresh || result.booking,
     });
   } catch (e) {
     console.error("❌ accept-booking error:", e);
@@ -560,5 +590,38 @@ router.get("/bookings", async (_req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
+
+router.get("/booking/:bookingId/payment-info", async (req, res) => {
+  try {
+    const b = await Booking.findOne({ bookingId: req.params.bookingId })
+      .select("bookingId driverId paymentMethod paymentStatus driverPayment status")
+      .lean();
+    if (!b) return res.status(404).json({ ok: false, error: "Not found" });
+    return res.json({ ok: true, ...b });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: "Server error" });
+  }
+});
+
+router.post("/booking/:bookingId/payment-status", async (req, res) => {
+  try {
+    const { status } = req.body; // "paid" | "failed"
+    if (!["paid", "failed"].includes(String(status))) {
+      return res.status(400).json({ ok: false, error: "Invalid status" });
+    }
+
+    const b = await Booking.findOneAndUpdate(
+      { bookingId: req.params.bookingId },
+      { $set: { paymentStatus: status } },
+      { new: true }
+    ).lean();
+
+    if (!b) return res.status(404).json({ ok: false, error: "Not found" });
+    return res.json({ ok: true, paymentStatus: b.paymentStatus });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: "Server error" });
+  }
+});
+
 
 module.exports = router;

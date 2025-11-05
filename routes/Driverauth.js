@@ -19,8 +19,6 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
 });
 
-const log = (...a) => console.log("[DRIVERAUTH]", ...a);
-
 // ---------- helpers ----------
 function getBaseUrl(req) {
   return (
@@ -64,10 +62,6 @@ async function safeDestroy(publicId) {
 // ================ G C A S H   E N D P O I N T S =====================
 // ===================================================================
 
-/**
- * GET /api/auth/driver/:id/payment-info
- * Returns: { ok, gcashNumber, gcashQRUrl, gcashQRPublicId }
- */
 router.get("/:id/payment-info", async (req, res) => {
   try {
     const d = await Driver.findById(req.params.id).select(
@@ -345,10 +339,6 @@ router.post(
     }
   }
 );
-
-// ===================================================================
-// ======================= V E R I F I C A T I O N ====================
-// ===================================================================
 
 const buildVerifyUrl = (id) => {
   const token = jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });

@@ -9,12 +9,8 @@ const BookingSchema = new mongoose.Schema(
         `TODA-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
       unique: true,
     },
-
-    // Who
     passengerId: { type: String, required: true },
     driverId: { type: String, default: null },
-
-    // Where
     pickupLat: Number,
     pickupLng: Number,
     destinationLat: Number,
@@ -22,21 +18,14 @@ const BookingSchema = new mongoose.Schema(
 
     pickupPlace: { type: String, default: null },
     destinationPlace: { type: String, default: null },
-
-    // Fare & misc (pricing handled later by Admin—kept for compatibility)
     fare: Number,
     paymentMethod: String,
     notes: String,
-
-    // Booking state
     status: {
       type: String,
       enum: ["pending", "accepted", "enroute", "completed", "canceled"],
       default: "pending",
     },
-
-    // ▶️ NEW: Booking type + seat logic
-    // CLASSIC (shareable, 1 seat), GROUP (shareable, 1..5 seats), SOLO (VIP, non-shareable, 1 seat)
     bookingType: {
       type: String,
       enum: ["CLASSIC", "GROUP", "SOLO"],
@@ -45,19 +34,23 @@ const BookingSchema = new mongoose.Schema(
     partySize: { type: Number, default: 1, min: 1, max: 5 },
     isShareable: { type: Boolean, default: true },
     reservedSeats: { type: Number, default: 1 },
-
-    // Solo lock hint (set true when accepted if SOLO)
     driverLock: { type: Boolean, default: false },
-
-    // Reservation timeout (after driver accepts; seats auto-release if not progressed)
     reservationExpiresAt: { type: Date, default: null },
-
-    // Display
     passengerName: { type: String, default: "Passenger" },
-
-    // Optional flags
-    driverConfirmed: { type: Boolean, default: false }, // legacy compatibility
+    driverConfirmed: { type: Boolean, default: false }, 
     cancelledBy: { type: String, default: "" },
+
+    paymentStatus: {
+      type: String,
+      enum: ["none", "awaiting", "paid", "failed"],
+      default: "none",
+    },
+    driverPayment: {
+      number: { type: String, default: "" },      
+      qrUrl: { type: String, default: null },     
+      qrPublicId: { type: String, default: null } 
+    },
+
   },
   { timestamps: true }
 );
@@ -67,5 +60,7 @@ BookingSchema.index({ status: 1 });
 BookingSchema.index({ driverId: 1 });
 BookingSchema.index({ bookingType: 1 });
 BookingSchema.index({ reservationExpiresAt: 1 });
+BookingSchema.index({ paymentStatus: 1 });
+
 
 module.exports = mongoose.model("Booking", BookingSchema);
