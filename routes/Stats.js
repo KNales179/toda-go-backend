@@ -1,29 +1,30 @@
-// routes/Stats.js
+// routes/stats.js
 const express = require("express");
 const router = express.Router();
 
 const Booking = require("../models/Bookings");
 const Driver = require("../models/Drivers");
+const Passenger = require("../models/Passenger"); // used by /counts
 const DriverPresence = require("../models/DriverPresence");
 
 const TZ = "Asia/Manila";
 
-// ----- time window helpers (Manila-correct “today”) -----
+// ---------- helpers ----------
 function windowBounds(window = "7d") {
   const now = new Date();
 
   if (window === "today") {
+    // exact Manila midnight → next Manila midnight
     const parts = new Intl.DateTimeFormat("en-CA", {
       timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit"
     }).formatToParts(now);
-
     const y = parts.find(p => p.type === "year").value;
     const m = parts.find(p => p.type === "month").value;
     const d = parts.find(p => p.type === "day").value;
 
     const start = new Date(`${y}-${m}-${d}T00:00:00+08:00`);
-    const end   = new Date(`${y}-${m}-${d}T00:00:00+08:00`);
-    end.setUTCDate(end.getUTCDate() + 1); // next local midnight
+    const end = new Date(`${y}-${m}-${d}T00:00:00+08:00`);
+    end.setUTCDate(end.getUTCDate() + 1);
     return { start, end };
   }
 
@@ -31,22 +32,59 @@ function windowBounds(window = "7d") {
   let start;
   if (window === "7d") start = new Date(end.getTime() - 7 * 86400 * 1000);
   else if (window === "30d") start = new Date(end.getTime() - 30 * 86400 * 1000);
-  else start = new Date(0); // overall
+  else start = new Date(0);
   return { start, end };
 }
 
+// Build "YYYY-MM-DD" in Manila for eq comparisons (rarely needed if start/end are correct)
+function todayString() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(new Date());
+  const y = parts.find(p => p.type === "year").value;
+  const m = parts.find(p => p.type === "month").value;
+  const d = parts.find(p => p.type === "day").value;
+  return `${y}-${m}-${d}`;
+}
+
+// Reusable expr for pipelines (must be added via $addFields first)
 const completedDateExpr = { $ifNull: ["$completedAt", "$updatedAt"] };
 
-// ---------- A) Profile ----------
+// Match helper against $bucketAt (added by $addFields)
+const bucketWindowMatch = (start, end, isOverall) =>
+  isOverall
+    ? {}
+    : {
+        $expr: {
+          $and: [
+            { $gte: ["$bucketAt", start] },
+            { $lt: ["$bucketAt", end] },
+          ],
+        },
+      };
+
+// ---------- A) Counts (optional) ----------
+router.get("/counts", async (req, res) => {
+  try {
+    const driverCount = await Driver.countDocuments();
+    const passengerCount = await Passenger.countDocuments();
+    res.json({ driverCount, passengerCount });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch counts" });
+  }
+});
+
+// ---------- B) Profile ----------
 router.get("/driver/:driverId/profile", async (req, res) => {
   try {
     const { driverId } = req.params;
+
     const d = await Driver.findById(driverId).select(
       "driverFirstName driverLastName driverName selfieImage rating ratingCount"
     );
     if (!d) return res.status(404).json({ message: "Driver not found" });
 
-    const totalTrips = await Booking.countDocuments({ driverId }); // all statuses, lifetime
+    const totalTrips = await Booking.countDocuments({ driverId, status: "completed" });
 
     const name =
       [d.driverFirstName, d.driverLastName].filter(Boolean).join(" ") ||
@@ -54,9 +92,7 @@ router.get("/driver/:driverId/profile", async (req, res) => {
       "Driver";
 
     let avgRating = Number(d.rating || 0);
-    if (avgRating > 5 && d.ratingCount > 0) {
-      avgRating = avgRating / d.ratingCount;
-    }
+    if (avgRating > 5 && d.ratingCount > 0) avgRating = avgRating / d.ratingCount;
 
     res.json({
       name,
@@ -71,71 +107,62 @@ router.get("/driver/:driverId/profile", async (req, res) => {
   }
 });
 
-// ---------- B) Summary (Trips = all bookings; Complete%/Cancel%) ----------
+// ---------- C) Summary (KPIs + daily series) ----------
 router.get("/driver/:driverId/summary", async (req, res) => {
   try {
     const { driverId } = req.params;
-    const window = (req.query.window || "7d").toLowerCase();
+    const window = String(req.query.window || "7d").toLowerCase();
     const { start, end } = windowBounds(window);
     const isOverall = window === "overall";
 
-    // 1) Status distribution over ALL bookings in-window (by createdAt)
-    const createdFilter = isOverall
-      ? { driverId }
-      : { driverId, createdAt: { $gte: start, $lt: end } };
-
-    const byStatus = await Booking.aggregate([
-      { $match: createdFilter },
+    // ----- Daily series (group by Manila day) -----
+    const daily = await Booking.aggregate([
+      { $addFields: { bucketAt: completedDateExpr } },
+      { $match: { driverId, status: "completed" } },
+      { $match: bucketWindowMatch(start, end, isOverall) },
       {
         $group: {
-          _id: "$status",
-          count: { $sum: 1 },
+          _id: {
+            day: { $dateToString: { format: "%Y-%m-%d", date: "$bucketAt", timezone: TZ } },
+          },
+          trips: { $sum: 1 },
+          income: { $sum: { $ifNull: ["$fare", 0] } },
+          cashIncome: {
+            $sum: { $cond: [{ $eq: ["$paymentMethod", "cash"] }, { $ifNull: ["$fare", 0] }, 0] }
+          },
+          gcashIncome: {
+            $sum: { $cond: [{ $eq: ["$paymentMethod", "gcash"] }, { $ifNull: ["$fare", 0] }, 0] }
+          },
+        },
+      },
+      { $sort: { "_id.day": 1 } },
+      {
+        $project: {
+          _id: 0,
+          date: "$_id.day",
+          trips: 1,
+          income: 1,
+          cashIncome: 1,
+          gcashIncome: 1,
         },
       },
     ]);
 
-    const counts = {
-      pending: 0,
-      accepted: 0,
-      enroute: 0,
-      completed: 0,
-      canceled: 0,
-    };
-    let total = 0;
-    for (const row of byStatus) {
-      const s = String(row._id || "");
-      if (s === "pending") counts.pending = row.count;
-      else if (s === "accepted") counts.accepted = row.count;
-      else if (s === "enroute") counts.enroute = row.count;
-      else if (s === "completed") counts.completed = row.count;
-      else if (s === "canceled") counts.canceled = row.count;
-      total += row.count;
-    }
-
-    const completeRate = total ? counts.completed / total : 0;
-    const cancelRate = total ? counts.canceled / total : 0;
-
-    // 2) Money KPIs computed over COMPLETED bookings in-window (by completedAt)
-    const completedFilter = isOverall
-      ? { driverId, status: "completed" }
-      : { driverId, status: "completed", completedAt: { $gte: start, $lt: end } };
-
-    const moneyAgg = await Booking.aggregate([
-      { $match: completedFilter },
+    // ----- KPI totals (same window) -----
+    const kpiAgg = await Booking.aggregate([
+      { $addFields: { bucketAt: completedDateExpr } },
+      { $match: { driverId, status: "completed" } },
+      { $match: bucketWindowMatch(start, end, isOverall) },
       {
         $group: {
           _id: null,
-          trips: { $sum: 1 }, // completed trips (money-relevant)
+          trips: { $sum: 1 },
           income: { $sum: { $ifNull: ["$fare", 0] } },
           cashIncome: {
-            $sum: {
-              $cond: [{ $eq: ["$paymentMethod", "cash"] }, { $ifNull: ["$fare", 0] }, 0],
-            },
+            $sum: { $cond: [{ $eq: ["$paymentMethod", "cash"] }, { $ifNull: ["$fare", 0] }, 0] }
           },
           gcashIncome: {
-            $sum: {
-              $cond: [{ $eq: ["$paymentMethod", "gcash"] }, { $ifNull: ["$fare", 0] }, 0],
-            },
+            $sum: { $cond: [{ $eq: ["$paymentMethod", "gcash"] }, { $ifNull: ["$fare", 0] }, 0] }
           },
           distanceKm: { $sum: { $ifNull: ["$distanceKm", 0] } },
         },
@@ -153,7 +180,7 @@ router.get("/driver/:driverId/summary", async (req, res) => {
       },
     ]);
 
-    const money = moneyAgg[0] || {
+    const kpis = kpiAgg[0] || {
       trips: 0,
       income: 0,
       avgFare: 0,
@@ -162,101 +189,62 @@ router.get("/driver/:driverId/summary", async (req, res) => {
       distanceKm: 0,
     };
 
-    // 3) Hours online (clip to window) from DriverPresence
-    const presenceFilter = isOverall
-      ? { driverId } // include all presence
-      : { driverId, startAt: { $lt: end }, endAt: { $gt: start } }; // overlap
-
+    // ----- Hours online (clip to [start,end)) -----
     const hoursDoc =
       (
         await DriverPresence.aggregate([
-          { $match: presenceFilter },
+          { $match: { driverId, startAt: { $lt: end }, endAt: { $gt: start } } },
           {
             $project: {
-              clipStart: isOverall ? "$startAt" : { $cond: [{ $gt: ["$startAt", start] }, "$startAt", start] },
-              clipEnd:   isOverall ? "$endAt"   : { $cond: [{ $lt: ["$endAt", end] }, "$endAt", end] },
+              clipStart: { $cond: [{ $gt: ["$startAt", start] }, "$startAt", start] },
+              clipEnd: { $cond: [{ $lt: ["$endAt", end] }, "$endAt", end] },
             },
           },
-          {
-            $project: {
-              minutes: { $divide: [{ $subtract: ["$clipEnd", "$clipStart"] }, 60000] },
-            },
-          },
+          { $project: { minutes: { $divide: [{ $subtract: ["$clipEnd", "$clipStart"] }, 60000] } } },
           { $group: { _id: null, minutes: { $sum: "$minutes" } } },
           { $project: { _id: 0, hoursOnline: { $divide: ["$minutes", 60] } } },
         ])
       )[0] || { hoursOnline: 0 };
 
-    // 4) Daily series (for charts)
-    //    Keep income based on completedAt (money happens when completed)
-    const dailyFilter = isOverall
-      ? { driverId, status: "completed" }
-      : { driverId, status: "completed", completedAt: { $gte: start, $lt: end } };
+    // ----- Acceptance / Cancellation (based on acceptedAt/canceledAt) -----
+    const acceptedMatch = isOverall
+      ? { driverId, acceptedAt: { $ne: null } }
+      : { driverId, acceptedAt: { $gte: start, $lt: end } };
 
-    const daily = await Booking.aggregate([
-      { $addFields: { bucketAt: completedDateExpr } },
-      { $match: dailyFilter },
-      {
-        $group: {
-          _id: {
-            day: {
-              $dateToString: {
-                format: "%Y-%m-%d",
-                date: "$bucketAt",
-                timezone: TZ,
-              },
-            },
-          },
-          trips: { $sum: 1 },
-          income: { $sum: { $ifNull: ["$fare", 0] } },
-          cashIncome: {
-            $sum: {
-              $cond: [{ $eq: ["$paymentMethod", "cash"] }, { $ifNull: ["$fare", 0] }, 0],
-            },
-          },
-          gcashIncome: {
-            $sum: {
-              $cond: [{ $eq: ["$paymentMethod", "gcash"] }, { $ifNull: ["$fare", 0] }, 0],
-            },
-          },
-        },
-      },
-      { $sort: { "_id.day": 1 } },
-      {
-        $project: {
-          _id: 0,
-          date: "$_id.day",
-          trips: 1,
-          income: 1,
-          cashIncome: 1,
-          gcashIncome: 1,
-        },
-      },
+    const canceledMatch = isOverall
+      ? { driverId, status: "canceled", canceledAt: { $ne: null } }
+      : { driverId, status: "canceled", canceledAt: { $gte: start, $lt: end } };
+    
+    console.log(acceptedMatch, canceledMatch);
+
+    const [acceptedCount, canceledCount] = await Promise.all([
+      Booking.countDocuments(acceptedMatch),
+      Booking.countDocuments(canceledMatch),
     ]);
 
-    // 5) Average rating (stable regardless of window)
+    console.log(acceptedCount, canceledCount);
+
+    const decisionBase = acceptedCount + canceledCount;
+    const acceptance = decisionBase ? acceptedCount / decisionBase : 0;
+    const cancellation = decisionBase ? canceledCount / decisionBase : 0;
+
+    // ----- Avg rating (stable) -----
     const d = await Driver.findById(driverId).select("rating ratingCount");
     let avgRating = Number(d?.rating || 0);
     if (avgRating > 5 && d?.ratingCount > 0) avgRating = avgRating / d.ratingCount;
 
     res.json({
       window,
-      // show ALL bookings as "Trips"
       kpis: {
-        trips: total, // 👈 ALL bookings in window
-        completeRate: Number( (completeRate || 0).toFixed(4) ),
-        cancelRate:   Number( (cancelRate   || 0).toFixed(4) ),
-
-        // money KPIs (completed-only)
-        income: Number(money.income.toFixed(2)),
-        avgFare: Number(money.avgFare.toFixed(2)),
-        cashIncome: Number(money.cashIncome.toFixed(2)),
-        gcashIncome: Number(money.gcashIncome.toFixed(2)),
-        distanceKm: Number(money.distanceKm.toFixed(1)),
-
-        // presence & rating
-        hoursOnline: Number((hoursDoc.hoursOnline || 0).toFixed(1)),
+        income: Number(kpis.income.toFixed(2)),
+        trips: kpis.trips,
+        hoursOnline: Number(hoursDoc.hoursOnline.toFixed(1)),
+        acceptance,
+        cancellation,
+        avgFare: Number(kpis.avgFare.toFixed(2)),
         avgRating: Number((avgRating || 0).toFixed(2)),
+        cashIncome: Number(kpis.cashIncome.toFixed(2)),
+        gcashIncome: Number(kpis.gcashIncome.toFixed(2)),
       },
       daily,
     });
@@ -266,7 +254,7 @@ router.get("/driver/:driverId/summary", async (req, res) => {
   }
 });
 
-// ---------- C) Monthly income (unchanged logic; completed-at windowing) ----------
+// ---------- D) Monthly income ----------
 router.get("/driver/:driverId/monthly", async (req, res) => {
   try {
     const { driverId } = req.params;
@@ -290,17 +278,7 @@ router.get("/driver/:driverId/monthly", async (req, res) => {
       },
       {
         $group: {
-          _id: {
-            m: {
-              $toInt: {
-                $dateToString: {
-                  format: "%m",
-                  date: "$bucketAt",
-                  timezone: TZ,
-                },
-              },
-            },
-          },
+          _id: { m: { $toInt: { $dateToString: { format: "%m", date: "$bucketAt", timezone: TZ } } } },
           income: { $sum: { $ifNull: ["$fare", 0] } },
           trips: { $sum: 1 },
         },
@@ -311,7 +289,7 @@ router.get("/driver/:driverId/monthly", async (req, res) => {
 
     const out = [];
     for (let m = 1; m <= 12; m++) {
-      const row = months.find((r) => r.month === m) || { month: m, income: 0, trips: 0 };
+      const row = months.find(r => r.month === m) || { month: m, income: 0, trips: 0 };
       out.push({
         month: m,
         income: Number((row.income || 0).toFixed(2)),
@@ -326,11 +304,11 @@ router.get("/driver/:driverId/monthly", async (req, res) => {
   }
 });
 
-// ---------- D) Report table (kept as before; can switch later if you want) ----------
+// ---------- E) Report table ----------
 router.get("/driver/:driverId/report", async (req, res) => {
   try {
     const { driverId } = req.params;
-    const window = (req.query.window || "day").toLowerCase();
+    const window = String(req.query.window || "day").toLowerCase();
 
     const map = { day: "today", week: "7d", month: "30d", overall: "overall" };
     const mapped = map[window] || "today";
@@ -339,9 +317,8 @@ router.get("/driver/:driverId/report", async (req, res) => {
 
     const kpi = await Booking.aggregate([
       { $addFields: { bucketAt: completedDateExpr } },
-      isOverall
-        ? { $match: { driverId, status: "completed" } }
-        : { $match: { driverId, status: "completed", completedAt: { $gte: start, $lt: end } } },
+      { $match: { driverId, status: "completed" } },
+      { $match: bucketWindowMatch(start, end, isOverall) },
       {
         $group: {
           _id: null,
@@ -358,20 +335,14 @@ router.get("/driver/:driverId/report", async (req, res) => {
     const hoursDoc =
       (
         await DriverPresence.aggregate([
-          isOverall
-            ? { $match: { driverId } }
-            : { $match: { driverId, startAt: { $lt: end }, endAt: { $gt: start } } },
+          { $match: { driverId, startAt: { $lt: end }, endAt: { $gt: start } } },
           {
             $project: {
-              clipStart: isOverall ? "$startAt" : { $cond: [{ $gt: ["$startAt", start] }, "$startAt", start] },
-              clipEnd:   isOverall ? "$endAt"   : { $cond: [{ $lt: ["$endAt", end] }, "$endAt", end] },
+              clipStart: { $cond: [{ $gt: ["$startAt", start] }, "$startAt", start] },
+              clipEnd: { $cond: [{ $lt: ["$endAt", end] }, "$endAt", end] },
             },
           },
-          {
-            $project: {
-              minutes: { $divide: [{ $subtract: ["$clipEnd", "$clipStart"] }, 60000] },
-            },
-          },
+          { $project: { minutes: { $divide: [{ $subtract: ["$clipEnd", "$clipStart"] }, 60000] } } },
           { $group: { _id: null, minutes: { $sum: "$minutes" } } },
           { $project: { _id: 0, hoursOnline: { $divide: ["$minutes", 60] } } },
         ])
@@ -381,12 +352,13 @@ router.get("/driver/:driverId/report", async (req, res) => {
     let avgRating = Number(d?.rating || 0);
     if (avgRating > 5 && d?.ratingCount > 0) avgRating = avgRating / d.ratingCount;
 
+    // (Optional) accept/cancel table rows could be added similarly to summary if you want
     res.json({
       window,
       rows: [
         { key: "dropoffs", label: "Successful drop-offs", value: base.dropoffs, unit: "" },
         { key: "income", label: "Total income", value: Number(base.income.toFixed(2)), unit: "PHP" },
-        { key: "distance", label: "Distance traveled", value: Number(base.distance.toFixed(1)), unit: "km" },
+        { key: "distance", label: "Distance traveled", value: Number((base.distance || 0).toFixed(1)), unit: "km" },
         { key: "avgRating", label: "Average rating", value: Number((avgRating || 0).toFixed(2)), unit: "★" },
         { key: "hoursOnline", label: "Hours online", value: Number(hoursDoc.hoursOnline.toFixed(1)), unit: "h" },
       ],
