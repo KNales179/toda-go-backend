@@ -4,7 +4,7 @@ const router = express.Router();
 
 const Booking = require("../models/Bookings");
 const Driver = require("../models/Drivers");
-const Passenger = require("../models/Passenger"); 
+const Passenger = require("../models/Passengers"); // used by /counts
 const DriverPresence = require("../models/DriverPresence");
 
 const TZ = "Asia/Manila";
@@ -115,13 +115,7 @@ router.get("/driver/:driverId/summary", async (req, res) => {
     const { start, end } = windowBounds(window);
     const isOverall = window === "overall";
 
-    console.log("\n===== [DEBUG] DRIVER SUMMARY =====");
-    console.log("Driver:", driverId);
-    console.log("Window:", window);
-    console.log("Start:", start.toISOString());
-    console.log("End:", end.toISOString());
-
-    // Daily series
+    // ----- Daily series (group by Manila day) -----
     const daily = await Booking.aggregate([
       { $addFields: { bucketAt: completedDateExpr } },
       { $match: { driverId, status: "completed" } },
@@ -133,13 +127,28 @@ router.get("/driver/:driverId/summary", async (req, res) => {
           },
           trips: { $sum: 1 },
           income: { $sum: { $ifNull: ["$fare", 0] } },
+          cashIncome: {
+            $sum: { $cond: [{ $eq: ["$paymentMethod", "cash"] }, { $ifNull: ["$fare", 0] }, 0] }
+          },
+          gcashIncome: {
+            $sum: { $cond: [{ $eq: ["$paymentMethod", "gcash"] }, { $ifNull: ["$fare", 0] }, 0] }
+          },
         },
       },
       { $sort: { "_id.day": 1 } },
+      {
+        $project: {
+          _id: 0,
+          date: "$_id.day",
+          trips: 1,
+          income: 1,
+          cashIncome: 1,
+          gcashIncome: 1,
+        },
+      },
     ]);
 
-    console.log("Daily buckets:", daily);
-
+    // ----- KPI totals (same window) -----
     const kpiAgg = await Booking.aggregate([
       { $addFields: { bucketAt: completedDateExpr } },
       { $match: { driverId, status: "completed" } },
@@ -149,52 +158,97 @@ router.get("/driver/:driverId/summary", async (req, res) => {
           _id: null,
           trips: { $sum: 1 },
           income: { $sum: { $ifNull: ["$fare", 0] } },
+          cashIncome: {
+            $sum: { $cond: [{ $eq: ["$paymentMethod", "cash"] }, { $ifNull: ["$fare", 0] }, 0] }
+          },
+          gcashIncome: {
+            $sum: { $cond: [{ $eq: ["$paymentMethod", "gcash"] }, { $ifNull: ["$fare", 0] }, 0] }
+          },
+          distanceKm: { $sum: { $ifNull: ["$distanceKm", 0] } },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          trips: 1,
+          income: 1,
+          avgFare: { $cond: [{ $gt: ["$trips", 0] }, { $divide: ["$income", "$trips"] }, 0] },
+          cashIncome: 1,
+          gcashIncome: 1,
+          distanceKm: 1,
         },
       },
     ]);
 
-    const kpis = kpiAgg[0] || { trips: 0, income: 0 };
-    console.log("KPI Agg:", kpis);
+    const kpis = kpiAgg[0] || {
+      trips: 0,
+      income: 0,
+      avgFare: 0,
+      cashIncome: 0,
+      gcashIncome: 0,
+      distanceKm: 0,
+    };
 
-    const [acceptedCount, canceledCount] = await Promise.all([
-      Booking.countDocuments({
-        driverId,
-        acceptedAt: isOverall ? { $ne: null } : { $gte: start, $lt: end },
-      }),
-      Booking.countDocuments({
-        driverId,
-        status: "canceled",
-        canceledAt: isOverall ? { $ne: null } : { $gte: start, $lt: end },
-      }),
-    ]);
-    console.log("Accepted:", acceptedCount, "Canceled:", canceledCount);
-
+    // ----- Hours online (clip to [start,end)) -----
     const hoursDoc =
       (
         await DriverPresence.aggregate([
           { $match: { driverId, startAt: { $lt: end }, endAt: { $gt: start } } },
-          { $project: { clipStart: { $cond: [{ $gt: ["$startAt", start] }, "$startAt", start] }, clipEnd: { $cond: [{ $lt: ["$endAt", end] }, "$endAt", end] } } },
+          {
+            $project: {
+              clipStart: { $cond: [{ $gt: ["$startAt", start] }, "$startAt", start] },
+              clipEnd: { $cond: [{ $lt: ["$endAt", end] }, "$endAt", end] },
+            },
+          },
           { $project: { minutes: { $divide: [{ $subtract: ["$clipEnd", "$clipStart"] }, 60000] } } },
           { $group: { _id: null, minutes: { $sum: "$minutes" } } },
           { $project: { _id: 0, hoursOnline: { $divide: ["$minutes", 60] } } },
         ])
       )[0] || { hoursOnline: 0 };
-    console.log("Hours online:", hoursDoc);
+
+    // ----- Acceptance / Cancellation (based on acceptedAt/canceledAt) -----
+    const acceptedMatch = isOverall
+      ? { driverId, acceptedAt: { $ne: null } }
+      : { driverId, acceptedAt: { $gte: start, $lt: end } };
+
+    const canceledMatch = isOverall
+      ? { driverId, status: "canceled", canceledAt: { $ne: null } }
+      : { driverId, status: "canceled", canceledAt: { $gte: start, $lt: end } };
+
+    const [acceptedCount, canceledCount] = await Promise.all([
+      Booking.countDocuments(acceptedMatch),
+      Booking.countDocuments(canceledMatch),
+    ]);
+
+    const decisionBase = acceptedCount + canceledCount;
+    const acceptance = decisionBase ? acceptedCount / decisionBase : 0;
+    const cancellation = decisionBase ? canceledCount / decisionBase : 0;
+
+    // ----- Avg rating (stable) -----
+    const d = await Driver.findById(driverId).select("rating ratingCount");
+    let avgRating = Number(d?.rating || 0);
+    if (avgRating > 5 && d?.ratingCount > 0) avgRating = avgRating / d.ratingCount;
 
     res.json({
       window,
-      kpis,
-      acceptedCount,
-      canceledCount,
-      hoursDoc,
+      kpis: {
+        income: Number(kpis.income.toFixed(2)),
+        trips: kpis.trips,
+        hoursOnline: Number(hoursDoc.hoursOnline.toFixed(1)),
+        acceptance,
+        cancellation,
+        avgFare: Number(kpis.avgFare.toFixed(2)),
+        avgRating: Number((avgRating || 0).toFixed(2)),
+        cashIncome: Number(kpis.cashIncome.toFixed(2)),
+        gcashIncome: Number(kpis.gcashIncome.toFixed(2)),
+      },
       daily,
     });
   } catch (e) {
-    console.error("[DEBUG ERROR]", e);
+    console.error("stats summary error:", e);
     res.status(500).json({ message: "Server error" });
   }
 });
-
 
 // ---------- D) Monthly income ----------
 router.get("/driver/:driverId/monthly", async (req, res) => {
