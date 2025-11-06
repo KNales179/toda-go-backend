@@ -20,12 +20,6 @@ function uploadBufferToCloudinary(buffer, options = {}) {
   });
 }
 
-/**
- * POST /api/driver/:driverId/photo/selfie
- * FormData: selfie (file)
- * Replaces existing selfie (deletes old public_id if present), saves new Cloudinary URL + public_id
- * Returns: { ok: true, driver }
- */
 router.post("/:driverId/photo/selfie", upload.single("selfie"), async (req, res) => {
   try {
     const { driverId } = req.params;

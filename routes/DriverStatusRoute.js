@@ -1,10 +1,10 @@
-// routes/DriverStatusRoute.js
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 
 const Driver = require('../models/Drivers');
 const DriverStatus = require('../models/DriverStatus');
+const DriverPresence = require('../models/DriverPresence');
 
 // --- helpers ---
 const isObjectId = (s) => mongoose.Types.ObjectId.isValid(String(s || ''));
@@ -15,12 +15,26 @@ function sanitizeCap(n) {
   return Math.min(6, Math.max(1, Math.round(x)));
 }
 
-// Accept {lat,lng} or {latitude,longitude}; store as {latitude,longitude}
 function normalizeLocation(loc) {
   if (!loc || typeof loc !== 'object') return { latitude: 0, longitude: 0 };
   const lat = Number(loc.lat ?? loc.latitude ?? 0);
   const lng = Number(loc.lng ?? loc.longitude ?? 0);
   return { latitude: lat, longitude: lng };
+}
+
+// 🔹 presence writer: extend last 10-min window or create a new one
+async function touchPresence(driverId, when = new Date()) {
+  const tenMinAgo = new Date(when.getTime() - 10 * 60 * 1000);
+  const last = await DriverPresence.findOne({
+    driverId: String(driverId),
+    endAt: { $gte: tenMinAgo },
+  }).sort({ endAt: -1 });
+
+  if (last) {
+    await DriverPresence.updateOne({ _id: last._id }, { $set: { endAt: when } });
+  } else {
+    await DriverPresence.create({ driverId: String(driverId), startAt: when, endAt: when });
+  }
 }
 
 // POST /api/driver-status  ➜ toggle Online/Offline
@@ -33,13 +47,11 @@ router.post('/driver-status', async (req, res) => {
     const normLoc = normalizeLocation(location);
 
     if (isOnline === true) {
-      // Pull capacity from Driver model (source of truth)
       const driver = await Driver.findById(driverId).lean();
       if (!driver) return res.status(404).json({ error: 'Driver not found' });
 
       const cap = sanitizeCap(driver.capacity ?? 4);
 
-      // Going online: mirror capacityTotal, reset runtime seats/lock, set location
       const status = await DriverStatus.findOneAndUpdate(
         { driverId: new mongoose.Types.ObjectId(driverId) },
         {
@@ -47,7 +59,6 @@ router.post('/driver-status', async (req, res) => {
             isOnline: true,
             location: normLoc,
             capacityTotal: cap,
-            // Fresh online = clean slate
             capacityUsed: 0,
             lockedSolo: false,
             updatedAt: new Date(),
@@ -57,9 +68,9 @@ router.post('/driver-status', async (req, res) => {
         { upsert: true, new: true }
       ).lean();
 
+      await touchPresence(driverId, new Date());
       return res.status(200).json({ message: 'Driver is online (capacity synced)', status });
     } else {
-      // Going offline: clear runtime seat state, keep last location
       const status = await DriverStatus.findOneAndUpdate(
         { driverId: new mongoose.Types.ObjectId(driverId) },
         {
@@ -67,7 +78,6 @@ router.post('/driver-status', async (req, res) => {
             isOnline: false,
             capacityUsed: 0,
             lockedSolo: false,
-            // keep capacityTotal as-is; it will re-sync on next online
             updatedAt: new Date(),
             ...(location ? { location: normLoc } : {}),
           },
@@ -75,6 +85,7 @@ router.post('/driver-status', async (req, res) => {
         { upsert: true, new: true }
       ).lean();
 
+      await touchPresence(driverId, new Date()); // closes current slice by extending to "now"
       return res.status(200).json({ message: 'Driver is offline', status });
     }
   } catch (err) {
@@ -83,7 +94,7 @@ router.post('/driver-status', async (req, res) => {
   }
 });
 
-// POST /api/driver-heartbeat  ➜ extend life while app is running
+// POST /api/driver-heartbeat  ➜ keep alive + presence extend
 router.post('/driver-heartbeat', async (req, res) => {
   try {
     const { driverId, location } = req.body;
@@ -93,7 +104,6 @@ router.post('/driver-heartbeat', async (req, res) => {
       return res.status(400).json({ error: 'location {lat,lng} or {latitude,longitude} required' });
     }
 
-    // Ensure capacityTotal remains in sync in case Driver.capacity changed
     const driver = await Driver.findById(driverId).lean();
     if (!driver) return res.status(404).json({ error: 'Driver not found' });
     const cap = sanitizeCap(driver.capacity ?? 4);
@@ -107,7 +117,7 @@ router.post('/driver-heartbeat', async (req, res) => {
           isOnline: true,
           location: normLoc,
           updatedAt: new Date(),
-          capacityTotal: cap, // keep mirrored from Driver
+          capacityTotal: cap,
         },
         $setOnInsert: {
           capacityUsed: 0,
@@ -118,6 +128,7 @@ router.post('/driver-heartbeat', async (req, res) => {
       { upsert: true, new: true }
     ).lean();
 
+    await touchPresence(driverId, new Date());
     return res.status(200).json({ ok: true, updatedAt: status.updatedAt, status });
   } catch (err) {
     console.error('❌ Heartbeat error:', err);
@@ -125,7 +136,7 @@ router.post('/driver-heartbeat', async (req, res) => {
   }
 });
 
-// GET /api/driver-status/:driverId  ➜ check if driver is effectively online
+// GET /api/driver-status/:driverId (unchanged)
 router.get('/driver-status/:driverId', async (req, res) => {
   try {
     const { driverId } = req.params;
@@ -144,7 +155,6 @@ router.get('/driver-status/:driverId', async (req, res) => {
       isOnline: effectiveOnline,
       location: status.location,
       updatedAt: status.updatedAt,
-      // expose capacity runtime (useful for UI & debugging)
       capacityTotal: status.capacityTotal ?? 4,
       capacityUsed: status.capacityUsed ?? 0,
       lockedSolo: !!status.lockedSolo,

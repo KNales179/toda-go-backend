@@ -175,8 +175,7 @@ router.patch("/driver/:id", async (req, res) => {
 });
 
 // POST /api/driver/:id/photo ➜ upload selfie (field: selfieImage)
-router.post(
-  "/driver/:id/photo",
+router.post( "/driver/:id/photo",
   upload.single("selfieImage"),
   async (req, res) => {
     try {

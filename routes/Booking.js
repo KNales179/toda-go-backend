@@ -327,71 +327,6 @@ router.get("/waiting-bookings", async (req, res) => {
 });
 
 
-router.post("/accept-booking", async (req, res) => {
-  try {
-    const { bookingId, driverId } = req.body;
-    if (!bookingId || !driverId) {
-      return res.status(400).json({ message: "bookingId and driverId are required" });
-    }
-
-    // Load booking (must be pending)
-    const b = await Booking.findOne({ bookingId, status: "pending" }).lean();
-    if (!b) {
-      return res.status(409).json({ message: "Booking not found or already accepted" });
-    }
-
-    // Ensure DriverStatus exists & online
-    const ds = await getDriverStatusOrInit(driverId);
-    if (!ds || !ds.isOnline) {
-      return res.status(403).json({ message: "Driver is offline" });
-    }
-
-    // Capacity/lock guard and atomic claim+reserve
-    const result = await reserveSeatsAtomic({ driverId, booking: b });
-    if (!result.ok) {
-      const msg =
-        result.reason === "capacity_or_lock"
-          ? "Driver cannot accept (capacity/lock)"
-          : "Booking already accepted by another driver";
-      return res.status(409).json({ message: msg });
-    }
-
-    // 🔵 If this is a GCash ride, snapshot driver's payment info into the booking
-    try {
-      const method = String(result.booking?.paymentMethod || "").toLowerCase();
-      if (method === "gcash") {
-        const d = await Driver.findById(driverId).select("gcashNumber gcashQRUrl gcashQRPublicId");
-        if (d) {
-          await Booking.updateOne(
-            { bookingId },
-            {
-              $set: {
-                paymentStatus: "awaiting",
-                driverPayment: {
-                  number: d.gcashNumber || "",
-                  qrUrl: d.gcashQRUrl || null,
-                  qrPublicId: d.gcashQRPublicId || null,
-                },
-              },
-            }
-          );
-        }
-      }
-    } catch (e) {
-      console.warn("GCash snapshot failed:", e?.message || e);
-    }
-
-    // Return fresh booking (now includes any driverPayment/paymentStatus)
-    const fresh = await Booking.findOne({ bookingId }).lean();
-    return res.status(200).json({
-      message: "Booking accepted",
-      booking: fresh || result.booking,
-    });
-  } catch (e) {
-    console.error("❌ accept-booking error:", e);
-    return res.status(500).json({ message: "Server error" });
-  }
-});
 
 // ---------- GET /driver-requests/:driverId ----------
 router.get("/driver-requests/:driverId", async (req, res) => {
@@ -464,13 +399,94 @@ router.post("/driver-confirmed", async (req, res) => {
   }
 });
 
+// ---------- POST /accept-booking ----------
+router.post("/accept-booking", async (req, res) => {
+  try {
+    const { bookingId, driverId } = req.body;
+    if (!bookingId || !driverId) {
+      return res.status(400).json({ message: "bookingId and driverId are required" });
+    }
+
+    // Load booking (must be pending)
+    const b = await Booking.findOne({ bookingId, status: "pending" }).lean();
+    if (!b) {
+      return res.status(409).json({ message: "Booking not found or already accepted" });
+    }
+
+    // Ensure DriverStatus exists & online
+    const ds = await getDriverStatusOrInit(driverId);
+    if (!ds || !ds.isOnline) {
+      return res.status(403).json({ message: "Driver is offline" });
+    }
+
+    // Capacity/lock guard and atomic claim+reserve
+    const result = await reserveSeatsAtomic({ driverId, booking: b });
+    if (!result.ok) {
+      const msg =
+        result.reason === "capacity_or_lock"
+          ? "Driver cannot accept (capacity/lock)"
+          : "Booking already accepted by another driver";
+      return res.status(409).json({ message: msg });
+    }
+
+    // Persist accepted status + timestamp (idempotent-safe)
+    await Booking.updateOne(
+      { bookingId },
+      {
+        $set: {
+          status: "accepted",
+          driverId,
+          acceptedAt: new Date(),
+          canceledAt: null,
+        },
+      }
+    );
+
+    // 🔵 If this is a GCash ride, snapshot driver's payment info into the booking
+    try {
+      const method = String(result.booking?.paymentMethod || "").toLowerCase();
+      if (method === "gcash") {
+        const d = await Driver.findById(driverId).select("gcashNumber gcashQRUrl gcashQRPublicId");
+        if (d) {
+          await Booking.updateOne(
+            { bookingId },
+            {
+              $set: {
+                paymentStatus: "awaiting",
+                driverPayment: {
+                  number: d.gcashNumber || "",
+                  qrUrl: d.gcashQRUrl || null,
+                  qrPublicId: d.gcashQRPublicId || null,
+                },
+              },
+            }
+          );
+        }
+      }
+    } catch (e) {
+      console.warn("GCash snapshot failed:", e?.message || e);
+    }
+
+    // Return fresh booking
+    const fresh = await Booking.findOne({ bookingId }).lean();
+    return res.status(200).json({
+      message: "Booking accepted",
+      booking: fresh || result.booking,
+    });
+  } catch (e) {
+    console.error("❌ accept-booking error:", e);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+
 // ---------- POST /cancel-booking ----------
 router.post("/cancel-booking", async (req, res) => {
   try {
-    const { bookingId } = req.body;
+    const { bookingId, cancelledBy } = req.body; // "driver" | "passenger" | "system"
     if (!bookingId) {
       return res.status(400).json({ message: "bookingId required" });
-    };
+    }
 
     const b = await Booking.findOne({ bookingId }).lean();
     if (!b) return res.status(404).json({ message: "Booking not found" });
@@ -485,7 +501,8 @@ router.post("/cancel-booking", async (req, res) => {
       {
         $set: {
           status: "canceled",
-          cancelledBy: "passenger",
+          cancelledBy: cancelledBy || "passenger",
+          canceledAt: new Date(),
           driverId: null,
           reservationExpiresAt: null,
           driverLock: false,
@@ -500,6 +517,7 @@ router.post("/cancel-booking", async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
+
 
 // ---------- POST /complete-booking ----------
 router.post("/complete-booking", async (req, res) => {
@@ -519,7 +537,14 @@ router.post("/complete-booking", async (req, res) => {
 
     const updated = await Booking.findOneAndUpdate(
       { bookingId },
-      { $set: { status: "completed", reservationExpiresAt: null, driverLock: false } },
+      {
+        $set: {
+          status: "completed",
+          completedAt: new Date(),
+          reservationExpiresAt: null,
+          driverLock: false,
+        },
+      },
       { new: true }
     );
 
@@ -550,20 +575,18 @@ router.post("/complete-booking", async (req, res) => {
         destinationPlace: updated.destinationPlace || null,
 
         fare: baseFare,
-        totalFare,                            
+        totalFare,
         paymentMethod: updated.paymentMethod,
         notes: updated.notes,
 
-        bookingType: niceType,              
+        bookingType: niceType,
         groupCount: Number.isFinite(seats) ? seats : 1,
 
         completedAt: new Date(),
       });
-      console.log("Saved Content",RideHistory)
     } catch (e) {
       console.error("❌ Error saving ride history:", e);
     }
-
 
     return res.status(200).json({
       message: "Booking marked as completed and history saved!",
@@ -574,6 +597,7 @@ router.post("/complete-booking", async (req, res) => {
     return res.status(500).json({ message: "Server error", details: e.message });
   }
 });
+
 
 // ---------- (Optional) GET /bookings — debug only ----------
 router.get("/bookings", async (_req, res) => {
