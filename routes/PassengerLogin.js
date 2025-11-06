@@ -9,23 +9,29 @@ router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
+    // Find passenger by email
     const passenger = await Passenger.findOne({ email });
-    if (!passenger) return res.status(400).json({ error: "Invalid credentials" });
 
-    const ok = await bcrypt.compare(password, passenger.password || "");
-    if (!ok) return res.status(400).json({ error: "Invalid credentials" });
-
-    if (!passenger.isVerified) {
-      return res.status(403).json({ error: "Email not verified", needVerification: true });
+    if (!passenger) {
+      return res.status(400).json({ error: "Invalid email or password" });
     }
 
-    const payload = { id: passenger.id, email: passenger.email };
-    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "1h" });
+    // Compare password
+    const isMatch = await bcrypt.compare(password, passenger.password);
 
-    return res.status(200).json({ message: "Login successful", token });
+    if (!isMatch) {
+      return res.status(400).json({ error: "Invalid email or password" });
+    }
+
+    // Successful login
+    res.status(200).json({
+      message: "Login successful",
+      userId: passenger._id,
+    });
+
   } catch (error) {
-    console.error("login error:", error);
-    return res.status(500).json({ error: "Server error", details: error.message });
+    console.error("Passenger login failed:", error);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
