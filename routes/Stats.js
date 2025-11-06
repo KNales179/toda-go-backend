@@ -135,10 +135,14 @@ router.get("/driver/:driverId/summary", async (req, res) => {
       statusCounts.completed +
       statusCounts.canceled;
 
+    console.log( statusCounts, totalBookings);
+
     const completeRate = totalBookings
       ? statusCounts.completed / totalBookings
       : 0;
     const cancelRate = totalBookings ? statusCounts.canceled / totalBookings : 0;
+
+    console.log(completeRate, cancelRate);
 
     /* ---- 2) Income/avgFare/daily series from COMPLETED rides (windowed by completedAt/updatedAt) ---- */
     const daily = await Booking.aggregate([
