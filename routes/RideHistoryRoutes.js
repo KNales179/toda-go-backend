@@ -4,10 +4,8 @@ const axios = require("axios");
 const router = express.Router();
 
 const RideHistory = require("../models/RideHistory");
-const Driver = require("../models/Drivers"); // <-- for name lookup
+const Driver = require("../models/Drivers"); 
 
-// Helper: reverse geocode via OpenRouteService
-// returns a human label (string) or null on failure
 async function reverseGeocodeORS(lat, lng) {
   try {
     if (!process.env.ORS_API_KEY) {
@@ -74,20 +72,15 @@ router.get("/ridehistory", async (req, res) => {
     if (passengerId) filter.passengerId = String(passengerId).trim();
     if (driverId) filter.driverId = String(driverId).trim();
 
-    console.log("🎯 Fetching ridehistory with filter:", filter);
-
     const rides = await RideHistory.find(filter)
       .sort({ completedAt: -1, _id: -1 })
       .lean();
 
-    console.log("🧾 Raw rides fetched:", rides.length);
     if (rides.length > 0) {
-      console.log("Example ride sample:", rides[0]);
     }
 
     // Map driver IDs -> names (one query)
     const driverIds = [...new Set(rides.map(r => r.driverId).filter(Boolean))];
-    console.log("🆔 Distinct driverIds:", driverIds);
 
     const toObjectIds = driverIds
       .map(id => (mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : null))
@@ -99,7 +92,6 @@ router.get("/ridehistory", async (req, res) => {
         .select("driverName driverFirstName driverMiddleName driverLastName")
         .lean();
 
-      console.log("👨‍✈️ Drivers found for mapping:", drivers.length);
       drivers.forEach(d => {
         const composed =
           d.driverName ||
@@ -155,8 +147,6 @@ router.get("/ridehistory", async (req, res) => {
         driverName,
       };
     });
-
-    console.log("🧾 Need to resolve coords count:", coordsToResolve.size);
 
     // --------------- Reverse geocode distinct coords (with simple concurrency control) ---------------
     const resolvedMap = new Map(); // key -> label
@@ -235,8 +225,6 @@ router.get("/ridehistory", async (req, res) => {
       };
     });
 
-    console.log("✅ Final ridehistory items (trimmed sample):", items.slice(0, 2));
-
     res.json({ items, total: items.length });
   } catch (error) {
     console.error("❌ Failed to fetch user ride history:", error);
@@ -247,18 +235,14 @@ router.get("/ridehistory", async (req, res) => {
 router.delete("/ridehistory/:id", async (req, res) => {
   const { id } = req.params;
   try {
-    console.log("🗑️  DELETE /ridehistory/:id", { id });
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
-      console.log("⛔ invalid ObjectId:", id);
       return res.status(400).json({ error: "invalid_id" });
     }
 
     const result = await RideHistory.deleteOne({ _id: new mongoose.Types.ObjectId(id) });
-    console.log("📉 deleteOne result:", result); // { acknowledged: true, deletedCount: N }
 
     if (result.deletedCount === 0) {
-      console.log("🔎 not found:", id);
       return res.status(404).json({ error: "not_found" });
     }
 

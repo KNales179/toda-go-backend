@@ -15,7 +15,6 @@ const BookingSchema = new mongoose.Schema(
     pickupLng: Number,
     destinationLat: Number,
     destinationLng: Number,
-
     pickupPlace: { type: String, default: null },
     destinationPlace: { type: String, default: null },
     fare: Number,
@@ -39,7 +38,9 @@ const BookingSchema = new mongoose.Schema(
     passengerName: { type: String, default: "Passenger" },
     driverConfirmed: { type: Boolean, default: false }, 
     cancelledBy: { type: String, default: "" },
-
+    acceptedAt: { type: Date, default: null },
+    canceledAt: { type: Date, default: null },
+    completedAt: { type: Date, default: null },
     paymentStatus: {
       type: String,
       enum: ["none", "awaiting", "paid", "failed"],
