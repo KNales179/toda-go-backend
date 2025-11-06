@@ -4,7 +4,7 @@ const router = express.Router();
 
 const Booking = require("../models/Bookings");
 const Driver = require("../models/Drivers");
-const Passenger = require("../models/Passengers"); // used by /counts
+const Passenger = require("../models/Passenger"); // used by /counts
 const DriverPresence = require("../models/DriverPresence");
 
 const TZ = "Asia/Manila";
