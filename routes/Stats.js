@@ -214,11 +214,15 @@ router.get("/driver/:driverId/summary", async (req, res) => {
     const canceledMatch = isOverall
       ? { driverId, status: "canceled", canceledAt: { $ne: null } }
       : { driverId, status: "canceled", canceledAt: { $gte: start, $lt: end } };
+    
+    console.log(acceptedMatch, canceledMatch);
 
     const [acceptedCount, canceledCount] = await Promise.all([
       Booking.countDocuments(acceptedMatch),
       Booking.countDocuments(canceledMatch),
     ]);
+
+    console.log(acceptedCount, canceledCount);
 
     const decisionBase = acceptedCount + canceledCount;
     const acceptance = decisionBase ? acceptedCount / decisionBase : 0;
