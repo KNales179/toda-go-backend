@@ -23,22 +23,9 @@ router.get('/reports', async (req, res) => {
         { bookingId: qRegex },
       ];
     }
-
-    // Feedback query (no status field)
-    const feedbackQuery = {};
-    if (qRegex) {
-      feedbackQuery.$or = [
-        { feedback: qRegex },
-        { passengerId: qRegex },
-        { driverId: qRegex },
-        { bookingId: qRegex },
-      ];
-    }
-
     // Fetch in parallel
-    const [reports, feedbacks] = await Promise.all([
+    const [reports] = await Promise.all([
       Report.find(reportQuery).sort({ submittedAt: -1 }).lean(),
-      Feedback.find(feedbackQuery).sort({ submittedAt: -1 }).lean(),
     ]);
 
     // Normalize into one list
@@ -53,17 +40,6 @@ router.get('/reports', async (req, res) => {
         details: r.otherReport || '',
         status: (r.status || 'open').toLowerCase(),
         submittedAt: r.submittedAt,
-      })),
-      ...feedbacks.map((f) => ({
-        kind: 'feedback',
-        _id: f._id,
-        bookingId: f.bookingId,
-        passengerId: f.passengerId,
-        driverId: f.driverId,
-        subject: 'Passenger Feedback',
-        details: f.feedback || '',
-        status: '—', // no status on feedback
-        submittedAt: f.submittedAt,
       })),
     ];
 
@@ -83,6 +59,37 @@ router.get('/reports', async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
+
+router.get('/feedback', async (req, res) => {
+  try {
+    const { page = 1, limit = 10, q = '' } = req.query;
+
+    const query = {};
+    if (q.trim()) {
+      const regex = new RegExp(q.trim(), 'i');
+      query.$or = [
+        { feedback: regex },
+        { passengerId: regex },
+        { driverId: regex },
+        { bookingId: regex },
+      ];
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const total = await Feedback.countDocuments(query);
+    const items = await Feedback.find(query)
+      .sort({ submittedAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    res.json({ items, total });
+  } catch (err) {
+    console.error('Error fetching feedback:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+module.exports = router;
 
 // POST /api/reports/:id/resolve  body: { resolutionNote?: string }
 router.post('/reports/:id/resolve', async (req, res) => {
