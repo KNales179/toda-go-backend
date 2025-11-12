@@ -25,8 +25,47 @@ const haversineMeters = (a, b) => {
 };
 const isObjectId = (s) => mongoose.Types.ObjectId.isValid(String(s || ""));
 
+function haversine(lat1, lon1, lat2, lon2) {
+  const toRad = d => d * Math.PI / 180;
+  const R = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2)**2 +
+            Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(a));
+}
+
 // Config
 const RESERVATION_SECONDS = null;
+
+async function pickNearestDriver({ pickupLat, pickupLng, bookingType, partySize }) {
+  // Only drivers that are online
+  const online = await DriverStatus.find({ online: true }).lean();
+
+  let best = null;
+  for (const d of online) {
+    if (!d.location || d.location.latitude == null || d.location.longitude == null) continue;
+
+    // Capacity rules (you can customize)
+    const capTotal = d.capacityTotal ?? 4;
+    const capUsed  = d.capacityUsed  ?? 0;
+    const free = capTotal - capUsed;
+
+    if (bookingType === "SOLO" && d.lockedSolo) continue; // driver locked to a VIP already
+    if (bookingType === "GROUP" && free < Math.max(2, Number(partySize) || 2)) continue;
+    if (bookingType === "CLASSIC" && free < 1) continue;
+
+    const dist = haversine(
+      pickupLat, pickupLng,
+      d.location.latitude, d.location.longitude
+    );
+
+    if (!best || dist < best.dist) best = { dist, driver: d };
+  }
+
+  return best?.driver || null;
+}
+
 
 // --- Capacity utils ---
 async function getDriverStatusOrInit(driverId) {
@@ -178,7 +217,6 @@ async function cleanupExpiredReservations(targetDriverId = null) {
 // ---------- POST /book ----------
 router.post("/book", async (req, res) => {
   try {
-
     const {
       pickupLat,
       pickupLng,
@@ -188,14 +226,19 @@ router.post("/book", async (req, res) => {
       paymentMethod,
       notes,
       passengerId,
-      pickupPlace,         
-      destinationPlace,   
+      pickupPlace,
+      destinationPlace,
       bookingType = "CLASSIC",
       partySize,
+      bookedFor,      // NEW
+      riderName,      // NEW
+      riderPhone,     // NEW
     } = req.body;
-    const paymentStatus = String(paymentMethod || "").toLowerCase() === "gcash" ? "awaiting" : "none";
 
+    const paymentStatus =
+      String(paymentMethod || "").toLowerCase() === "gcash" ? "awaiting" : "none";
 
+    // Basic coordinate + passenger checks
     if (
       ![pickupLat, pickupLng, destinationLat, destinationLng].every((n) =>
         Number.isFinite(Number(n))
@@ -207,7 +250,17 @@ router.post("/book", async (req, res) => {
       return res.status(400).json({ message: "passengerId required" });
     }
 
-    // Validate booking type + partySize
+    const bookedForBool =
+      typeof bookedFor === "string"
+        ? ["true", "1", "yes"].includes(bookedFor.toLowerCase())
+        : Boolean(bookedFor);
+    const riderNameStr = String(riderName || "").trim();
+    const riderPhoneStr = String(riderPhone || "").trim();
+
+    if (bookedForBool && !riderNameStr) {
+      return res.status(400).json({ message: "riderName is required when bookedFor=true" });
+    }
+
     const type = ["CLASSIC", "GROUP", "SOLO"].includes(String(bookingType).toUpperCase())
       ? String(bookingType).toUpperCase()
       : "CLASSIC";
@@ -220,7 +273,6 @@ router.post("/book", async (req, res) => {
     const isShareable = type !== "SOLO";
     const reservedSeats = size;
 
-    // Nice-to-have display name
     let passengerName = "Passenger";
     try {
       const p = await Passenger.findById(passengerId).select("firstName middleName lastName");
@@ -240,6 +292,10 @@ router.post("/book", async (req, res) => {
       notes,
       pickupPlace,
       destinationPlace,
+
+      bookedFor: bookedForBool,  
+      riderName: riderNameStr,    
+      riderPhone: riderPhoneStr,  
 
       bookingType: type,
       partySize: size,
@@ -262,6 +318,7 @@ router.post("/book", async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
+
 
 // ---------- GET /waiting-bookings ----------
 router.get("/waiting-bookings", async (req, res) => {
@@ -288,7 +345,7 @@ router.get("/waiting-bookings", async (req, res) => {
 
     const center = { lat, lng };
 
-    // IMPORTANT: only pending
+    // Only pending bookings
     const pending = await Booking.find({ status: "pending" }).lean();
 
     const filtered = (pending || []).filter((b) => {
@@ -307,7 +364,10 @@ router.get("/waiting-bookings", async (req, res) => {
           pickup: { lat: b.pickupLat, lng: b.pickupLng },
           destination: { lat: b.destinationLat, lng: b.destinationLng },
           fare: b.fare,
-          passengerPreview: { name: b.passengerName || "Passenger" },
+          passengerPreview: {
+            name: b.bookedFor ? (b.riderName || "Rider") : (b.passengerName || "Passenger"),
+            bookedFor: !!b.bookedFor, // NEW indicator
+          },
           distanceKm: distM / 1000,
           createdAt: b.createdAt,
           bookingType: b.bookingType,
@@ -363,11 +423,18 @@ router.get("/driver-requests/:driverId", async (req, res) => {
       notes: b.notes || "",
       passengerName: b.passengerName || "Passenger",
       createdAt: b.createdAt || new Date(),
-      // NEW:
+
       bookingType: b.bookingType,
       partySize: b.partySize,
       isShareable: b.isShareable,
       reservationExpiresAt: b.reservationExpiresAt || null,
+
+      // NEW fields for driver UI
+      bookedFor: !!b.bookedFor,
+      riderName: b.riderName || "",
+      riderPhone: b.riderPhone || "",
+      pickupPlace: b.pickupPlace || null,
+      destinationPlace: b.destinationPlace || null,
     }));
 
     return res.status(200).json(sanitized);
@@ -378,6 +445,7 @@ router.get("/driver-requests/:driverId", async (req, res) => {
       .json({ error: "Internal Server Error", message: err?.message || String(err) });
   }
 });
+
 
 // ---------- POST /driver-confirmed (optional legacy) ----------
 router.post("/driver-confirmed", async (req, res) => {
@@ -549,10 +617,10 @@ router.post("/complete-booking", async (req, res) => {
     );
 
     try {
-      const niceType = (t => {
+      const niceType = ((t) => {
         const up = String(t || "CLASSIC").toUpperCase();
         if (up === "GROUP") return "Group";
-        if (up === "SOLO")  return "Solo";
+        if (up === "SOLO") return "Solo";
         return "Classic";
       })(updated.bookingType);
 
@@ -582,6 +650,11 @@ router.post("/complete-booking", async (req, res) => {
         bookingType: niceType,
         groupCount: Number.isFinite(seats) ? seats : 1,
 
+        // 🔵 NEW: persist “book for someone else” audit
+        bookedFor: !!updated.bookedFor,
+        riderName: updated.riderName || null,
+        riderPhone: updated.riderPhone || null,
+
         completedAt: new Date(),
       });
     } catch (e) {
@@ -590,13 +663,14 @@ router.post("/complete-booking", async (req, res) => {
 
     return res.status(200).json({
       message: "Booking marked as completed and history saved!",
-      booking: { ...updated.toObject?.() ?? updated, id: updated.bookingId },
+      booking: { ...(updated.toObject?.() ?? updated), id: updated.bookingId },
     });
   } catch (e) {
     console.error("❌ complete-booking error:", e);
     return res.status(500).json({ message: "Server error", details: e.message });
   }
 });
+
 
 
 // ---------- (Optional) GET /bookings — debug only ----------

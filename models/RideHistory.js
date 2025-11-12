@@ -1,4 +1,3 @@
-// models/RideHistory.js
 const mongoose = require("mongoose");
 
 const RideHistorySchema = new mongoose.Schema(
@@ -27,8 +26,8 @@ const RideHistorySchema = new mongoose.Schema(
     destinationName: String,
 
     // fares
-    fare: Number,        
-    totalFare: Number,  
+    fare: Number,
+    totalFare: Number,
 
     paymentMethod: String,
     notes: String,
@@ -41,8 +40,13 @@ const RideHistorySchema = new mongoose.Schema(
     },
     groupCount: { type: Number, default: 1 },
 
+    // 👇 NEW audit trail for "Book for Someone Else"
+    bookedFor: { type: Boolean, default: false },
+    riderName: { type: String, default: null },
+    riderPhone: { type: String, default: null },
+
     completedAt: { type: Date, default: Date.now },
-    createdAt:   { type: Date, default: Date.now },
+    createdAt: { type: Date, default: Date.now },
   },
   { timestamps: true }
 );
@@ -51,5 +55,6 @@ const RideHistorySchema = new mongoose.Schema(
 RideHistorySchema.index({ passengerId: 1, completedAt: -1 });
 RideHistorySchema.index({ driverId: 1, completedAt: -1 });
 RideHistorySchema.index({ bookingId: 1 }, { unique: false });
+RideHistorySchema.index({ bookedFor: 1 }); // optional analytics filter
 
 module.exports = mongoose.model("RideHistory", RideHistorySchema);
