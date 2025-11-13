@@ -15,9 +15,6 @@ function fullName(first, middle, last, suffix = "") {
     .trim();
 }
 
-// ------------------------------
-// 🟦 GET ALL PASSENGERS
-// ------------------------------
 router.get("/passengers", async (req, res) => {
   try {
     const rows = await Passenger.find({}).sort({ createdAt: -1 }).lean();
@@ -32,7 +29,8 @@ router.get("/passengers", async (req, res) => {
       address: p.address || p.homeAddress || "",
       emergencyContactName: p.eContactName || "",
       emergencyContactPhone: p.eContactPhone || "",
-      status: p.isVerified ? "Active" : "Inactive",
+      isVerified: !!p.isVerified,
+      status: p.isVerified ? "Verified" : "Not Verified",
       raw: p, // Always send raw for modal view
     }));
 
