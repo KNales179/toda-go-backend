@@ -2,6 +2,7 @@
 const express = require("express");
 const router = express.Router();
 
+const mongoose = require("mongoose");
 const Passenger = require("../models/Passenger");
 const Driver = require("../models/Drivers");
 
@@ -20,8 +21,6 @@ function fullName(first, middle, last, suffix = "") {
 // 🟩 GET ALL PASSENGERS (ADMIN)
 // ------------------------------
 router.get("/admin/passengers", async (req, res) => {
-    console.log("🚦 HIT /api/passengers");
-
     try {
         const rows = await Passenger.find({}).sort({ createdAt: -1 }).lean();
 
@@ -69,7 +68,7 @@ router.get("/admin/passengers", async (req, res) => {
 // ------------------------------
 // 🟩 GET ALL DRIVERS (unchanged)
 // ------------------------------
-router.get("/drivers", async (req, res) => {
+router.get("/admin/drivers", async (req, res) => {
   try {
     const rows = await Driver.find({}).sort({ createdAt: -1 }).lean();
 
@@ -120,5 +119,32 @@ router.get("/drivers", async (req, res) => {
     return res.status(500).json({ error: "server_error" });
   }
 });
+
+// ------------------------------
+// 🗑 DELETE DRIVER (ADMIN)
+// ------------------------------
+router.delete("/admin/drivers/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ error: "missing_id" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "invalid_id" });
+    }
+
+    const deleted = await Driver.findByIdAndDelete(id);
+    if (!deleted) {
+      return res.status(404).json({ error: "not_found" });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("❌ Error deleting driver:", err);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
 
 module.exports = router;
