@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const Passenger = require("../models/Passenger");
-const Driver = require("../models/Driver");
+const Driver = require("../models/Drivers");
 
 // ------------------------------
 // 🔧 HELPERS
