@@ -20,54 +20,51 @@ function fullName(first, middle, last, suffix = "") {
 // 🟩 GET ALL PASSENGERS (ADMIN)
 // ------------------------------
 router.get("/passengers", async (req, res) => {
-  try {
-    const rows = await Passenger.find({})
-      .sort({ createdAt: -1 }) // newest first if timestamps:true in schema
-      .lean();
+    console.log("🚦 HIT /api/passengers");
 
-    console.log(
-      "📥 RAW FROM DB (first 5):",
-      rows.slice(0, 5).map((p) => ({
-        id: p._id,
-        email: p.email,
-        isVerified: p.isVerified,
-      }))
-    );
+    try {
+        const rows = await Passenger.find({}).sort({ createdAt: -1 }).lean();
 
-    const items = rows.map((p) => {
-      const isVerified = !!p.isVerified;
+        console.log(
+        "📥 RAW FROM DB (first 3):",
+        rows.slice(0, 3).map((p) => ({
+            id: p._id,
+            email: p.email,
+            isVerified: p.isVerified,
+        }))
+        );
 
-      return {
-        id: String(p._id),
-        name: fullName(p.firstName, p.middleName, p.lastName, p.suffix),
-        email: p.email || "",
-        contact: p.phone || p.contact || "",
-        gender: p.gender || "",
-        birthday: p.birthday || "",
-        address: p.address || p.homeAddress || "",
-        emergencyContactName: p.eContactName || "",
-        emergencyContactPhone: p.eContactPhone || "",
-        isVerified,
-        raw: p,
-      };
-    });
+        const items = rows.map((p) => {
+        const isVerified = !!p.isVerified;
 
-    console.log(
-      "📦 NORMALIZED PASSENGERS (first 5):",
-      items.slice(0, 5).map((p) => ({
-        id: p.id,
-        email: p.email,
-        isVerified: p.isVerified,
-        status: p.status,
-      }))
-    );
+        return {
+            id: String(p._id),
+            name: fullName(p.firstName, p.middleName, p.lastName, p.suffix),
+            email: p.email || "",
+            contact: p.phone || p.contact || "",
+            isVerified,
+            status: isVerified ? "verified" : "not verified",
+            raw: p,
+        };
+        });
 
-    return res.json({ items, total: items.length });
-  } catch (err) {
-    console.error("❌ FAILED TO LOAD PASSENGERS:", err);
-    return res.status(500).json({ error: "server_error" });
-  }
+        console.log(
+        "📦 NORMALIZED PASSENGERS (first 3):",
+        items.slice(0, 3).map((p) => ({
+            id: p.id,
+            email: p.email,
+            isVerified: p.isVerified,
+            status: p.status,
+        }))
+        );
+
+        return res.json({ items, total: items.length });
+    } catch (err) {
+        console.error("❌ FAILED TO LOAD PASSENGERS:", err);
+        return res.status(500).json({ error: "server_error" });
+    }
 });
+
 
 // ------------------------------
 // 🟩 GET ALL DRIVERS (unchanged)
