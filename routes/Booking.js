@@ -571,7 +571,6 @@ router.post("/cancel-booking", async (req, res) => {
           status: "canceled",
           cancelledBy: cancelledBy || "passenger",
           canceledAt: new Date(),
-          driverId: null,
           reservationExpiresAt: null,
           driverLock: false,
         },
