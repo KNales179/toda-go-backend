@@ -105,6 +105,34 @@ router.get("/ridehistory", async (req, res) => {
       });
     }
 
+    // Map passenger IDs -> names (one query)
+    const passengerIds = [...new Set(rides.map(r => r.passengerId).filter(Boolean))];
+
+    const passengerObjectIds = passengerIds
+      .map(id =>
+        mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : null
+      )
+      .filter(Boolean);
+
+    let passengersById = new Map();
+    if (passengerObjectIds.length) {
+      const passengers = await Passenger.find({ _id: { $in: passengerObjectIds } })
+        .select("firstName middleName lastName")
+        .lean();
+
+      passengers.forEach(p => {
+        const full =
+          [p.firstName, p.middleName, p.lastName]
+            .filter(Boolean)
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim() || "Passenger";
+        passengersById.set(String(p._id), full);
+      });
+    }
+
+
+
     // --------------- Build items but keep coords available for geocoding ---------------
     // We'll collect distinct coords (that lack place names) and reverse geocode them in batch.
     // Use a Map keyed by "lat,lng" to dedupe.
@@ -125,6 +153,7 @@ router.get("/ridehistory", async (req, res) => {
       if (dstKey) coordsToResolve.set(dstKey, { lat: Number(r.destinationLat), lng: Number(r.destinationLng) });
 
       const driverName = driversById.get(String(r.driverId)) || "Driver";
+      const passengerName = passengersById.get(String(r.passengerId)) || "Passenger";
 
       return {
         raw: r, // keep original doc for reference
@@ -145,6 +174,7 @@ router.get("/ridehistory", async (req, res) => {
         notes: r.notes || "",
         createdAt: r.completedAt || r.createdAt || new Date(),
         driverName,
+        passengerName,
       };
     });
 
@@ -220,6 +250,7 @@ router.get("/ridehistory", async (req, res) => {
         notes: entry.notes,
         createdAt: entry.createdAt,
         driverName: entry.driverName,
+        passengerName: entry.passengerName, 
         // optionally return coords if frontend needs them (commented out):
         // pickupLat: entry.pickupLat, pickupLng: entry.pickupLng,
         // destinationLat: entry.destinationLat, destinationLng: entry.destinationLng,
