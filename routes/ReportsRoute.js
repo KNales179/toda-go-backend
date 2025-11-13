@@ -2,6 +2,20 @@ const express = require('express');
 const router = express.Router();
 const Report = require('../models/Report');
 const Feedback = require('../models/Feedback');
+const Passenger = require('../models/Passenger');
+const Driver = require('../models/Drivers'); // adjust path/name if needed
+
+// helper: build "nice" name
+function buildName(doc) {
+  if (!doc) return "Unknown";
+  return (
+    doc.fullName ||
+    doc.name ||
+    [doc.firstName, doc.middleName, doc.lastName].filter(Boolean).join(" ") ||
+    doc.driverName ||
+    "Unknown"
+  );
+}
 
 // --------------------
 // GET /api/reports?page=&limit=&q=&status=
@@ -28,12 +42,34 @@ router.get('/reports', async (req, res) => {
       .sort({ submittedAt: -1 })
       .lean();
 
+    // collect unique IDs
+    const passengerIds = [...new Set(reports.map(r => r.passengerId).filter(Boolean))];
+    const driverIds = [...new Set(reports.map(r => r.driverId).filter(Boolean))];
+
+    // fetch passengers + drivers
+    const [passengers, drivers] = await Promise.all([
+      Passenger.find({ _id: { $in: passengerIds } }).lean(),
+      Driver.find({ _id: { $in: driverIds } }).lean(),
+    ]);
+
+    const passengerMap = {};
+    passengers.forEach(p => {
+      passengerMap[String(p._id)] = buildName(p);
+    });
+
+    const driverMap = {};
+    drivers.forEach(d => {
+      driverMap[String(d._id)] = buildName(d);
+    });
+
     const combined = reports.map((r) => ({
       kind: 'report',
       _id: r._id,
       bookingId: r.bookingId,
       passengerId: r.passengerId,
+      passengerName: passengerMap[String(r.passengerId)] || r.passengerId || "Unknown passenger",
       driverId: r.driverId,
+      driverName: r.driverId ? (driverMap[String(r.driverId)] || r.driverId) : null,
       subject: r.reportType || 'Report',
       details: r.otherReport || '',
       status: (r.status || 'open').toLowerCase(),
@@ -74,11 +110,42 @@ router.get('/feedback', async (req, res) => {
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const total = await Feedback.countDocuments(query);
-    const items = await Feedback.find(query)
+    const feedbackDocs = await Feedback.find(query)
       .sort({ submittedAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
       .lean();
+
+    const passengerIds = [...new Set(feedbackDocs.map(f => f.passengerId).filter(Boolean))];
+    const driverIds = [...new Set(feedbackDocs.map(f => f.driverId).filter(Boolean))];
+
+    const [passengers, drivers] = await Promise.all([
+      Passenger.find({ _id: { $in: passengerIds } }).lean(),
+      Driver.find({ _id: { $in: driverIds } }).lean(),
+    ]);
+
+    const passengerMap = {};
+    passengers.forEach(p => {
+      passengerMap[String(p._id)] = buildName(p);
+    });
+
+    const driverMap = {};
+    drivers.forEach(d => {
+      driverMap[String(d._id)] = buildName(d);
+    });
+
+    const items = feedbackDocs.map((f) => ({
+      kind: 'feedback',
+      _id: f._id,
+      bookingId: f.bookingId,
+      passengerId: f.passengerId,
+      passengerName: passengerMap[String(f.passengerId)] || f.passengerId || "Unknown passenger",
+      driverId: f.driverId,
+      driverName: f.driverId ? (driverMap[String(f.driverId)] || f.driverId) : null,
+      subject: 'Passenger Feedback',
+      details: f.feedback || '',
+      submittedAt: f.submittedAt,
+    }));
 
     res.json({ items, total });
   } catch (err) {
