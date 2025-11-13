@@ -19,7 +19,7 @@ function fullName(first, middle, last, suffix = "") {
 // ------------------------------
 // 🟩 GET ALL PASSENGERS (ADMIN)
 // ------------------------------
-router.get("/passengers", async (req, res) => {
+router.get("/admin/passengers", async (req, res) => {
     console.log("🚦 HIT /api/passengers");
 
     try {
