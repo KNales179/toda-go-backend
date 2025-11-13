@@ -1,3 +1,4 @@
+// routes/AdminUsers.js (or wherever this lives)
 const express = require("express");
 const router = express.Router();
 
@@ -20,9 +21,8 @@ function fullName(first, middle, last, suffix = "") {
 // ------------------------------
 router.get("/passengers", async (req, res) => {
   try {
-    // 1) Read from DB (latest first)
     const rows = await Passenger.find({})
-      .sort({ createdAt: -1 }) // works if schema has { timestamps: true }
+      .sort({ createdAt: -1 }) // newest first if timestamps:true in schema
       .lean();
 
     console.log(
@@ -34,9 +34,8 @@ router.get("/passengers", async (req, res) => {
       }))
     );
 
-    // 2) Normalize for frontend
     const items = rows.map((p) => {
-      const isVerified = !!p.isVerified; // force boolean
+      const isVerified = !!p.isVerified;
 
       return {
         id: String(p._id),
@@ -49,8 +48,7 @@ router.get("/passengers", async (req, res) => {
         emergencyContactName: p.eContactName || "",
         emergencyContactPhone: p.eContactPhone || "",
         isVerified,
-        status: isVerified ? "Verified" : "Not Verified",
-        raw: p, // for modal view
+        raw: p,
       };
     });
 
@@ -64,16 +62,15 @@ router.get("/passengers", async (req, res) => {
       }))
     );
 
-    // 3) Single response shape
     return res.json({ items, total: items.length });
-  } catch (error) {
-    console.error("❌ FAILED TO LOAD PASSENGERS:", error);
+  } catch (err) {
+    console.error("❌ FAILED TO LOAD PASSENGERS:", err);
     return res.status(500).json({ error: "server_error" });
   }
 });
 
 // ------------------------------
-// 🟩 GET ALL DRIVERS
+// 🟩 GET ALL DRIVERS (unchanged)
 // ------------------------------
 router.get("/drivers", async (req, res) => {
   try {
@@ -89,41 +86,34 @@ router.get("/drivers", async (req, res) => {
           d.driverLastName,
           d.driverSuffix
         ),
-
       email: d.email || "",
       contact: d.driverPhone || "",
       gender: d.gender || "",
       birthday: d.driverBirthdate || "",
       address: d.homeAddress || "",
-
       profileID: d.profileID,
       franchiseNumber: d.franchiseNumber,
       todaName: d.todaName,
       sector: d.sector,
-
       experience: d.experienceYears,
       capacity: d.capacity,
       rating: d.rating,
       ratingCount: d.ratingCount,
-
       payment: {
         gcashNumber: d.gcashNumber,
         gcashQRUrl: d.gcashQRUrl,
       },
-
       verification: {
         isVerified: d.isVerified,
         isLucenaVoter: d.isLucenaVoter,
         votingLocation: d.votingLocation,
       },
-
       documents: {
         votersIDImage: d.votersIDImage,
         driversLicenseImage: d.driversLicenseImage,
         orcrImage: d.orcrImage,
         selfieImage: d.selfieImage,
       },
-
       raw: d,
     }));
 
