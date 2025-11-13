@@ -15,42 +15,61 @@ function fullName(first, middle, last, suffix = "") {
     .trim();
 }
 
+// ------------------------------
+// 🟩 GET ALL PASSENGERS (ADMIN)
+// ------------------------------
 router.get("/passengers", async (req, res) => {
-    try {
-        const passengers = await Passenger.find();
-        console.log("📤 SENDING PASSENGERS:", passengers.map(p => ({
+  try {
+    // 1) Read from DB (latest first)
+    const rows = await Passenger.find({})
+      .sort({ createdAt: -1 }) // works if schema has { timestamps: true }
+      .lean();
+
+    console.log(
+      "📥 RAW FROM DB (first 5):",
+      rows.slice(0, 5).map((p) => ({
         id: p._id,
         email: p.email,
-        isVerified: p.isVerified
-        })));
-        res.json(passengers);
-    } catch (error) {
-        console.error("❌ FAILED TO LOAD PASSENGERS:", error);
-        res.status(500).json({ error: "Server Error" });
-    }
-    try {
-        const rows = await Passenger.find({}).sort({ createdAt: -1 }).lean();
+        isVerified: p.isVerified,
+      }))
+    );
 
-        const items = rows.map((p) => ({
+    // 2) Normalize for frontend
+    const items = rows.map((p) => {
+      const isVerified = !!p.isVerified; // force boolean
+
+      return {
         id: String(p._id),
         name: fullName(p.firstName, p.middleName, p.lastName, p.suffix),
-        email: p.email,
+        email: p.email || "",
         contact: p.phone || p.contact || "",
         gender: p.gender || "",
         birthday: p.birthday || "",
         address: p.address || p.homeAddress || "",
         emergencyContactName: p.eContactName || "",
         emergencyContactPhone: p.eContactPhone || "",
-        isVerified: !!p.isVerified,
-        status: p.isVerified ? "Verified" : "Not Verified",
-        raw: p, // Always send raw for modal view
-        }));
+        isVerified,
+        status: isVerified ? "Verified" : "Not Verified",
+        raw: p, // for modal view
+      };
+    });
 
-        res.json({ items, total: items.length });
-    } catch (err) {
-        console.error("Error loading passengers:", err);
-        res.status(500).json({ error: "server_error" });
-    }
+    console.log(
+      "📦 NORMALIZED PASSENGERS (first 5):",
+      items.slice(0, 5).map((p) => ({
+        id: p.id,
+        email: p.email,
+        isVerified: p.isVerified,
+        status: p.status,
+      }))
+    );
+
+    // 3) Single response shape
+    return res.json({ items, total: items.length });
+  } catch (error) {
+    console.error("❌ FAILED TO LOAD PASSENGERS:", error);
+    return res.status(500).json({ error: "server_error" });
+  }
 });
 
 // ------------------------------
@@ -62,13 +81,14 @@ router.get("/drivers", async (req, res) => {
 
     const items = rows.map((d) => ({
       id: String(d._id),
-      name: d.driverName ||
-            fullName(
-              d.driverFirstName,
-              d.driverMiddleName,
-              d.driverLastName,
-              d.driverSuffix
-            ),
+      name:
+        d.driverName ||
+        fullName(
+          d.driverFirstName,
+          d.driverMiddleName,
+          d.driverLastName,
+          d.driverSuffix
+        ),
 
       email: d.email || "",
       contact: d.driverPhone || "",
@@ -104,13 +124,13 @@ router.get("/drivers", async (req, res) => {
         selfieImage: d.selfieImage,
       },
 
-      raw: d, // for modal view
+      raw: d,
     }));
 
-    res.json({ items, total: items.length });
+    return res.json({ items, total: items.length });
   } catch (err) {
     console.error("Error loading drivers:", err);
-    res.status(500).json({ error: "server_error" });
+    return res.status(500).json({ error: "server_error" });
   }
 });
 
