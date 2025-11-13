@@ -209,6 +209,7 @@ router.get("/ridehistory", async (req, res) => {
         _id: entry._id,
         bookingId: entry.bookingId,
         passengerId: entry.passengerId,
+        driverId: r.driverId ? String(r.driverId) : null,
         pickupLabel,
         destinationLabel,
         fare: entry.fare ?? 0,
