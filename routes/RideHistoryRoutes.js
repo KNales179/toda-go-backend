@@ -5,6 +5,7 @@ const router = express.Router();
 
 const RideHistory = require("../models/RideHistory");
 const Driver = require("../models/Drivers"); 
+const Passenger = require("../models/Passenger"); 
 
 async function reverseGeocodeORS(lat, lng) {
   try {
