@@ -47,8 +47,6 @@ async function reverseGeocodeORS(lat, lng) {
 
     return null;
   } catch (e) {
-    // non-fatal; log and return null
-    console.warn("❌ reverseGeocodeORS failed:", (e.response && e.response.data) || e.message || e);
     return null;
   }
 }
