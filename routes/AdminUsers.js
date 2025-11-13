@@ -16,29 +16,41 @@ function fullName(first, middle, last, suffix = "") {
 }
 
 router.get("/passengers", async (req, res) => {
-  try {
-    const rows = await Passenger.find({}).sort({ createdAt: -1 }).lean();
+    try {
+        const passengers = await Passenger.find();
+        console.log("📤 SENDING PASSENGERS:", passengers.map(p => ({
+        id: p._id,
+        email: p.email,
+        isVerified: p.isVerified
+        })));
+        res.json(passengers);
+    } catch (error) {
+        console.error("❌ FAILED TO LOAD PASSENGERS:", error);
+        res.status(500).json({ error: "Server Error" });
+    }
+    try {
+        const rows = await Passenger.find({}).sort({ createdAt: -1 }).lean();
 
-    const items = rows.map((p) => ({
-      id: String(p._id),
-      name: fullName(p.firstName, p.middleName, p.lastName, p.suffix),
-      email: p.email,
-      contact: p.phone || p.contact || "",
-      gender: p.gender || "",
-      birthday: p.birthday || "",
-      address: p.address || p.homeAddress || "",
-      emergencyContactName: p.eContactName || "",
-      emergencyContactPhone: p.eContactPhone || "",
-      isVerified: !!p.isVerified,
-      status: p.isVerified ? "Verified" : "Not Verified",
-      raw: p, // Always send raw for modal view
-    }));
+        const items = rows.map((p) => ({
+        id: String(p._id),
+        name: fullName(p.firstName, p.middleName, p.lastName, p.suffix),
+        email: p.email,
+        contact: p.phone || p.contact || "",
+        gender: p.gender || "",
+        birthday: p.birthday || "",
+        address: p.address || p.homeAddress || "",
+        emergencyContactName: p.eContactName || "",
+        emergencyContactPhone: p.eContactPhone || "",
+        isVerified: !!p.isVerified,
+        status: p.isVerified ? "Verified" : "Not Verified",
+        raw: p, // Always send raw for modal view
+        }));
 
-    res.json({ items, total: items.length });
-  } catch (err) {
-    console.error("Error loading passengers:", err);
-    res.status(500).json({ error: "server_error" });
-  }
+        res.json({ items, total: items.length });
+    } catch (err) {
+        console.error("Error loading passengers:", err);
+        res.status(500).json({ error: "server_error" });
+    }
 });
 
 // ------------------------------
