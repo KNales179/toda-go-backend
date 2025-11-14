@@ -109,92 +109,79 @@ router.get("/admin/stats/monthly", async (req, res) => {
   }
 });
 
-// ---------- WEEKLY STATS (current month, per week) ----------
+
 router.get("/admin/stats/weekly", async (req, res) => {
   try {
     const now = new Date();
     const year = now.getFullYear();
-    const monthIndex = now.getMonth(); // 0-based
+    const month = now.getMonth(); // 0-11
 
-    const startOfMonth = new Date(year, monthIndex, 1);
-    const endOfMonth = new Date(year, monthIndex + 1, 0, 23, 59, 59, 999);
+    const monthStart = new Date(year, month, 1);
+    const monthEnd = new Date(year, month + 1, 1);
 
-    const weeklyPipeline = [
+    // Helper – get week index (0–3)
+    function getWeekIndex(date) {
+      const start = new Date(year, month, 1);
+      const diff = (date - start) / (1000 * 60 * 60 * 24);
+      return Math.floor(diff / 7); // 7-day buckets
+    }
+
+    // Prepare blank weeks
+    const weeks = [
+      { week: "Week 1", trips: 0, users: 0, drivers: 0 },
+      { week: "Week 2", trips: 0, users: 0, drivers: 0 },
+      { week: "Week 3", trips: 0, users: 0, drivers: 0 },
+      { week: "Week 4", trips: 0, users: 0, drivers: 0 },
+    ];
+
+    // Aggregation pipeline:
+    const pipeline = [
       {
         $addFields: {
-          createdAtFromId: { $toDate: "$_id" },
-        },
+          createdAtFromId: { $toDate: "$_id" }
+        }
       },
       {
         $match: {
-          createdAtFromId: {
-            $gte: startOfMonth,
-            $lte: endOfMonth,
-          },
-        },
+          createdAtFromId: { $gte: monthStart, $lt: monthEnd }
+        }
       },
       {
-        // Week-of-month: 1–5 (1 = days 1–7, 2 = 8–14, etc.)
-        $group: {
-          _id: {
-            week: {
-              $ceil: {
-                $divide: [{ $dayOfMonth: "$createdAtFromId" }, 7],
-              },
-            },
-          },
-          count: { $sum: 1 },
-        },
-      },
-      {
-        $sort: { "_id.week": 1 },
-      },
+        $project: {
+          createdAtFromId: 1
+        }
+      }
     ];
 
-    const tripsAgg = await RideHistory.aggregate(weeklyPipeline);
-    const usersAgg = await Passenger.aggregate(weeklyPipeline);
-    const driversAgg = await Driver.aggregate(weeklyPipeline);
+    // Run aggs
+    const trips = await RideHistory.aggregate(pipeline);
+    const users = await Passenger.aggregate(pipeline);
+    const drivers = await Driver.aggregate(pipeline);
 
-    const map = new Map();
+    // Fill trips
+    trips.forEach(r => {
+      const w = getWeekIndex(r.createdAtFromId);
+      if (w >= 0 && w < 4) weeks[w].trips++;
+    });
 
-    const mergeAgg = (agg, fieldName) => {
-      agg.forEach((row) => {
-        const w = row._id.week;
-        const key = `W${w}`;
+    // Fill users
+    users.forEach(r => {
+      const w = getWeekIndex(r.createdAtFromId);
+      if (w >= 0 && w < 4) weeks[w].users++;
+    });
 
-        let base = map.get(key);
-        if (!base) {
-          base = {
-            week: w,
-            trips: 0,
-            users: 0,
-            drivers: 0,
-          };
-        }
-        base[fieldName] = row.count;
-        map.set(key, base);
-      });
-    };
+    // Fill drivers
+    drivers.forEach(r => {
+      const w = getWeekIndex(r.createdAtFromId);
+      if (w >= 0 && w < 4) weeks[w].drivers++;
+    });
 
-    mergeAgg(tripsAgg, "trips");
-    mergeAgg(usersAgg, "users");
-    mergeAgg(driversAgg, "drivers");
-
-    const result = Array.from(map.values())
-      .sort((a, b) => a.week - b.week)
-      .map((row) => ({
-        // we still use "month" as the label key so the same chart works
-        month: `Week ${row.week}`,
-        trips: row.trips || 0,
-        users: row.users || 0,
-        drivers: row.drivers || 0,
-      }));
-
-    res.json(result);
+    res.json(weeks);
   } catch (err) {
     console.error("Weekly stats error:", err);
     res.status(500).json({ error: "Failed to load weekly stats" });
   }
 });
+
 
 module.exports = router;
