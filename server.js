@@ -72,6 +72,7 @@ const warmup = require("./routes/warmup");
 const cloudinary = require("./routes/cloudinaryPing");
 const media = require("./routes/driverMedia");
 const AdminUsers = require("./routes/AdminUsers");
+const adminDashboard = require("./routes/AdminDashboard");
 
 // Mount routes AFTER io is attached
 app.use("/api/auth/passenger", passengerRoutes);
@@ -96,6 +97,7 @@ app.use(warmup);
 app.use("/api", cloudinary);
 app.use("/api/driver", media);
 app.use("/api", AdminUsers);
+app.use("/api", adminDashboard);
 
 
 
