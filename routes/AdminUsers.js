@@ -83,6 +83,8 @@ router.get("/admin/drivers", async (req, res) => {
           d.driverSuffix
         ),
       email: d.email || "",
+      driverVerified: !!d.driverVerified,       
+      isVerified: !!d.isVerified,
       contact: d.driverPhone || "",
       gender: d.gender || "",
       birthday: d.driverBirthdate || "",
@@ -143,6 +145,37 @@ router.delete("/admin/drivers/:id", async (req, res) => {
   } catch (err) {
     console.error("❌ Error deleting driver:", err);
     return res.status(500).json({ error: "server_error" });
+  }
+});
+
+// ------------------------------
+// ✅ PATCH /api/drivers/:id/verify
+// ------------------------------
+router.patch("/admin/drivers/:id/verify", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { driverVerified = true } = req.body;
+
+    const updated = await Driver.findByIdAndUpdate(
+      id,
+      { $set: { driverVerified: !!driverVerified } },
+      { new: true }
+    ).lean();
+
+    if (!updated) {
+      return res.status(404).json({ ok: false, error: "driver_not_found" });
+    }
+
+    return res.json({
+      ok: true,
+      driver: {
+        id: String(updated._id),
+        driverVerified: !!updated.driverVerified,
+      },
+    });
+  } catch (err) {
+    console.error("❌ verify driver error:", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
   }
 });
 
