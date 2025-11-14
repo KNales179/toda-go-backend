@@ -73,6 +73,7 @@ const cloudinary = require("./routes/cloudinaryPing");
 const media = require("./routes/driverMedia");
 const AdminUsers = require("./routes/AdminUsers");
 const adminDashboard = require("./routes/AdminDashboard");
+const adminStatsRoutes = require("./routes/adminstats");
 
 // Mount routes AFTER io is attached
 app.use("/api/auth/passenger", passengerRoutes);
@@ -98,7 +99,7 @@ app.use("/api", cloudinary);
 app.use("/api/driver", media);
 app.use("/api", AdminUsers);
 app.use("/api", adminDashboard);
-
+app.use("/api", adminStatsRoutes); 
 
 
 // Static uploads
