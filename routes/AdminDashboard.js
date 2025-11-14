@@ -4,6 +4,7 @@ const router = express.Router();
 const Driver = require("../models/Drivers");
 const DriverStatus = require("../models/DriverStatus");
 const Report = require("../models/Report");
+const Passenger = require("../models/Passenger");
 
 // 👉 DRIVERS for dashboard (merge Driver + DriverStatus, online on top)
 router.get("/admin/dashboard/drivers", async (req, res) => {
@@ -50,14 +51,32 @@ router.get("/admin/dashboard/drivers", async (req, res) => {
   }
 });
 
-// 👉 REPORTS for dashboard (latest 5)
+
 router.get("/admin/dashboard/reports", async (req, res) => {
   try {
     const reports = await Report.find({})
       .sort({ submittedAt: -1 })
-      .limit(5);
+      .limit(10);
 
-    res.json(reports);
+    const enriched = [];
+
+    for (const r of reports) {
+      let reporterName = "Unknown";
+
+      if (r.passengerId) {
+        const p = await Passenger.findById(r.passengerId).lean();
+        if (p) {
+          reporterName = `${p.firstName} ${p.lastName}`;
+        }
+      }
+
+      enriched.push({
+        ...r.toObject(),
+        reporterName,
+      });
+    }
+
+    res.json(enriched);
   } catch (err) {
     console.error("Dashboard reports error:", err);
     res.status(500).json({ error: "Failed to load reports" });
