@@ -3,7 +3,7 @@ const express = require("express");
 const router = express.Router();
 const Driver = require("../models/Drivers");
 const DriverStatus = require("../models/DriverStatus");
-const Report = require("../models/Reports");
+const Report = require("../models/Report");
 
 // GET /api/admin/dashboard/drivers
 router.get("/admin/dashboard/drivers", async (req, res) => {
