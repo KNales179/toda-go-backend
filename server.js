@@ -74,6 +74,7 @@ const media = require("./routes/driverMedia");
 const AdminUsers = require("./routes/AdminUsers");
 const adminDashboard = require("./routes/AdminDashboard");
 const adminStatsRoutes = require("./routes/adminstats");
+const fareConfigRoutes = require("./routes/FareConfig");
 
 // Mount routes AFTER io is attached
 app.use("/api/auth/passenger", passengerRoutes);
@@ -100,6 +101,7 @@ app.use("/api/driver", media);
 app.use("/api", AdminUsers);
 app.use("/api", adminDashboard);
 app.use("/api", adminStatsRoutes); 
+app.use("/api", fareConfigRoutes);
 
 
 // Static uploads
