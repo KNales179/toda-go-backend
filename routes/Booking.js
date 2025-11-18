@@ -117,6 +117,43 @@ function angleDiffDeg(a, b) {
 }
 
 
+function isDestinationCompatible(mainDest, candDest, mainHeadingDeg) {
+  const A = {
+    lat: Number(mainDest.lat),
+    lng: Number(mainDest.lng),
+  };
+  const B = {
+    lat: Number(candDest.lat),
+    lng: Number(candDest.lng),
+  };
+
+  if (
+    !Number.isFinite(A.lat) || !Number.isFinite(A.lng) ||
+    !Number.isFinite(B.lat) || !Number.isFinite(B.lng)
+  ) {
+    // if anything is missing, don't reject based on this
+    return true;
+  }
+
+  // 1) How far is B from A?
+  const distABm = haversine(A.lat, A.lng, B.lat, B.lng); // you already have haversine()
+  const distABkm = distABm / 1000;
+
+  // 2) Direction from driver’s main route to B
+  const headingAB = bearingDeg(A.lat, A.lng, B.lat, B.lng);
+  const diffAB = angleDiffDeg(mainHeadingDeg, headingAB);
+
+  // Rules:
+  // - if B is very close to A (say ≤ 0.3 km), small turn-back is OK
+  if (distABkm <= 0.3) return true;
+
+  // - otherwise, its direction from A should still be roughly forward
+  //   (not going back the opposite way)
+  return diffAB <= 90; // <= 90° = still generally “ahead or side”, >90 = going back
+}
+
+
+
 const isObjectId = (s) => mongoose.Types.ObjectId.isValid(String(s || ""));
 
 function haversine(lat1, lon1, lat2, lon2) {
@@ -413,136 +450,190 @@ router.post("/book", async (req, res) => {
   }
 });
 
+// ===============================
+//   /api/waiting-bookings (AI v1)
+// ===============================
 
-// ---------- GET /waiting-bookings (now with simple AI option) ----------
 router.get("/waiting-bookings", async (req, res) => {
   try {
-    const lat = Number(req.query.lat);
-    const lng = Number(req.query.lng);
-    const radiusKm = Math.max(0, Number(req.query.radiusKm ?? 5));
-    const limit = Math.min(50, Math.max(1, Number(req.query.limit ?? 20)));
-    const driverId = req.query.driverId;
-    const aiMode =
-      String(req.query.ai || "").toLowerCase() === "1" ||
-      String(req.query.ai || "").toLowerCase() === "true";
+    const { lat, lng, radiusKm = 5, limit = 10, driverId, ai } = req.query;
 
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-      return res.status(400).json({ message: "lat/lng required" });
+    const center = {
+      lat: Number(lat),
+      lng: Number(lng)
+    };
+    const rad = Number(radiusKm);
+    const lim = Number(limit);
+    const aiMode = ai === "1";
+
+    if (!Number.isFinite(center.lat) || !Number.isFinite(center.lng)) {
+      return res.status(400).json([]);
     }
 
-    await cleanupExpiredReservations(driverId || null);
+    // 🔹 Fetch waiting bookings within radius from DB
+    const nearby = await Booking.find({
+      status: "pending",
+      pickupLat: { $exists: true },
+      pickupLng: { $exists: true },
+    }).lean();
 
-    let ds = null;
-    if (driverId) {
-      ds = await DriverStatus.findOne({ driverId }).lean();
-      if (!ds || !ds.isOnline) {
-        return res.status(403).json({ message: "Driver is offline" });
-      }
+    // Distance helper
+    const distKm = (a, b) => {
+      const R = 6371;
+      const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+      const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+      const lat1 = (a.lat * Math.PI) / 180;
+      const lat2 = (b.lat * Math.PI) / 180;
+
+      const s =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+      return 2 * R * Math.asin(Math.sqrt(s));
+    };
+
+    // Bearing
+    function bearingDeg(lat1, lng1, lat2, lng2) {
+      const toRad = (d) => (d * Math.PI) / 180;
+      const toDeg = (d) => (d * 180) / Math.PI;
+      const dLng = toRad(lng2 - lng1);
+
+      const y = Math.sin(dLng) * Math.cos(toRad(lat2));
+      const x =
+        Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+        Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLng);
+
+      return (toDeg(Math.atan2(y, x)) + 360) % 360;
     }
 
-    const center = { lat, lng };
+    // Angle difference (0–180)
+    function angleDiffDeg(a, b) {
+      let d = Math.abs(a - b) % 360;
+      return d > 180 ? 360 - d : d;
+    }
 
-    // Only pending bookings
-    const pending = await Booking.find({ status: "pending" }).lean();
+    // Haversine in meters
+    function haversine(lat1, lng1, lat2, lng2) {
+      const R = 6371000;
+      const toRad = (d) => (d * Math.PI) / 180;
 
-    // ✅ if AI mode and driver has an active trip, compute main heading
+      const dLat = toRad(lat2 - lat1);
+      const dLng = toRad(lng2 - lng1);
+
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) *
+          Math.cos(toRad(lat2)) *
+          Math.sin(dLng / 2) ** 2;
+
+      return 2 * R * Math.asin(Math.sqrt(a));
+    }
+
+    // 🔥 NEW: destination compatibility
+    function isDestinationCompatible(mainDest, candDest, mainHeadingDeg) {
+      const A = { lat: Number(mainDest.lat), lng: Number(mainDest.lng) };
+      const B = { lat: Number(candDest.lat), lng: Number(candDest.lng) };
+
+      if (
+        !Number.isFinite(A.lat) || !Number.isFinite(A.lng) ||
+        !Number.isFinite(B.lat) || !Number.isFinite(B.lng)
+      ) return true;
+
+      const distABm = haversine(A.lat, A.lng, B.lat, B.lng);
+      const distABkm = distABm / 1000;
+
+      const headingAB = bearingDeg(A.lat, A.lng, B.lat, B.lng);
+      const diffAB = angleDiffDeg(mainHeadingDeg, headingAB);
+
+      if (distABkm <= 0.3) return true;
+      return diffAB <= 90;
+    }
+
     let mainHeadingDeg = null;
-    if (aiMode && driverId) {
-      const match = isObjectId(driverId)
-        ? { driverId: String(driverId), status: "accepted" }
-        : { driverId: driverId, status: "accepted" };
+    let activeMainDestLat = null;
+    let activeMainDestLng = null;
 
-      const active = await Booking.findOne(match).sort({ createdAt: -1 }).lean();
+    if (aiMode && driverId) {
+      const match = { driverId: String(driverId), status: "accepted" };
+
+      const active = await Booking.findOne(match)
+        .sort({ createdAt: -1 })
+        .lean();
 
       if (active) {
-        const destLat = Number(active.destinationLat);
-        const destLng = Number(active.destinationLng);
+        activeMainDestLat = Number(active.destinationLat);
+        activeMainDestLng = Number(active.destinationLng);
+
         if (
-          Number.isFinite(destLat) &&
-          Number.isFinite(destLng)
+          Number.isFinite(activeMainDestLat) &&
+          Number.isFinite(activeMainDestLng)
         ) {
           mainHeadingDeg = bearingDeg(
             center.lat,
             center.lng,
-            destLat,
-            destLng
+            activeMainDestLat,
+            activeMainDestLng
           );
         }
       }
     }
 
-    // capacity + direction filter
-    const filtered = (pending || []).filter((b) => {
-      // capacity rule (existing)
-      if (driverId && ds && !fitsCapacity(b, ds)) return false;
-
-      // distance to driver
-      const distM = haversineMeters(center, {
-        lat: Number(b.pickupLat),
-        lng: Number(b.pickupLng),
-      });
-      const distKm = distM / 1000;
-      if (distKm > radiusKm) return false;
-
-      // 🔹 AI heading filter: avoid opposite-direction drop-offs
-      if (aiMode && mainHeadingDeg != null) {
-        const destLat = Number(b.destinationLat);
-        const destLng = Number(b.destinationLng);
-        if (
-          Number.isFinite(destLat) &&
-          Number.isFinite(destLng)
-        ) {
-          const candHeading = bearingDeg(
-            center.lat,
-            center.lng,
-            destLat,
-            destLng
-          );
-          const diff = angleDiffDeg(mainHeadingDeg, candHeading);
-
-          // if destination is ~opposite (> 110–120°), drop it
-          if (diff > 120) return false;
-        }
-      }
-
-      return true;
-    });
-
-    const out = filtered
+    // ===========================================================
+    // 🔥 FILTER + SCORE
+    // ===========================================================
+    const filtered = nearby
       .map((b) => {
-        const distM = haversineMeters(center, {
-          lat: Number(b.pickupLat),
-          lng: Number(b.pickupLng),
-        });
-        return {
-          id: b.bookingId,
-          pickup: { lat: b.pickupLat, lng: b.pickupLng },
-          destination: { lat: b.destinationLat, lng: b.destinationLng },
-          fare: b.fare,
-          passengerPreview: {
-            name: b.bookedFor
-              ? b.riderName || "Rider"
-              : b.passengerName || "Passenger",
-            bookedFor: !!b.bookedFor,
-          },
-          distanceKm: distM / 1000,
-          createdAt: b.createdAt,
-          bookingType: b.bookingType,
-          partySize: b.partySize,
-          isShareable: b.isShareable,
-        };
+        const pickup = { lat: b.pickupLat, lng: b.pickupLng };
+        b._distKm = distKm(center, pickup);
+        return b;
       })
-      // for now, still sort by distance (can upgrade to full score later)
-      .sort((a, b) => a.distanceKm - b.distanceKm)
-      .slice(0, limit);
+      .filter((b) => b._distKm <= rad)
+      .filter((b) => {
+        if (!aiMode || mainHeadingDeg == null) return true;
 
-    return res.status(200).json(out);
-  } catch (e) {
-    console.error("❌ waiting-bookings error:", e);
-    return res.status(500).json({ message: "Server error" });
+        const dLat = Number(b.destinationLat);
+        const dLng = Number(b.destinationLng);
+
+        if (!Number.isFinite(dLat) || !Number.isFinite(dLng)) return true;
+
+        const candHeading = bearingDeg(center.lat, center.lng, dLat, dLng);
+        const diff = angleDiffDeg(mainHeadingDeg, candHeading);
+
+        // ❌ Opposite direction drop-off
+        if (diff > 120) return false;
+
+        // ❌ Check AFTER-drop-off compatibility
+        if (activeMainDestLat != null && activeMainDestLng != null) {
+          const ok = isDestinationCompatible(
+            { lat: activeMainDestLat, lng: activeMainDestLng },
+            { lat: dLat, lng: dLng },
+            mainHeadingDeg
+          );
+          if (!ok) return false;
+        }
+
+        return true;
+      })
+      .sort((a, b) => a._distKm - b._distKm)
+      .slice(0, lim)
+      .map((b) => ({
+        id: b._id,
+        fare: b.fare,
+        pickup: { lat: b.pickupLat, lng: b.pickupLng },
+        destination: { lat: b.destinationLat, lng: b.destinationLng },
+        passengerPreview: {
+          name: b.passengerName,
+          bookedFor: b.bookedFor || false,
+        },
+        bookingType: b.bookingType,
+        partySize: b.partySize || 1,
+      }));
+
+    return res.json(filtered);
+  } catch (err) {
+    console.error("❌ waiting-bookings error:", err);
+    res.status(500).json([]);
   }
 });
-
 
 
 
