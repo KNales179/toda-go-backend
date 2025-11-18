@@ -577,9 +577,6 @@ router.get("/waiting-bookings", async (req, res) => {
       }
     }
 
-    // ===========================================================
-    // 🔥 FILTER + SCORE
-    // ===========================================================
     const filtered = nearby
       .map((b) => {
         const pickup = { lat: b.pickupLat, lng: b.pickupLng };
@@ -615,18 +612,24 @@ router.get("/waiting-bookings", async (req, res) => {
       })
       .sort((a, b) => a._distKm - b._distKm)
       .slice(0, lim)
-      .map((b) => ({
-        id: b._id,
-        fare: b.fare,
-        pickup: { lat: b.pickupLat, lng: b.pickupLng },
-        destination: { lat: b.destinationLat, lng: b.destinationLng },
-        passengerPreview: {
-          name: b.passengerName,
-          bookedFor: b.bookedFor || false,
-        },
-        bookingType: b.bookingType,
-        partySize: b.partySize || 1,
-      }));
+      .map((b) => {
+        const id = b.bookingId || String(b._id);
+
+        return {
+          id,                       
+          bookingId: id,        
+          fare: b.fare,
+          pickup: { lat: b.pickupLat, lng: b.pickupLng },
+          destination: { lat: b.destinationLat, lng: b.destinationLng },
+          passengerPreview: {
+            name: b.passengerName,
+            bookedFor: b.bookedFor || false,
+          },
+          bookingType: b.bookingType,
+          partySize: b.partySize || 1,
+        };
+      });
+
 
     return res.json(filtered);
   } catch (err) {
@@ -634,8 +637,6 @@ router.get("/waiting-bookings", async (req, res) => {
     res.status(500).json([]);
   }
 });
-
-
 
 
 // ---------- GET /driver-requests/:driverId ----------
