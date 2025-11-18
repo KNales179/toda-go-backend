@@ -90,6 +90,32 @@ function polylineLengthKm(points) {
   return total;
 }
 
+// --- heading helpers for AI matching ---
+function bearingDeg(lat1, lon1, lat2, lon2) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const toDeg = (r) => (r * 180) / Math.PI;
+
+  const φ1 = toRad(lat1);
+  const φ2 = toRad(lat2);
+  const Δλ = toRad(lon2 - lon1);
+
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x =
+    Math.cos(φ1) * Math.sin(φ2) -
+    Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+
+  let θ = toDeg(Math.atan2(y, x));
+  if (!Number.isFinite(θ)) return 0;
+  // normalize 0–360
+  return (θ + 360) % 360;
+}
+
+function angleDiffDeg(a, b) {
+  let d = Math.abs(a - b) % 360;
+  if (d > 180) d = 360 - d;
+  return d; // 0–180
+}
+
 
 const isObjectId = (s) => mongoose.Types.ObjectId.isValid(String(s || ""));
 
@@ -388,7 +414,7 @@ router.post("/book", async (req, res) => {
 });
 
 
-// ---------- GET /waiting-bookings (with optional AI scoring + debug) ----------
+// ---------- GET /waiting-bookings (now with simple AI option) ----------
 router.get("/waiting-bookings", async (req, res) => {
   try {
     const lat = Number(req.query.lat);
@@ -396,8 +422,9 @@ router.get("/waiting-bookings", async (req, res) => {
     const radiusKm = Math.max(0, Number(req.query.radiusKm ?? 5));
     const limit = Math.min(50, Math.max(1, Number(req.query.limit ?? 20)));
     const driverId = req.query.driverId;
-    const useAI = String(req.query.ai || "").trim() === "1";
-    const debug = String(req.query.debug || "").trim() === "1"; // 🔍 debug flag
+    const aiMode =
+      String(req.query.ai || "").toLowerCase() === "1" ||
+      String(req.query.ai || "").toLowerCase() === "true";
 
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
       return res.status(400).json({ message: "lat/lng required" });
@@ -418,189 +445,98 @@ router.get("/waiting-bookings", async (req, res) => {
     // Only pending bookings
     const pending = await Booking.find({ status: "pending" }).lean();
 
-    // Capacity filter (if driver context exists)
-    const capacityFiltered = (pending || []).filter((b) => {
-      if (!driverId || !ds) return true;
-      return fitsCapacity(b, ds);
+    // ✅ if AI mode and driver has an active trip, compute main heading
+    let mainHeadingDeg = null;
+    if (aiMode && driverId) {
+      const match = isObjectId(driverId)
+        ? { driverId: String(driverId), status: "accepted" }
+        : { driverId: driverId, status: "accepted" };
+
+      const active = await Booking.findOne(match).sort({ createdAt: -1 }).lean();
+
+      if (active) {
+        const destLat = Number(active.destinationLat);
+        const destLng = Number(active.destinationLng);
+        if (
+          Number.isFinite(destLat) &&
+          Number.isFinite(destLng)
+        ) {
+          mainHeadingDeg = bearingDeg(
+            center.lat,
+            center.lng,
+            destLat,
+            destLng
+          );
+        }
+      }
+    }
+
+    // capacity + direction filter
+    const filtered = (pending || []).filter((b) => {
+      // capacity rule (existing)
+      if (driverId && ds && !fitsCapacity(b, ds)) return false;
+
+      // distance to driver
+      const distM = haversineMeters(center, {
+        lat: Number(b.pickupLat),
+        lng: Number(b.pickupLng),
+      });
+      const distKm = distM / 1000;
+      if (distKm > radiusKm) return false;
+
+      // 🔹 AI heading filter: avoid opposite-direction drop-offs
+      if (aiMode && mainHeadingDeg != null) {
+        const destLat = Number(b.destinationLat);
+        const destLng = Number(b.destinationLng);
+        if (
+          Number.isFinite(destLat) &&
+          Number.isFinite(destLng)
+        ) {
+          const candHeading = bearingDeg(
+            center.lat,
+            center.lng,
+            destLat,
+            destLng
+          );
+          const diff = angleDiffDeg(mainHeadingDeg, candHeading);
+
+          // if destination is ~opposite (> 110–120°), drop it
+          if (diff > 120) return false;
+        }
+      }
+
+      return true;
     });
 
-    // 🔹 Fallback: old behavior if AI disabled or no driver context
-    if (!useAI || !driverId || !ds) {
-      const out = capacityFiltered
-        .map((b) => {
-          const distM = haversineMeters(center, {
-            lat: Number(b.pickupLat),
-            lng: Number(b.pickupLng),
-          });
-          const base = {
-            id: b.bookingId,
-            pickup: { lat: b.pickupLat, lng: b.pickupLng },
-            destination: { lat: b.destinationLat, lng: b.destinationLng },
-            fare: b.fare,
-            passengerPreview: {
-              name: b.bookedFor ? (b.riderName || "Rider") : (b.passengerName || "Passenger"),
-              bookedFor: !!b.bookedFor,
-            },
-            distanceKm: distM / 1000,
-            createdAt: b.createdAt,
-            bookingType: b.bookingType,
-            partySize: b.partySize,
-            isShareable: b.isShareable,
-          };
-
-          if (debug) {
-            base.debug = {
-              mode: "fallback",
-              pickupDistToDriverKm: distM / 1000,
-            };
-          }
-
-          return base;
-        })
-        .filter((r) => r.distanceKm <= radiusKm)
-        .sort((a, b) => a.distanceKm - b.distanceKm)
-        .slice(0, limit);
-
-      return res.status(200).json(out);
-    }
-
-    // 🔹 AI mode (Option B) – route-aware matching
-
-    // Get driver's active bookings (we'll consider only the first for now)
-    const activeBookings = await Booking.find({
-      driverId: String(driverId),
-      status: "accepted",
-    }).lean();
-
-    const primary = activeBookings[0] || null;
-
-    // Build route polyline (driver → pickupA → destA) if there is an active job
-    let routePoints = null;
-    if (primary) {
-      const driverLoc = { lat: center.lat, lng: center.lng };
-      const pickupA = {
-        lat: Number(primary.pickupLat),
-        lng: Number(primary.pickupLng),
-      };
-      const destA = {
-        lat: Number(primary.destinationLat),
-        lng: Number(primary.destinationLng),
-      };
-      routePoints = [driverLoc, pickupA, destA];
-    }
-
-    const nowMs = Date.now();
-
-    const scored = capacityFiltered
+    const out = filtered
       .map((b) => {
-        const pickup = {
+        const distM = haversineMeters(center, {
           lat: Number(b.pickupLat),
           lng: Number(b.pickupLng),
-        };
-        const dest = {
-          lat: Number(b.destinationLat),
-          lng: Number(b.destinationLng),
-        };
-
-        const pickupDistToDriverKm = distanceKm(center, pickup);
-        const tripLenKm = distanceKm(pickup, dest);
-
-        // age in minutes (older gets slight bonus)
-        const createdAt = b.createdAt ? new Date(b.createdAt).getTime() : nowMs;
-        const ageMin = Math.max(0, (nowMs - createdAt) / 60000);
-
-        let pickupDistToRouteKm = pickupDistToDriverKm;
-        let extraDetourKm = 0;
-
-        if (routePoints && routePoints.length >= 2) {
-          // distance from pickup to current route corridor
-          const corridorDistM = routeDistanceMeters(routePoints, pickup);
-          pickupDistToRouteKm = corridorDistM / 1000;
-
-          // extra detour if we insert B as: driver → pickupB → pickupA → destA
-          const driverLoc = routePoints[0];
-          const pickupA = routePoints[1];
-          const destA = routePoints[routePoints.length - 1];
-
-          const baseRouteKm = polylineLengthKm(routePoints);
-          const withBkRouteKm =
-            distanceKm(driverLoc, pickup) +
-            distanceKm(pickup, pickupA) +
-            distanceKm(pickupA, destA);
-
-          extraDetourKm = Math.max(0, withBkRouteKm - baseRouteKm);
-        }
-
+        });
         return {
-          raw: b,
-          pickupDistToDriverKm,
-          pickupDistToRouteKm,
-          tripLenKm,
-          extraDetourKm,
-          ageMin,
-        };
-      })
-      // Hard filters (drop clearly bad matches)
-      .filter((x) => {
-        if (x.pickupDistToDriverKm > radiusKm) return false;
-        if (x.pickupDistToRouteKm > 1.0 && routePoints) return false; // >1km away from route
-        if (x.extraDetourKm > 1.5 && routePoints) return false;       // >1.5km detour
-        return true;
-      })
-      // Scoring (explainable weighted sum)
-      .map((x) => {
-        const wPickup = 0.6;
-        const wRoute = 1.0;
-        const wDetour = 1.5;
-        const wTrip = 0.1;
-        const wAge = 0.02;
-
-        const score =
-          -wPickup * x.pickupDistToDriverKm -
-          wRoute * x.pickupDistToRouteKm -
-          wDetour * x.extraDetourKm +
-          wTrip * x.tripLenKm +
-          wAge * x.ageMin;
-
-        return { ...x, score };
-      })
-      .sort((a, b) => b.score - a.score) // higher score first
-      .slice(0, limit)
-      .map((x) => {
-        const b = x.raw;
-        const base = {
           id: b.bookingId,
           pickup: { lat: b.pickupLat, lng: b.pickupLng },
           destination: { lat: b.destinationLat, lng: b.destinationLng },
           fare: b.fare,
           passengerPreview: {
-            name: b.bookedFor ? (b.riderName || "Rider") : (b.passengerName || "Passenger"),
+            name: b.bookedFor
+              ? b.riderName || "Rider"
+              : b.passengerName || "Passenger",
             bookedFor: !!b.bookedFor,
           },
-          distanceKm: x.pickupDistToDriverKm,
+          distanceKm: distM / 1000,
           createdAt: b.createdAt,
           bookingType: b.bookingType,
           partySize: b.partySize,
           isShareable: b.isShareable,
         };
+      })
+      // for now, still sort by distance (can upgrade to full score later)
+      .sort((a, b) => a.distanceKm - b.distanceKm)
+      .slice(0, limit);
 
-        if (debug) {
-          base.debug = {
-            mode: "ai",
-            score: x.score,
-            pickupDistToDriverKm: x.pickupDistToDriverKm,
-            pickupDistToRouteKm: x.pickupDistToRouteKm,
-            extraDetourKm: x.extraDetourKm,
-            tripLenKm: x.tripLenKm,
-            ageMin: x.ageMin,
-            hasPrimaryRoute: !!routePoints,
-          };
-        }
-
-        return base;
-      });
-
-    return res.status(200).json(scored);
+    return res.status(200).json(out);
   } catch (e) {
     console.error("❌ waiting-bookings error:", e);
     return res.status(500).json({ message: "Server error" });
