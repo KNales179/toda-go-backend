@@ -24,6 +24,16 @@ const DriverStatusSchema = new mongoose.Schema({
   // (Optional helper for debugging/recovery)
   activeBookingIds: { type: [String], default: [] },
 
+  currentTodaId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Toda",
+    default: null,
+  },
+  inTodaZone: {
+    type: Boolean,
+    default: false,
+  },
+
   updatedAt: { type: Date, default: Date.now },
 });
 
