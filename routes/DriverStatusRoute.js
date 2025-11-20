@@ -40,11 +40,18 @@ async function touchPresence(driverId, when = new Date()) {
 // POST /api/driver-status  ➜ toggle Online/Offline
 router.post('/driver-status', async (req, res) => {
   try {
-    const { driverId, isOnline, location } = req.body;
+    const { driverId, isOnline, location, currentTodaId, inTodaZone } = req.body;
     if (!driverId) return res.status(400).json({ error: 'driverId is required' });
     if (!isObjectId(driverId)) return res.status(400).json({ error: 'Invalid driverId' });
 
     const normLoc = normalizeLocation(location);
+
+    // normalize TODA fields
+    const todaObjectId =
+      currentTodaId && isObjectId(currentTodaId)
+        ? new mongoose.Types.ObjectId(currentTodaId)
+        : null;
+    const todaFlag = !!inTodaZone;
 
     if (isOnline === true) {
       const driver = await Driver.findById(driverId).lean();
@@ -62,6 +69,10 @@ router.post('/driver-status', async (req, res) => {
             capacityUsed: 0,
             lockedSolo: false,
             updatedAt: new Date(),
+
+            // 🔵 TODA tagging
+            currentTodaId: todaObjectId,
+            inTodaZone: todaFlag,
           },
           $setOnInsert: { activeBookingIds: [] },
         },
@@ -80,6 +91,10 @@ router.post('/driver-status', async (req, res) => {
             lockedSolo: false,
             updatedAt: new Date(),
             ...(location ? { location: normLoc } : {}),
+
+            // when going offline, we still record the latest TODA context
+            currentTodaId: todaObjectId,
+            inTodaZone: todaFlag,
           },
         },
         { upsert: true, new: true }
@@ -97,7 +112,7 @@ router.post('/driver-status', async (req, res) => {
 // POST /api/driver-heartbeat  ➜ keep alive + presence extend
 router.post('/driver-heartbeat', async (req, res) => {
   try {
-    const { driverId, location } = req.body;
+    const { driverId, location, currentTodaId, inTodaZone } = req.body;
     if (!driverId) return res.status(400).json({ error: 'driverId is required' });
     if (!isObjectId(driverId)) return res.status(400).json({ error: 'Invalid driverId' });
     if (!location || (typeof location.lat !== 'number' && typeof location.latitude !== 'number')) {
@@ -110,6 +125,12 @@ router.post('/driver-heartbeat', async (req, res) => {
 
     const normLoc = normalizeLocation(location);
 
+    const todaObjectId =
+      currentTodaId && isObjectId(currentTodaId)
+        ? new mongoose.Types.ObjectId(currentTodaId)
+        : null;
+    const todaFlag = !!inTodaZone;
+
     const status = await DriverStatus.findOneAndUpdate(
       { driverId: new mongoose.Types.ObjectId(driverId) },
       {
@@ -118,6 +139,10 @@ router.post('/driver-heartbeat', async (req, res) => {
           location: normLoc,
           updatedAt: new Date(),
           capacityTotal: cap,
+
+          // 🔵 TODA tagging from live GPS heartbeat
+          currentTodaId: todaObjectId,
+          inTodaZone: todaFlag,
         },
         $setOnInsert: {
           capacityUsed: 0,
@@ -136,7 +161,7 @@ router.post('/driver-heartbeat', async (req, res) => {
   }
 });
 
-// GET /api/driver-status/:driverId (unchanged)
+// GET /api/driver-status/:driverId (unchanged except we also expose TODA fields)
 router.get('/driver-status/:driverId', async (req, res) => {
   try {
     const { driverId } = req.params;
@@ -149,7 +174,8 @@ router.get('/driver-status/:driverId', async (req, res) => {
     }
 
     const now = Date.now();
-    const effectiveOnline = status.isOnline && (now - new Date(status.updatedAt).getTime() < 60_000);
+    const effectiveOnline =
+      status.isOnline && (now - new Date(status.updatedAt).getTime() < 60_000);
 
     res.status(200).json({
       isOnline: effectiveOnline,
@@ -158,6 +184,10 @@ router.get('/driver-status/:driverId', async (req, res) => {
       capacityTotal: status.capacityTotal ?? 4,
       capacityUsed: status.capacityUsed ?? 0,
       lockedSolo: !!status.lockedSolo,
+
+      // 🔵 expose TODA info for debugging / future UI
+      currentTodaId: status.currentTodaId || null,
+      inTodaZone: !!status.inTodaZone,
     });
   } catch (err) {
     console.error('❌ Error fetching driver status:', err);
