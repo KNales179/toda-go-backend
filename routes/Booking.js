@@ -8,6 +8,7 @@ const Passenger = require("../models/Passenger");
 const RideHistory = require("../models/RideHistory");
 const Booking = require("../models/Bookings");
 const Driver = require("../models/Drivers");
+const Toda = require("../models/Toda");
 
 
 // ---------- helpers ----------
@@ -345,6 +346,115 @@ async function cleanupExpiredReservations(targetDriverId = null) {
 }
 
 
+// 🔹 Find which TODA zone this pickup belongs to (if any)
+async function findPickupTodaId(pickupLat, pickupLng) {
+  // guard: coordinates
+  if (!Number.isFinite(pickupLat) || !Number.isFinite(pickupLng)) return null;
+
+  // get active TODAs
+  const todas = await Toda.find({ isActive: true }).lean();
+  if (!todas.length) return null;
+
+  let bestId = null;
+  let bestDist = Infinity;
+
+  for (const t of todas) {
+    if (typeof t.latitude !== "number" || typeof t.longitude !== "number") continue;
+
+    const distM = haversine(
+      pickupLat,
+      pickupLng,
+      t.latitude,
+      t.longitude
+    );
+
+    // If you later add t.radiusMeters, use that; for now fallback to 100m
+    const radiusM =
+      typeof t.radiusMeters === "number" && Number.isFinite(t.radiusMeters)
+        ? t.radiusMeters
+        : 100;
+
+    if (distM <= radiusM && distM < bestDist) {
+      bestDist = distM;
+      bestId = t._id;
+    }
+  }
+
+  return bestId; // ObjectId or null
+}
+
+
+// 🔹 TODA-aware filter for /waiting-bookings
+async function todaAwareFilterForDriver(candidates, driverId) {
+  if (!driverId || !isObjectId(driverId)) return candidates;
+
+  // Who is the driver asking?
+  const ds = await DriverStatus.findOne({
+    driverId: new mongoose.Types.ObjectId(driverId),
+  })
+    .select("currentTodaId inTodaZone isOnline updatedAt")
+    .lean();
+
+  if (!ds) return candidates;
+
+  const driverTodaId = ds.currentTodaId ? String(ds.currentTodaId) : null;
+
+  // --- CASE A: Driver belongs to a TODA (TODA driver) ---
+  if (driverTodaId) {
+    // TODA driver:
+    //  - can see bookings in their TODA
+    //  - can see bookings outside any TODA
+    //  - cannot see bookings in other TODAs
+    return candidates.filter((b) => {
+      const bt = b.pickupTodaId ? String(b.pickupTodaId) : null;
+      if (!bt) return true;           // outside any TODA → allowed
+      return bt === driverTodaId;     // only this TODA's bookings
+    });
+  }
+
+  // --- CASE B: Roaming driver (no currentTodaId) ---
+  // Roaming should only see TODA bookings if there are NO active TODA drivers for that TODA.
+
+  // 1) Collect all TODA ids from these bookings
+  const todaIds = [
+    ...new Set(
+      candidates
+        .map((b) => (b.pickupTodaId ? String(b.pickupTodaId) : null))
+        .filter(Boolean)
+    ),
+  ];
+
+  if (!todaIds.length) {
+    // No TODA bookings here anyway
+    return candidates;
+  }
+
+  // 2) Find online TODA drivers for these TODAs
+  const dsList = await DriverStatus.find({
+    currentTodaId: { $in: todaIds.map((id) => new mongoose.Types.ObjectId(id)) },
+    isOnline: true,
+  })
+    .select("currentTodaId updatedAt")
+    .lean();
+
+  const now = Date.now();
+  const ACTIVE_MS = 60_000; // same window as /driver-status
+
+  const activeTodaSet = new Set(
+    dsList
+      .filter((s) => now - new Date(s.updatedAt).getTime() < ACTIVE_MS)
+      .map((s) => String(s.currentTodaId))
+  );
+
+  return candidates.filter((b) => {
+    const bt = b.pickupTodaId ? String(b.pickupTodaId) : null;
+    if (!bt) return true;                    // outside TODA
+    if (!activeTodaSet.has(bt)) return true; // no TODA drivers → fallback allowed
+    return false;                            // TODA drivers are active → roaming can't see this
+  });
+}
+
+
 // ---------- POST /book ----------
 router.post("/book", async (req, res) => {
   try {
@@ -412,6 +522,12 @@ router.post("/book", async (req, res) => {
       }
     } catch {}
 
+        // 🔹 Detect which TODA zone this pickup belongs to (if any)
+    const pickupTodaId = await findPickupTodaId(
+      Number(pickupLat),
+      Number(pickupLng)
+    );
+
     const booking = await Booking.create({
       passengerId,
       pickupLat,
@@ -423,6 +539,9 @@ router.post("/book", async (req, res) => {
       notes,
       pickupPlace,
       destinationPlace,
+
+      // NEW: TODA info
+      pickupTodaId: pickupTodaId || null,
 
       bookedFor: bookedForBool,  
       riderName: riderNameStr,    
@@ -438,6 +557,7 @@ router.post("/book", async (req, res) => {
       passengerName,
       paymentStatus,
     });
+
 
     const plain = booking.toObject();
     return res.status(200).json({
@@ -577,13 +697,20 @@ router.get("/waiting-bookings", async (req, res) => {
       }
     }
 
-    const filtered = nearby
+        // 1) Distance filter first
+    let candidates = nearby
       .map((b) => {
         const pickup = { lat: b.pickupLat, lng: b.pickupLng };
         b._distKm = distKm(center, pickup);
         return b;
       })
-      .filter((b) => b._distKm <= rad)
+      .filter((b) => b._distKm <= rad);
+
+    // 2) 🔹 TODA-aware filter based on driverId + pickupTodaId
+    const candidatesAfterToda = await todaAwareFilterForDriver(candidates, driverId);
+
+    // 3) AI heading / compatibility filter (unchanged)
+    const filtered = candidatesAfterToda
       .filter((b) => {
         if (!aiMode || mainHeadingDeg == null) return true;
 
@@ -616,8 +743,8 @@ router.get("/waiting-bookings", async (req, res) => {
         const id = b.bookingId || String(b._id);
 
         return {
-          id,                       
-          bookingId: id,        
+          id,
+          bookingId: id,
           fare: b.fare,
           pickup: { lat: b.pickupLat, lng: b.pickupLng },
           destination: { lat: b.destinationLat, lng: b.destinationLng },
@@ -629,6 +756,7 @@ router.get("/waiting-bookings", async (req, res) => {
           partySize: b.partySize || 1,
         };
       });
+
 
 
     return res.json(filtered);

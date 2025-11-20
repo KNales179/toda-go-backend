@@ -27,6 +27,13 @@ const BookingSchema = new mongoose.Schema(
     pickupPlace: { type: String, default: null },
     destinationPlace: { type: String, default: null },
 
+    // 🔹 NEW: which TODA zone this pickup belongs to (if any)
+    pickupTodaId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Toda",
+      default: null,
+    },
+
     // Fare & misc
     fare: Number,
     paymentMethod: String,
@@ -85,5 +92,6 @@ BookingSchema.index({ bookingType: 1 });
 BookingSchema.index({ reservationExpiresAt: 1 });
 BookingSchema.index({ paymentStatus: 1 });
 BookingSchema.index({ bookedFor: 1 }); // quick filter for driver UI if needed
+BookingSchema.index({ pickupTodaId: 1 }); // 🔹 TODA-aware queries
 
 module.exports = mongoose.model("Booking", BookingSchema);
