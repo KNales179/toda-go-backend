@@ -574,13 +574,16 @@ router.post("/book", async (req, res) => {
 //   /api/waiting-bookings (AI v1)
 // ===============================
 
+// ===============================
+//   /api/waiting-bookings (AI v1 + TODA restriction)
+// ===============================
 router.get("/waiting-bookings", async (req, res) => {
   try {
     const { lat, lng, radiusKm = 5, limit = 10, driverId, ai } = req.query;
 
     const center = {
       lat: Number(lat),
-      lng: Number(lng)
+      lng: Number(lng),
     };
     const rad = Number(radiusKm);
     const lim = Number(limit);
@@ -590,14 +593,16 @@ router.get("/waiting-bookings", async (req, res) => {
       return res.status(400).json([]);
     }
 
-    // 🔹 Fetch waiting bookings within radius from DB
-    const nearby = await Booking.find({
-      status: "pending",
-      pickupLat: { $exists: true },
-      pickupLng: { $exists: true },
-    }).lean();
+    // 🔹 Load TODAs once
+    let todas = [];
+    try {
+      todas = await Toda.find({ isActive: true }).lean();
+    } catch (e) {
+      console.error("❌ waiting-bookings: failed to load TODAs", e?.message || e);
+      todas = [];
+    }
 
-    // Distance helper
+    // 🔹 Simple helper: distance in km
     const distKm = (a, b) => {
       const R = 6371;
       const dLat = ((b.lat - a.lat) * Math.PI) / 180;
@@ -611,27 +616,7 @@ router.get("/waiting-bookings", async (req, res) => {
       return 2 * R * Math.asin(Math.sqrt(s));
     };
 
-    // Bearing
-    function bearingDeg(lat1, lng1, lat2, lng2) {
-      const toRad = (d) => (d * Math.PI) / 180;
-      const toDeg = (d) => (d * 180) / Math.PI;
-      const dLng = toRad(lng2 - lng1);
-
-      const y = Math.sin(dLng) * Math.cos(toRad(lat2));
-      const x =
-        Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
-        Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLng);
-
-      return (toDeg(Math.atan2(y, x)) + 360) % 360;
-    }
-
-    // Angle difference (0–180)
-    function angleDiffDeg(a, b) {
-      let d = Math.abs(a - b) % 360;
-      return d > 180 ? 360 - d : d;
-    }
-
-    // Haversine in meters
+    // 🔹 Haversine in meters (for TODA radius)
     function haversine(lat1, lng1, lat2, lng2) {
       const R = 6371000;
       const toRad = (d) => (d * Math.PI) / 180;
@@ -648,15 +633,38 @@ router.get("/waiting-bookings", async (req, res) => {
       return 2 * R * Math.asin(Math.sqrt(a));
     }
 
-    // 🔥 NEW: destination compatibility
+    // 🔹 Bearing
+    function bearingDeg(lat1, lng1, lat2, lng2) {
+      const toRad = (d) => (d * Math.PI) / 180;
+      const toDeg = (d) => (d * 180) / Math.PI;
+      const dLng = toRad(lng2 - lng1);
+
+      const y = Math.sin(dLng) * Math.cos(toRad(lat2));
+      const x =
+        Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+        Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLng);
+
+      return (toDeg(Math.atan2(y, x)) + 360) % 360;
+    }
+
+    // 🔹 Angle difference (0–180)
+    function angleDiffDeg(a, b) {
+      let d = Math.abs(a - b) % 360;
+      return d > 180 ? 360 - d : d;
+    }
+
+    // 🔥 destination compatibility (AI stuff – unchanged)
     function isDestinationCompatible(mainDest, candDest, mainHeadingDeg) {
       const A = { lat: Number(mainDest.lat), lng: Number(mainDest.lng) };
       const B = { lat: Number(candDest.lat), lng: Number(candDest.lng) };
 
       if (
-        !Number.isFinite(A.lat) || !Number.isFinite(A.lng) ||
-        !Number.isFinite(B.lat) || !Number.isFinite(B.lng)
-      ) return true;
+        !Number.isFinite(A.lat) ||
+        !Number.isFinite(A.lng) ||
+        !Number.isFinite(B.lat) ||
+        !Number.isFinite(B.lng)
+      )
+        return true;
 
       const distABm = haversine(A.lat, A.lng, B.lat, B.lng);
       const distABkm = distABm / 1000;
@@ -668,6 +676,71 @@ router.get("/waiting-bookings", async (req, res) => {
       return diffAB <= 90;
     }
 
+    // 🔹 Figure out which TODA a point belongs to (if any)
+    function findTodaForPoint(lat, lng) {
+      if (!todas.length) return null;
+      let best = null;
+      let bestDist = Infinity;
+
+      for (const t of todas) {
+        const tLat = Number(t.latitude);
+        const tLng = Number(t.longitude);
+        if (!Number.isFinite(tLat) || !Number.isFinite(tLng)) continue;
+
+        const d = haversine(lat, lng, tLat, tLng);
+        const radiusM =
+          typeof t.radiusMeters === "number" && Number.isFinite(t.radiusMeters)
+            ? t.radiusMeters
+            : 100; // default 100m
+
+        if (d <= radiusM && d < bestDist) {
+          bestDist = d;
+          best = t;
+        }
+      }
+      return best; // null if outside all TODAs
+    }
+
+    // 🔹 Resolve driver’s TODA membership by name (temporary)
+    let driverMemberTodaId = null;
+    if (driverId) {
+      try {
+        const d = await Driver.findById(driverId).lean();
+        if (d) {
+          const rawName =
+            (d.todaName ||
+              d.toda ||
+              d.toda_name ||
+              d.toda_name_text ||
+              "").toString();
+          const normalized = rawName.trim().toLowerCase();
+
+          if (normalized && Array.isArray(todas) && todas.length) {
+            const match = todas.find(
+              (t) =>
+                (t.name || "").toString().trim().toLowerCase() === normalized
+            );
+            if (match) {
+              driverMemberTodaId = String(match._id);
+            }
+          }
+        }
+      } catch (e) {
+        console.error(
+          "❌ waiting-bookings: failed to resolve driver TODA membership",
+          e?.message || e
+        );
+      }
+    }
+
+    // 🔹 Fetch waiting bookings (all pending)
+    const nearby = await Booking.find({
+      status: "pending",
+      pickupLat: { $exists: true },
+      pickupLng: { $exists: true },
+    }).lean();
+
+    // 🔹 Optional: load active main destination for AI mode
     let mainHeadingDeg = null;
     let activeMainDestLat = null;
     let activeMainDestLng = null;
@@ -697,20 +770,36 @@ router.get("/waiting-bookings", async (req, res) => {
       }
     }
 
-        // 1) Distance filter first
-    let candidates = nearby
+    const filtered = nearby
       .map((b) => {
         const pickup = { lat: b.pickupLat, lng: b.pickupLng };
         b._distKm = distKm(center, pickup);
+
+        // 🔹 Tag which TODA this booking belongs to (if any)
+        const toda = findTodaForPoint(pickup.lat, pickup.lng);
+        b._pickupTodaId = toda ? String(toda._id) : null;
+
         return b;
       })
-      .filter((b) => b._distKm <= rad);
+      // 1) within radius
+      .filter((b) => b._distKm <= rad)
+      // 2) TODA restriction:
+      //    - If booking is inside a TODA:
+      //        only show it if driver is member of THAT TODA
+      //    - If booking is outside all TODAs:
+      //        always allowed
+      .filter((b) => {
+        if (b._pickupTodaId) {
+          // driver is not member of any TODA in our list -> cannot see any TODA bookings
+          if (!driverMemberTodaId) return false;
 
-    // 2) 🔹 TODA-aware filter based on driverId + pickupTodaId
-    const candidatesAfterToda = await todaAwareFilterForDriver(candidates, driverId);
-
-    // 3) AI heading / compatibility filter (unchanged)
-    const filtered = candidatesAfterToda
+          // only see if driver’s TODA matches booking’s TODA
+          return String(b._pickupTodaId) === String(driverMemberTodaId);
+        }
+        // outside any TODA → allowed
+        return true;
+      })
+      // 3) AI direction filter (unchanged)
       .filter((b) => {
         if (!aiMode || mainHeadingDeg == null) return true;
 
@@ -737,8 +826,10 @@ router.get("/waiting-bookings", async (req, res) => {
 
         return true;
       })
+      // 4) sort + limit
       .sort((a, b) => a._distKm - b._distKm)
       .slice(0, lim)
+      // 5) shape output for driver app
       .map((b) => {
         const id = b.bookingId || String(b._id);
 
@@ -757,14 +848,13 @@ router.get("/waiting-bookings", async (req, res) => {
         };
       });
 
-
-
     return res.json(filtered);
   } catch (err) {
     console.error("❌ waiting-bookings error:", err);
     res.status(500).json([]);
   }
 });
+
 
 
 // ---------- GET /driver-requests/:driverId ----------
