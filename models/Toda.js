@@ -1,3 +1,4 @@
+// models/Toda.js
 const mongoose = require("mongoose");
 
 const ServedDestinationSchema = new mongoose.Schema(
@@ -7,32 +8,62 @@ const ServedDestinationSchema = new mongoose.Schema(
       required: true, // ex: "Pacific Mall", "SM Lucena"
       trim: true,
     },
-
-    // optional: where the TODA usually drops passengers for this destination
     latitude: {
       type: Number,
     },
     longitude: {
       type: Number,
     },
-
-    // main typical path used by this TODA going to this destination
-    mainRoute: {
-      type: String,   // ex: "Market Ave → Dalahican Road"
-      trim: true,
-      default: "",
-    },
-
-    // optional alternates, ex: ["Quezon Ave → Eco-Tourism Road", ...]
-    altRoutes: {
-      type: [String],
-      default: [],
-    },
-
     notes: {
       type: String,
       default: "",
       trim: true,
+    },
+  },
+  { _id: false }
+);
+
+// 🔹 Shape of a routed path (we'll store ORS result here)
+const RouteShapeSchema = new mongoose.Schema(
+  {
+    // stored as [[lng, lat], [lng, lat], ...]
+    coords: {
+      type: [[Number]],
+      default: [],
+    },
+    distanceMeters: {
+      type: Number, // ORS summary.distance
+    },
+    durationSeconds: {
+      type: Number, // ORS summary.duration
+    },
+  },
+  { _id: false }
+);
+
+// 🔹 Final destination of a TODA line (terminal → final stop)
+const FinalDestinationSchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+      trim: true, // ex: "Dalahican"
+    },
+    latitude: {
+      type: Number,
+    },
+    longitude: {
+      type: Number,
+    },
+    // Main chosen route terminal→final
+    mainRoute: {
+      type: RouteShapeSchema,
+      default: null,
+    },
+    // Optional alternative routes (other major variants)
+    altRoutes: {
+      type: [RouteShapeSchema],
+      default: [],
     },
   },
   { _id: false }
@@ -77,9 +108,21 @@ const TodaSchema = new mongoose.Schema(
       default: "",
     },
 
-    // list of allowed routes / destinations this TODA serves
+    // 🔹 optional radius used for driver TODA-zone detection
+    radiusMeters: {
+      type: Number,
+      default: 0, // 0 = use frontend default (e.g. 100m)
+    },
+
+    // list of along-the-way / nearby destinations
     servedDestinations: {
       type: [ServedDestinationSchema],
+      default: [],
+    },
+
+    // 🔹 new: main endpoints this TODA line officially serves
+    finalDestinations: {
+      type: [FinalDestinationSchema],
       default: [],
     },
 

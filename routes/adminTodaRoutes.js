@@ -33,6 +33,8 @@ router.post("/todas", async (req, res) => {
       city,
       notes,
       servedDestinations,
+      finalDestinations,
+      radiusMeters,
       isActive,
     } = req.body;
 
@@ -58,9 +60,18 @@ router.post("/todas", async (req, res) => {
       if (barangay !== undefined) existing.barangay = barangay;
       if (city !== undefined) existing.city = city;
       if (notes !== undefined) existing.notes = notes;
+
       if (Array.isArray(servedDestinations)) {
         existing.servedDestinations = servedDestinations;
       }
+      if (Array.isArray(finalDestinations)) {
+        existing.finalDestinations = finalDestinations;
+      }
+
+      if (typeof radiusMeters === "number") {
+        existing.radiusMeters = radiusMeters;
+      }
+
       if (typeof isActive === "boolean") {
         existing.isActive = isActive;
       }
@@ -81,6 +92,11 @@ router.post("/todas", async (req, res) => {
       servedDestinations: Array.isArray(servedDestinations)
         ? servedDestinations
         : [],
+      finalDestinations: Array.isArray(finalDestinations)
+        ? finalDestinations
+        : [],
+      radiusMeters:
+        typeof radiusMeters === "number" ? radiusMeters : 0,
       isActive: typeof isActive === "boolean" ? isActive : true,
     });
 
@@ -113,7 +129,7 @@ router.delete("/todas/:id", async (req, res) => {
 router.get("/todas-public", async (req, res) => {
   try {
     const todas = await Toda.find({ isActive: true }).select(
-      "name latitude longitude street barangay city servedDestinations"
+      "name latitude longitude street barangay city servedDestinations finalDestinations radiusMeters"
     );
     res.json(todas);
   } catch (err) {

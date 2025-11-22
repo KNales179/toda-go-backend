@@ -17,11 +17,11 @@ function parseQueryPair(s) {
   return [lng, lat];
 }
 
-async function callORS(coords, ORS_KEY) {
+async function callORS(coords, ORS_KEY, extraBody = {}) {
   // coords must be [[lng,lat],[lng,lat]]
   return axios.post(
     ORS_URL,
-    { coordinates: coords },
+    { coordinates: coords, ...extraBody },
     {
       headers: {
         Authorization: ORS_KEY,
@@ -88,6 +88,64 @@ router.get('/api/route', async (req, res) => {
   } catch (e) {
     console.error('ORS failed:', e.response?.data || e.message);
     res.status(e.response?.status || 500).json({ error: 'ORS routing failed', details: e.response?.data || e.message });
+  }
+});
+
+/**
+ * 🔹 NEW: POST /api/route/variants
+ * Body: { start: [lng,lat], end: [lng,lat] }
+ * Returns: [{ id, preference, summary, coords:[ [lat,lng], ... ] }, ...]
+ */
+router.post('/api/route/variants', async (req, res) => {
+  const ORS_KEY = process.env.ORS_API_KEY;
+  if (!ORS_KEY) return res.status(500).json({ error: "Server misconfig: ORS_API_KEY missing" });
+
+  try {
+    const { start, end } = req.body || {};
+    if (!validPair(start) || !validPair(end)) {
+      return res.status(400).json({
+        error: "INVALID_INPUT",
+        details: "Provide { start:[lng,lat], end:[lng,lat] }",
+      });
+    }
+
+    const coords = [start, end];
+
+    // Try a few preferences to approximate “different main routes”
+    const prefs = ["fastest", "shortest"];
+    const results = [];
+
+    for (const pref of prefs) {
+      try {
+        const r = await callORS(coords, ORS_KEY, { preference: pref });
+        const feat = r.data?.features?.[0];
+        if (!feat?.geometry?.coordinates?.length) continue;
+
+        const latLng = feat.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+        const summary = feat.properties?.summary || {};
+
+        results.push({
+          id: pref,
+          preference: pref,
+          coords: latLng,
+          summary: {
+            distance: summary.distance,
+            duration: summary.duration,
+          },
+        });
+      } catch (e) {
+        console.error(`[ROUTE] variant ${pref} failed:`, e.response?.data || e.message);
+      }
+    }
+
+    if (!results.length) {
+      return res.status(502).json({ error: "ORS_NO_VARIANTS" });
+    }
+
+    res.json(results);
+  } catch (e) {
+    console.error('ORS variants failed:', e.response?.data || e.message);
+    res.status(e.response?.status || 500).json({ error: 'ORS variants failed', details: e.response?.data || e.message });
   }
 });
 
