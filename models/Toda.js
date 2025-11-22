@@ -7,12 +7,28 @@ const ServedDestinationSchema = new mongoose.Schema(
       required: true, // ex: "Pacific Mall", "SM Lucena"
       trim: true,
     },
+
+    // optional: where the TODA usually drops passengers for this destination
     latitude: {
       type: Number,
     },
     longitude: {
       type: Number,
     },
+
+    // main typical path used by this TODA going to this destination
+    mainRoute: {
+      type: String,   // ex: "Market Ave → Dalahican Road"
+      trim: true,
+      default: "",
+    },
+
+    // optional alternates, ex: ["Quezon Ave → Eco-Tourism Road", ...]
+    altRoutes: {
+      type: [String],
+      default: [],
+    },
+
     notes: {
       type: String,
       default: "",

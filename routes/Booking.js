@@ -569,11 +569,6 @@ router.post("/book", async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
-
-// ===============================
-//   /api/waiting-bookings (AI v1)
-// ===============================
-
 // ===============================
 //   /api/waiting-bookings (AI v1 + TODA restriction)
 // ===============================
