@@ -545,19 +545,19 @@ async function todaAwareFilterForDriver(candidates, driverId) {
   const ds = await DriverStatus.findOne({
     driverId: new mongoose.Types.ObjectId(driverId),
   })
-    .select("currentTodaId inTodaZone isOnline updatedAt")
+    .select("currentTodaId isOnline updatedAt")
     .lean();
 
   if (!ds) return candidates;
 
   const driverTodaId = ds.currentTodaId ? String(ds.currentTodaId) : null;
 
-  // --- CASE A: Driver belongs to a TODA (TODA driver) ---
+  // --- CASE A: Driver is a TODA member ---
+  // Rules:
+  //  - can see bookings in *their* TODA if NOT rejected
+  //  - can see bookings outside any TODA
+  //  - cannot see bookings in other TODAs
   if (driverTodaId) {
-    // TODA driver:
-    //  - can see bookings in *their* TODA that are NOT rejected
-    //  - can see bookings outside any TODA
-    //  - cannot see bookings in other TODAs
     return candidates.filter((b) => {
       const bt = b.pickupTodaId ? String(b.pickupTodaId) : null;
       const rejected = !!b.pickupTodaRejected;
@@ -565,21 +565,20 @@ async function todaAwareFilterForDriver(candidates, driverId) {
       // Booking belongs to a different TODA → never show
       if (bt && bt !== driverTodaId) return false;
 
-      // Booking is in THIS TODA but TODA routes do not serve destination
+      // Booking is in THIS TODA but routes do not serve destination
       if (bt === driverTodaId && rejected) return false;
 
-      // Outside any TODA or accepted inside this TODA
+      // Outside any TODA OR accepted inside this TODA
       return true;
     });
   }
 
-  // --- CASE B: Roaming driver (no currentTodaId) ---
-  // Roaming should:
-  //  - see outside-TODA bookings
-  //  - see TODA bookings that were rejected by that TODA (pickupTodaRejected = true)
-  //  - only see normal TODA bookings if that TODA has no active drivers
-
-  // 1) Collect all TODA ids from these bookings
+  // --- CASE B: Roaming driver (no TODA membership) ---
+  // Rules:
+  //  - can ALWAYS see bookings outside all TODAs
+  //  - can see bookings inside a TODA **only if**:
+  //        • that booking is `pickupTodaRejected = true` (zone doesn’t serve it), OR
+  //        • there are no ACTIVE drivers in that TODA
   const todaIds = [
     ...new Set(
       candidates
@@ -589,11 +588,10 @@ async function todaAwareFilterForDriver(candidates, driverId) {
   ];
 
   if (!todaIds.length) {
-    // No TODA bookings here anyway
+    // No TODA bookings at all
     return candidates;
   }
 
-  // 2) Find online TODA drivers for these TODAs
   const dsList = await DriverStatus.find({
     currentTodaId: { $in: todaIds.map((id) => new mongoose.Types.ObjectId(id)) },
     isOnline: true,
@@ -602,7 +600,7 @@ async function todaAwareFilterForDriver(candidates, driverId) {
     .lean();
 
   const now = Date.now();
-  const ACTIVE_MS = 60_000; // same window as /driver-status
+  const ACTIVE_MS = 60_000; // same as driver-status
 
   const activeTodaSet = new Set(
     dsList
@@ -617,16 +615,18 @@ async function todaAwareFilterForDriver(candidates, driverId) {
     // Outside TODA → always allowed
     if (!bt) return true;
 
-    // Inside TODA but TODA rejected this job → roaming drivers can always see it
+    // Inside a TODA but that TODA rejected the job → roaming drivers can see it
     if (rejected) return true;
 
-    // Normal TODA booking: only show if no active TODA drivers
+    // Normal TODA booking:
+    // only show to roaming driver if NO active TODA drivers for that TODA
     if (!activeTodaSet.has(bt)) return true;
 
-    // TODA drivers are active → roaming driver cannot see this booking
+    // TODA drivers active + non-rejected TODA job → hide from roaming
     return false;
   });
 }
+
 
 
 // ---------- POST /book ----------
@@ -773,6 +773,9 @@ router.post("/book", async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
+
+
+
 // ===============================
 //   /api/waiting-bookings (AI v1 + TODA restriction)
 // ===============================
@@ -812,7 +815,7 @@ router.get("/waiting-bookings", async (req, res) => {
       const toRad = (d) => (d * Math.PI) / 180;
 
       const dLat = toRad(lat2 - lat1);
-      const dLng = toRad(lng2 - lng1);
+      const dLng = toRad(dLng2 - lng1);
 
       const a =
         Math.sin(dLat / 2) ** 2 +
@@ -915,8 +918,7 @@ router.get("/waiting-bookings", async (req, res) => {
 
         return b;
       })
-      // 1) within radius
-      .filter((b) => b._distKm <= rad);
+      .filter((b) => b._distKm <= rad); // 1) within radius
 
     let filtered = filteredBase;
 
@@ -937,10 +939,8 @@ router.get("/waiting-bookings", async (req, res) => {
       const candHeading = bearingDeg(center.lat, center.lng, dLat, dLng);
       const diff = angleDiffDeg(mainHeadingDeg, candHeading);
 
-      // ❌ Opposite direction drop-off
-      if (diff > 120) return false;
+      if (diff > 120) return false; // ❌ Opposite direction
 
-      // ❌ Check AFTER-drop-off compatibility
       if (activeMainDestLat != null && activeMainDestLng != null) {
         const ok = isDestinationCompatible(
           { lat: activeMainDestLat, lng: activeMainDestLng },
@@ -953,14 +953,12 @@ router.get("/waiting-bookings", async (req, res) => {
       return true;
     });
 
-    // 4) sort + limit
+    // 4) sort + limit + shape output
     filtered = filtered
       .sort((a, b) => a._distKm - b._distKm)
       .slice(0, lim)
-      // 5) shape output for driver app
       .map((b) => {
         const id = b.bookingId || String(b._id);
-
         return {
           id,
           bookingId: id,
@@ -982,8 +980,6 @@ router.get("/waiting-bookings", async (req, res) => {
     res.status(500).json([]);
   }
 });
-
-
 
 
 // ---------- GET /driver-requests/:driverId ----------
