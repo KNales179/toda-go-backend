@@ -117,7 +117,6 @@ function angleDiffDeg(a, b) {
   return d; // 0–180
 }
 
-
 function isDestinationCompatible(mainDest, candDest, mainHeadingDeg) {
   const A = {
     lat: Number(mainDest.lat),
@@ -152,8 +151,6 @@ function isDestinationCompatible(mainDest, candDest, mainHeadingDeg) {
   //   (not going back the opposite way)
   return diffAB <= 90; // <= 90° = still generally “ahead or side”, >90 = going back
 }
-
-
 
 const isObjectId = (s) => mongoose.Types.ObjectId.isValid(String(s || ""));
 
@@ -197,7 +194,6 @@ async function pickNearestDriver({ pickupLat, pickupLng, bookingType, partySize 
 
   return best?.driver || null;
 }
-
 
 // --- Capacity utils ---
 async function getDriverStatusOrInit(driverId) {
@@ -345,7 +341,6 @@ async function cleanupExpiredReservations(targetDriverId = null) {
   }
 }
 
-
 // 🔹 Find which TODA zone this pickup belongs to (if any)
 async function findPickupTodaId(pickupLat, pickupLng) {
   // guard: coordinates
@@ -382,7 +377,6 @@ async function findPickupTodaId(pickupLat, pickupLng) {
 
   return bestId; // ObjectId or null
 }
-
 
 // 🔹 Try to extract route polylines from a TODA doc
 function extractTodaRoutes(t) {
@@ -443,8 +437,6 @@ function isDestinationServedByToda(toda, destLat, destLng) {
   }
   return false;
 }
-
-
 
 // 🔹 Match trip to TODA line based on destination (and a bit of pickup)
 async function matchTripToToda(pickupLat, pickupLng, destinationLat, destinationLng) {
@@ -536,49 +528,70 @@ async function matchTripToToda(pickupLat, pickupLng, destinationLat, destination
   return { destinationTodaId, candidateTodaIds };
 }
 
-
-// 🔹 TODA-aware filter for /waiting-bookings
+// 🔹 TODA-aware filter for /waiting-bookings (with debug)
 async function todaAwareFilterForDriver(candidates, driverId) {
-  if (!driverId || !isObjectId(driverId)) return candidates;
+  console.log("🚕 [todaAwareFilterForDriver] start", {
+    driverId,
+    candidateCount: candidates.length,
+    sample: candidates.slice(0, 5).map((b) => ({
+      bookingId: b.bookingId,
+      pickupTodaId: b.pickupTodaId || null,
+      pickupTodaRejected: !!b.pickupTodaRejected,
+    })),
+  });
 
-  // Who is the driver asking?
+  if (!driverId || !isObjectId(driverId)) {
+    console.log("🚕 [todaAwareFilterForDriver] invalid or missing driverId, returning original candidates");
+    return candidates;
+  }
+
   const ds = await DriverStatus.findOne({
     driverId: new mongoose.Types.ObjectId(driverId),
   })
     .select("currentTodaId isOnline updatedAt")
     .lean();
 
-  if (!ds) return candidates;
+  console.log("🚕 [todaAwareFilterForDriver] driverStatus:", ds);
+
+  if (!ds) {
+    console.log("🚕 [todaAwareFilterForDriver] no DriverStatus found → return all candidates");
+    return candidates;
+  }
 
   const driverTodaId = ds.currentTodaId ? String(ds.currentTodaId) : null;
+  console.log("🚕 [todaAwareFilterForDriver] driverTodaId:", driverTodaId);
 
   // --- CASE A: Driver is a TODA member ---
-  // Rules:
-  //  - can see bookings in *their* TODA if NOT rejected
-  //  - can see bookings outside any TODA
-  //  - cannot see bookings in other TODAs
   if (driverTodaId) {
-    return candidates.filter((b) => {
+    const out = candidates.filter((b) => {
       const bt = b.pickupTodaId ? String(b.pickupTodaId) : null;
       const rejected = !!b.pickupTodaRejected;
 
-      // Booking belongs to a different TODA → never show
-      if (bt && bt !== driverTodaId) return false;
+      const keep =
+        // Booking belongs to a different TODA → hide
+        !(
+          bt && bt !== driverTodaId
+        ) &&
+        // Booking is in THIS TODA but routes do not serve destination → hide
+        !(
+          bt === driverTodaId && rejected
+        );
 
-      // Booking is in THIS TODA but routes do not serve destination
-      if (bt === driverTodaId && rejected) return false;
+      console.log("🚕 [CASE A] booking decision", {
+        bookingId: b.bookingId,
+        pickupTodaId: bt,
+        pickupTodaRejected: rejected,
+        keep,
+      });
 
-      // Outside any TODA OR accepted inside this TODA
-      return true;
+      return keep;
     });
+
+    console.log("🚕 [CASE A] result count:", out.length);
+    return out;
   }
 
   // --- CASE B: Roaming driver (no TODA membership) ---
-  // Rules:
-  //  - can ALWAYS see bookings outside all TODAs
-  //  - can see bookings inside a TODA **only if**:
-  //        • that booking is `pickupTodaRejected = true` (zone doesn’t serve it), OR
-  //        • there are no ACTIVE drivers in that TODA
   const todaIds = [
     ...new Set(
       candidates
@@ -587,8 +600,10 @@ async function todaAwareFilterForDriver(candidates, driverId) {
     ),
   ];
 
+  console.log("🚕 [CASE B] roaming driver, TODA ids in candidates:", todaIds);
+
   if (!todaIds.length) {
-    // No TODA bookings at all
+    console.log("🚕 [CASE B] no TODA bookings in candidates → return as-is");
     return candidates;
   }
 
@@ -600,7 +615,7 @@ async function todaAwareFilterForDriver(candidates, driverId) {
     .lean();
 
   const now = Date.now();
-  const ACTIVE_MS = 60_000; // same as driver-status
+  const ACTIVE_MS = 60_000;
 
   const activeTodaSet = new Set(
     dsList
@@ -608,26 +623,41 @@ async function todaAwareFilterForDriver(candidates, driverId) {
       .map((s) => String(s.currentTodaId))
   );
 
-  return candidates.filter((b) => {
+  console.log("🚕 [CASE B] activeTodaSet:", Array.from(activeTodaSet));
+
+  const out = candidates.filter((b) => {
     const bt = b.pickupTodaId ? String(b.pickupTodaId) : null;
     const rejected = !!b.pickupTodaRejected;
 
-    // Outside TODA → always allowed
-    if (!bt) return true;
+    let keep;
 
-    // Inside a TODA but that TODA rejected the job → roaming drivers can see it
-    if (rejected) return true;
+    if (!bt) {
+      // Outside TODA → always allowed
+      keep = true;
+    } else if (rejected) {
+      // Inside TODA but TODA rejected job → roaming can see
+      keep = true;
+    } else if (!activeTodaSet.has(bt)) {
+      // TODA exists but no active drivers → roaming can see
+      keep = true;
+    } else {
+      // TODA drivers active + non-rejected TODA job → hide from roaming
+      keep = false;
+    }
 
-    // Normal TODA booking:
-    // only show to roaming driver if NO active TODA drivers for that TODA
-    if (!activeTodaSet.has(bt)) return true;
+    console.log("🚕 [CASE B] booking decision", {
+      bookingId: b.bookingId,
+      pickupTodaId: bt,
+      pickupTodaRejected: rejected,
+      keep,
+    });
 
-    // TODA drivers active + non-rejected TODA job → hide from roaming
-    return false;
+    return keep;
   });
+
+  console.log("🚕 [CASE B] result count:", out.length);
+  return out;
 }
-
-
 
 // ---------- POST /book ----------
 router.post("/book", async (req, res) => {
@@ -774,14 +804,21 @@ router.post("/book", async (req, res) => {
   }
 });
 
-
-
 // ===============================
 //   /api/waiting-bookings (AI v1 + TODA restriction)
 // ===============================
 router.get("/waiting-bookings", async (req, res) => {
   try {
     const { lat, lng, radiusKm = 5, limit = 10, driverId, ai } = req.query;
+
+    console.log("🔎 /waiting-bookings called", {
+      lat,
+      lng,
+      radiusKm,
+      limit,
+      driverId,
+      ai,
+    });
 
     const center = {
       lat: Number(lat),
@@ -791,7 +828,15 @@ router.get("/waiting-bookings", async (req, res) => {
     const lim = Number(limit);
     const aiMode = ai === "1";
 
+    console.log("🔎 parsed params:", {
+      center,
+      rad,
+      lim,
+      aiMode,
+    });
+
     if (!Number.isFinite(center.lat) || !Number.isFinite(center.lng)) {
+      console.log("🔎 invalid center coordinates → 400");
       return res.status(400).json([]);
     }
 
@@ -809,13 +854,13 @@ router.get("/waiting-bookings", async (req, res) => {
       return 2 * R * Math.asin(Math.sqrt(s));
     };
 
-    // 🔹 Haversine in meters
-    function haversine(lat1, lng1, lat2, lng2) {
+    // 🔹 Haversine in meters (fixed dLng)
+    function haversineLocal(lat1, lng1, lat2, lng2) {
       const R = 6371000;
       const toRad = (d) => (d * Math.PI) / 180;
 
       const dLat = toRad(lat2 - lat1);
-      const dLng = toRad(dLng2 - lng1);
+      const dLng = toRad(lng2 - lng1);
 
       const a =
         Math.sin(dLat / 2) ** 2 +
@@ -827,7 +872,7 @@ router.get("/waiting-bookings", async (req, res) => {
     }
 
     // 🔹 Bearing
-    function bearingDeg(lat1, lng1, lat2, lng2) {
+    function bearingDegLocal(lat1, lng1, lat2, lng2) {
       const toRad = (d) => (d * Math.PI) / 180;
       const toDeg = (d) => (d * 180) / Math.PI;
       const dLng = toRad(lng2 - lng1);
@@ -841,13 +886,13 @@ router.get("/waiting-bookings", async (req, res) => {
     }
 
     // 🔹 Angle difference (0–180)
-    function angleDiffDeg(a, b) {
+    function angleDiffDegLocal(a, b) {
       let d = Math.abs(a - b) % 360;
       return d > 180 ? 360 - d : d;
     }
 
-    // 🔥 destination compatibility (AI stuff – unchanged)
-    function isDestinationCompatible(mainDest, candDest, mainHeadingDeg) {
+    // 🔥 destination compatibility (AI stuff – uses local helpers)
+    function isDestinationCompatibleLocal(mainDest, candDest, mainHeadingDeg) {
       const A = { lat: Number(mainDest.lat), lng: Number(mainDest.lng) };
       const B = { lat: Number(candDest.lat), lng: Number(candDest.lng) };
 
@@ -859,11 +904,11 @@ router.get("/waiting-bookings", async (req, res) => {
       )
         return true;
 
-      const distABm = haversine(A.lat, A.lng, B.lat, B.lng);
+      const distABm = haversineLocal(A.lat, A.lng, B.lat, B.lng);
       const distABkm = distABm / 1000;
 
-      const headingAB = bearingDeg(A.lat, A.lng, B.lat, B.lng);
-      const diffAB = angleDiffDeg(mainHeadingDeg, headingAB);
+      const headingAB = bearingDegLocal(A.lat, A.lng, B.lat, B.lng);
+      const diffAB = angleDiffDegLocal(mainHeadingDeg, headingAB);
 
       if (distABkm <= 0.3) return true;
       return diffAB <= 90;
@@ -875,6 +920,8 @@ router.get("/waiting-bookings", async (req, res) => {
       pickupLat: { $exists: true },
       pickupLng: { $exists: true },
     }).lean();
+
+    console.log("🔎 nearby pending bookings:", nearby.length);
 
     // 🔹 Optional: load active main destination for AI mode
     let mainHeadingDeg = null;
@@ -888,6 +935,8 @@ router.get("/waiting-bookings", async (req, res) => {
         .sort({ createdAt: -1 })
         .lean();
 
+      console.log("🔎 active booking for AI:", active && active.bookingId);
+
       if (active) {
         activeMainDestLat = Number(active.destinationLat);
         activeMainDestLng = Number(active.destinationLng);
@@ -896,7 +945,7 @@ router.get("/waiting-bookings", async (req, res) => {
           Number.isFinite(activeMainDestLat) &&
           Number.isFinite(activeMainDestLng)
         ) {
-          mainHeadingDeg = bearingDeg(
+          mainHeadingDeg = bearingDegLocal(
             center.lat,
             center.lng,
             activeMainDestLat,
@@ -905,6 +954,11 @@ router.get("/waiting-bookings", async (req, res) => {
         }
       }
     }
+
+    console.log("🔎 AI mainHeadingDeg:", mainHeadingDeg, {
+      activeMainDestLat,
+      activeMainDestLng,
+    });
 
     // 🔹 Base filter: distance + attach TODA flags from Booking
     const filteredBase = nearby
@@ -918,16 +972,32 @@ router.get("/waiting-bookings", async (req, res) => {
 
         return b;
       })
-      .filter((b) => b._distKm <= rad); // 1) within radius
+      .filter((b) => {
+        const keep = b._distKm <= rad;
+        if (!keep) {
+          console.log("⛔ drop by radius", {
+            bookingId: b.bookingId,
+            distKm: b._distKm,
+            radiusKm: rad,
+          });
+        }
+        return keep;
+      });
+
+    console.log("🔎 after radius filter:", filteredBase.length, "bookings");
 
     let filtered = filteredBase;
 
     // 2) TODA restriction (TODA vs Roaming, with rejection rules)
     if (driverId) {
+      console.log("🔎 applying TODA-aware filter for driver", driverId);
       filtered = await todaAwareFilterForDriver(filtered, driverId);
+      console.log("🔎 after TODA filter:", filtered.length, "bookings");
+    } else {
+      console.log("🔎 no driverId → skipping TODA filter");
     }
 
-    // 3) AI direction filter (unchanged)
+    // 3) AI direction filter
     filtered = filtered.filter((b) => {
       if (!aiMode || mainHeadingDeg == null) return true;
 
@@ -936,51 +1006,71 @@ router.get("/waiting-bookings", async (req, res) => {
 
       if (!Number.isFinite(dLat) || !Number.isFinite(dLng)) return true;
 
-      const candHeading = bearingDeg(center.lat, center.lng, dLat, dLng);
-      const diff = angleDiffDeg(mainHeadingDeg, candHeading);
+      const candHeading = bearingDegLocal(center.lat, center.lng, dLat, dLng);
+      const diff = angleDiffDegLocal(mainHeadingDeg, candHeading);
 
-      if (diff > 120) return false; // ❌ Opposite direction
+      if (diff > 120) {
+        console.log("⛔ drop by AI heading", {
+          bookingId: b.bookingId,
+          diff,
+          mainHeadingDeg,
+          candHeading,
+        });
+        return false;
+      }
 
       if (activeMainDestLat != null && activeMainDestLng != null) {
-        const ok = isDestinationCompatible(
+        const ok = isDestinationCompatibleLocal(
           { lat: activeMainDestLat, lng: activeMainDestLng },
           { lat: dLat, lng: dLng },
           mainHeadingDeg
         );
-        if (!ok) return false;
+        if (!ok) {
+          console.log("⛔ drop by AI compatibility", {
+            bookingId: b.bookingId,
+          });
+          return false;
+        }
       }
 
       return true;
     });
 
+    console.log("🔎 after AI filter:", filtered.length, "bookings");
+
     // 4) sort + limit + shape output
     filtered = filtered
       .sort((a, b) => a._distKm - b._distKm)
-      .slice(0, lim)
-      .map((b) => {
-        const id = b.bookingId || String(b._id);
-        return {
-          id,
-          bookingId: id,
-          fare: b.fare,
-          pickup: { lat: b.pickupLat, lng: b.pickupLng },
-          destination: { lat: b.destinationLat, lng: b.destinationLng },
-          passengerPreview: {
-            name: b.passengerName,
-            bookedFor: b.bookedFor || false,
-          },
-          bookingType: b.bookingType,
-          partySize: b.partySize || 1,
-        };
-      });
+      .slice(0, lim);
 
-    return res.json(filtered);
+    console.log("✅ final waiting-bookings result:", {
+      count: filtered.length,
+      bookingIds: filtered.map((b) => b.bookingId || String(b._id)),
+    });
+
+    const shaped = filtered.map((b) => {
+      const id = b.bookingId || String(b._id);
+      return {
+        id,
+        bookingId: id,
+        fare: b.fare,
+        pickup: { lat: b.pickupLat, lng: b.pickupLng },
+        destination: { lat: b.destinationLat, lng: b.destinationLng },
+        passengerPreview: {
+          name: b.passengerName,
+          bookedFor: b.bookedFor || false,
+        },
+        bookingType: b.bookingType,
+        partySize: b.partySize || 1,
+      };
+    });
+
+    return res.json(shaped);
   } catch (err) {
     console.error("❌ waiting-bookings error:", err);
     res.status(500).json([]);
   }
 });
-
 
 // ---------- GET /driver-requests/:driverId ----------
 router.get("/driver-requests/:driverId", async (req, res) => {
@@ -1039,7 +1129,6 @@ router.get("/driver-requests/:driverId", async (req, res) => {
       .json({ error: "Internal Server Error", message: err?.message || String(err) });
   }
 });
-
 
 // ---------- POST /driver-confirmed (optional legacy) ----------
 router.post("/driver-confirmed", async (req, res) => {
@@ -1141,7 +1230,6 @@ router.post("/accept-booking", async (req, res) => {
   }
 });
 
-
 // ---------- POST /cancel-booking ----------
 router.post("/cancel-booking", async (req, res) => {
   try {
@@ -1178,7 +1266,6 @@ router.post("/cancel-booking", async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
-
 
 // ---------- POST /complete-booking ----------
 router.post("/complete-booking", async (req, res) => {
@@ -1263,8 +1350,6 @@ router.post("/complete-booking", async (req, res) => {
     return res.status(500).json({ message: "Server error", details: e.message });
   }
 });
-
-
 
 // ---------- (Optional) GET /bookings — debug only ----------
 router.get("/bookings", async (_req, res) => {
