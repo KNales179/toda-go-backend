@@ -555,18 +555,29 @@ async function todaAwareFilterForDriver(candidates, driverId) {
   // --- CASE A: Driver belongs to a TODA (TODA driver) ---
   if (driverTodaId) {
     // TODA driver:
-    //  - can see bookings in their TODA
+    //  - can see bookings in *their* TODA that are NOT rejected
     //  - can see bookings outside any TODA
     //  - cannot see bookings in other TODAs
     return candidates.filter((b) => {
       const bt = b.pickupTodaId ? String(b.pickupTodaId) : null;
-      if (!bt) return true;           // outside any TODA → allowed
-      return bt === driverTodaId;     // only this TODA's bookings
+      const rejected = !!b.pickupTodaRejected;
+
+      // Booking belongs to a different TODA → never show
+      if (bt && bt !== driverTodaId) return false;
+
+      // Booking is in THIS TODA but TODA routes do not serve destination
+      if (bt === driverTodaId && rejected) return false;
+
+      // Outside any TODA or accepted inside this TODA
+      return true;
     });
   }
 
   // --- CASE B: Roaming driver (no currentTodaId) ---
-  // Roaming should only see TODA bookings if there are NO active TODA drivers for that TODA.
+  // Roaming should:
+  //  - see outside-TODA bookings
+  //  - see TODA bookings that were rejected by that TODA (pickupTodaRejected = true)
+  //  - only see normal TODA bookings if that TODA has no active drivers
 
   // 1) Collect all TODA ids from these bookings
   const todaIds = [
@@ -601,9 +612,19 @@ async function todaAwareFilterForDriver(candidates, driverId) {
 
   return candidates.filter((b) => {
     const bt = b.pickupTodaId ? String(b.pickupTodaId) : null;
-    if (!bt) return true;                    // outside TODA
-    if (!activeTodaSet.has(bt)) return true; // no TODA drivers → fallback allowed
-    return false;                            // TODA drivers are active → roaming can't see this
+    const rejected = !!b.pickupTodaRejected;
+
+    // Outside TODA → always allowed
+    if (!bt) return true;
+
+    // Inside TODA but TODA rejected this job → roaming drivers can always see it
+    if (rejected) return true;
+
+    // Normal TODA booking: only show if no active TODA drivers
+    if (!activeTodaSet.has(bt)) return true;
+
+    // TODA drivers are active → roaming driver cannot see this booking
+    return false;
   });
 }
 
@@ -771,15 +792,6 @@ router.get("/waiting-bookings", async (req, res) => {
       return res.status(400).json([]);
     }
 
-    // 🔹 Load TODAs once
-    let todas = [];
-    try {
-      todas = await Toda.find({ isActive: true }).lean();
-    } catch (e) {
-      console.error("❌ waiting-bookings: failed to load TODAs", e?.message || e);
-      todas = [];
-    }
-
     // 🔹 Simple helper: distance in km
     const distKm = (a, b) => {
       const R = 6371;
@@ -794,7 +806,7 @@ router.get("/waiting-bookings", async (req, res) => {
       return 2 * R * Math.asin(Math.sqrt(s));
     };
 
-    // 🔹 Haversine in meters (for TODA radius)
+    // 🔹 Haversine in meters
     function haversine(lat1, lng1, lat2, lng2) {
       const R = 6371000;
       const toRad = (d) => (d * Math.PI) / 180;
@@ -854,63 +866,6 @@ router.get("/waiting-bookings", async (req, res) => {
       return diffAB <= 90;
     }
 
-    // 🔹 Figure out which TODA a point belongs to (if any)
-    function findTodaForPoint(lat, lng) {
-      if (!todas.length) return null;
-      let best = null;
-      let bestDist = Infinity;
-
-      for (const t of todas) {
-        const tLat = Number(t.latitude);
-        const tLng = Number(t.longitude);
-        if (!Number.isFinite(tLat) || !Number.isFinite(tLng)) continue;
-
-        const d = haversine(lat, lng, tLat, tLng);
-        const radiusM =
-          typeof t.radiusMeters === "number" && Number.isFinite(t.radiusMeters)
-            ? t.radiusMeters
-            : 100; // default 100m
-
-        if (d <= radiusM && d < bestDist) {
-          bestDist = d;
-          best = t;
-        }
-      }
-      return best; // null if outside all TODAs
-    }
-
-    // 🔹 Resolve driver’s TODA membership by name (temporary)
-    let driverMemberTodaId = null;
-    if (driverId) {
-      try {
-        const d = await Driver.findById(driverId).lean();
-        if (d) {
-          const rawName =
-            (d.todaName ||
-              d.toda ||
-              d.toda_name ||
-              d.toda_name_text ||
-              "").toString();
-          const normalized = rawName.trim().toLowerCase();
-
-          if (normalized && Array.isArray(todas) && todas.length) {
-            const match = todas.find(
-              (t) =>
-                (t.name || "").toString().trim().toLowerCase() === normalized
-            );
-            if (match) {
-              driverMemberTodaId = String(match._id);
-            }
-          }
-        }
-      } catch (e) {
-        console.error(
-          "❌ waiting-bookings: failed to resolve driver TODA membership",
-          e?.message || e
-        );
-      }
-    }
-
     // 🔹 Fetch waiting bookings (all pending)
     const nearby = await Booking.find({
       status: "pending",
@@ -948,14 +903,15 @@ router.get("/waiting-bookings", async (req, res) => {
       }
     }
 
+    // 🔹 Base filter: distance + attach TODA flags from Booking
     const filteredBase = nearby
       .map((b) => {
-        const pickup = { lat: b.pickupLat, lng: b.pickupLng };
+        const pickup = { lat: Number(b.pickupLat), lng: Number(b.pickupLng) };
         b._distKm = distKm(center, pickup);
 
-        // 🔹 Prefer stored TODA info from Booking
-        b._pickupTodaId = b.pickupTodaId ? String(b.pickupTodaId) : null;
-        b._pickupTodaRejected = !!b.pickupTodaRejected;
+        // Use stored TODA info from Booking
+        b.pickupTodaId = b.pickupTodaId ? String(b.pickupTodaId) : null;
+        b.pickupTodaRejected = !!b.pickupTodaRejected;
 
         return b;
       })
@@ -964,40 +920,9 @@ router.get("/waiting-bookings", async (req, res) => {
 
     let filtered = filteredBase;
 
-    // 2) TODA restriction with rejection logic
-    if (driverMemberTodaId) {
-      // --- CASE A: Driver is a TODA member ---
-      filtered = filtered.filter((b) => {
-        const bt = b._pickupTodaId;
-        const rejected = !!b._pickupTodaRejected;
-
-        // Booking belongs to a different TODA → never show
-        if (bt && bt !== driverMemberTodaId) return false;
-
-        // Booking is in THIS TODA but TODA routes do not serve destination
-        if (bt === driverMemberTodaId && rejected) return false;
-
-        // Outside any TODA or accepted inside this TODA
-        return true;
-      });
-    } else {
-      // --- CASE B: Roaming driver (no TODA membership) ---
-      filtered = filtered.filter((b) => {
-        const bt = b._pickupTodaId;
-        const rejected = !!b._pickupTodaRejected;
-
-        // Outside all TODAs → always allowed
-        if (!bt) return true;
-
-        // Inside a TODA but that TODA rejected the job → roaming drivers can see it
-        if (rejected) return true;
-
-        // Normal TODA booking: only show to roaming driver if no active TODA drivers
-        if (!activeTodaSet.has(bt)) return true;
-
-        // TODA drivers active → roaming driver cannot see this booking
-        return false;
-      });
+    // 2) TODA restriction (TODA vs Roaming, with rejection rules)
+    if (driverId) {
+      filtered = await todaAwareFilterForDriver(filtered, driverId);
     }
 
     // 3) AI direction filter (unchanged)
@@ -1057,6 +982,7 @@ router.get("/waiting-bookings", async (req, res) => {
     res.status(500).json([]);
   }
 });
+
 
 
 
