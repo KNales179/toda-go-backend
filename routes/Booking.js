@@ -384,6 +384,68 @@ async function findPickupTodaId(pickupLat, pickupLng) {
 }
 
 
+// 🔹 Try to extract route polylines from a TODA doc
+function extractTodaRoutes(t) {
+  const routes = [];
+
+  // Common pattern: an array of routeVariants, each with points/coords/path
+  if (Array.isArray(t.routeVariants)) {
+    for (const rv of t.routeVariants) {
+      const raw =
+        (Array.isArray(rv.points) && rv.points) ||
+        (Array.isArray(rv.coords) && rv.coords) ||
+        (Array.isArray(rv.path) && rv.path) ||
+        [];
+      const pts = raw
+        .map((p) => ({
+          lat: Number(p.lat ?? p.latitude),
+          lng: Number(p.lng ?? p.longitude),
+        }))
+        .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+
+      if (pts.length >= 2) routes.push(pts);
+    }
+  }
+
+  // Fallback: flat array of points directly on the TODA
+  if (Array.isArray(t.routePoints)) {
+    const pts = t.routePoints
+      .map((p) => ({
+        lat: Number(p.lat ?? p.latitude),
+        lng: Number(p.lng ?? p.longitude),
+      }))
+      .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+    if (pts.length >= 2) routes.push(pts);
+  }
+
+  return routes;
+}
+
+// 🔹 Check if a destination lies within a corridor around TODA routes
+function isDestinationServedByToda(toda, destLat, destLng) {
+  if (!Number.isFinite(destLat) || !Number.isFinite(destLng)) return true;
+
+  const routes = extractTodaRoutes(toda);
+  if (!routes.length) {
+    // No geometry configured → don’t reject anything for this TODA
+    return true;
+  }
+
+  const p = { lat: destLat, lng: destLng };
+  const MAX_CORRIDOR_M =
+    typeof toda.routeCorridorMeters === "number" && toda.routeCorridorMeters > 0
+      ? toda.routeCorridorMeters
+      : 500; // 500m default
+
+  for (const poly of routes) {
+    const d = routeDistanceMeters(poly, p); // you already defined routeDistanceMeters above
+    if (d <= MAX_CORRIDOR_M) return true;
+  }
+  return false;
+}
+
+
+
 // 🔹 Match trip to TODA line based on destination (and a bit of pickup)
 async function matchTripToToda(pickupLat, pickupLng, destinationLat, destinationLng) {
   if (
@@ -627,6 +689,23 @@ router.post("/book", async (req, res) => {
       Number(destinationLng)
     );
 
+    // 🔹 Decide if TODA actually serves this destination
+    let pickupTodaRejected = false;
+    if (pickupTodaId) {
+      try {
+        const toda = await Toda.findById(pickupTodaId).lean();
+        if (toda) {
+          const destLatNum = Number(destinationLat);
+          const destLngNum = Number(destinationLng);
+          const served = isDestinationServedByToda(toda, destLatNum, destLngNum);
+          pickupTodaRejected = !served; // true when inside zone but route doesn't match
+        }
+      } catch (e) {
+        console.warn("⚠️ TODA route check failed:", e?.message || e);
+      }
+    }
+
+
 
     const booking = await Booking.create({
       passengerId,
@@ -642,6 +721,7 @@ router.post("/book", async (req, res) => {
 
       // TODA info
       pickupTodaId: pickupTodaId || null,
+      pickupTodaRejected,  
       destinationTodaId: destinationTodaId || null,
       candidateTodaIds: candidateTodaIds || [],
 
@@ -868,63 +948,88 @@ router.get("/waiting-bookings", async (req, res) => {
       }
     }
 
-    const filtered = nearby
+    const filteredBase = nearby
       .map((b) => {
         const pickup = { lat: b.pickupLat, lng: b.pickupLng };
         b._distKm = distKm(center, pickup);
 
-        // 🔹 Tag which TODA this booking belongs to (if any)
-        const toda = findTodaForPoint(pickup.lat, pickup.lng);
-        b._pickupTodaId = toda ? String(toda._id) : null;
+        // 🔹 Prefer stored TODA info from Booking
+        b._pickupTodaId = b.pickupTodaId ? String(b.pickupTodaId) : null;
+        b._pickupTodaRejected = !!b.pickupTodaRejected;
 
         return b;
       })
       // 1) within radius
-      .filter((b) => b._distKm <= rad)
-      // 2) TODA restriction:
-      //    - If booking is inside a TODA:
-      //        only show it if driver is member of THAT TODA
-      //    - If booking is outside all TODAs:
-      //        always allowed
-      .filter((b) => {
-        if (b._pickupTodaId) {
-          // driver is not member of any TODA in our list -> cannot see any TODA bookings
-          if (!driverMemberTodaId) return false;
+      .filter((b) => b._distKm <= rad);
 
-          // only see if driver’s TODA matches booking’s TODA
-          return String(b._pickupTodaId) === String(driverMemberTodaId);
-        }
-        // outside any TODA → allowed
+    let filtered = filteredBase;
+
+    // 2) TODA restriction with rejection logic
+    if (driverMemberTodaId) {
+      // --- CASE A: Driver is a TODA member ---
+      filtered = filtered.filter((b) => {
+        const bt = b._pickupTodaId;
+        const rejected = !!b._pickupTodaRejected;
+
+        // Booking belongs to a different TODA → never show
+        if (bt && bt !== driverMemberTodaId) return false;
+
+        // Booking is in THIS TODA but TODA routes do not serve destination
+        if (bt === driverMemberTodaId && rejected) return false;
+
+        // Outside any TODA or accepted inside this TODA
         return true;
-      })
-      // 3) AI direction filter (unchanged)
-      .filter((b) => {
-        if (!aiMode || mainHeadingDeg == null) return true;
+      });
+    } else {
+      // --- CASE B: Roaming driver (no TODA membership) ---
+      filtered = filtered.filter((b) => {
+        const bt = b._pickupTodaId;
+        const rejected = !!b._pickupTodaRejected;
 
-        const dLat = Number(b.destinationLat);
-        const dLng = Number(b.destinationLng);
+        // Outside all TODAs → always allowed
+        if (!bt) return true;
 
-        if (!Number.isFinite(dLat) || !Number.isFinite(dLng)) return true;
+        // Inside a TODA but that TODA rejected the job → roaming drivers can see it
+        if (rejected) return true;
 
-        const candHeading = bearingDeg(center.lat, center.lng, dLat, dLng);
-        const diff = angleDiffDeg(mainHeadingDeg, candHeading);
+        // Normal TODA booking: only show to roaming driver if no active TODA drivers
+        if (!activeTodaSet.has(bt)) return true;
 
-        // ❌ Opposite direction drop-off
-        if (diff > 120) return false;
+        // TODA drivers active → roaming driver cannot see this booking
+        return false;
+      });
+    }
 
-        // ❌ Check AFTER-drop-off compatibility
-        if (activeMainDestLat != null && activeMainDestLng != null) {
-          const ok = isDestinationCompatible(
-            { lat: activeMainDestLat, lng: activeMainDestLng },
-            { lat: dLat, lng: dLng },
-            mainHeadingDeg
-          );
-          if (!ok) return false;
-        }
+    // 3) AI direction filter (unchanged)
+    filtered = filtered.filter((b) => {
+      if (!aiMode || mainHeadingDeg == null) return true;
 
-        return true;
-      })
-      // 4) sort + limit
+      const dLat = Number(b.destinationLat);
+      const dLng = Number(b.destinationLng);
+
+      if (!Number.isFinite(dLat) || !Number.isFinite(dLng)) return true;
+
+      const candHeading = bearingDeg(center.lat, center.lng, dLat, dLng);
+      const diff = angleDiffDeg(mainHeadingDeg, candHeading);
+
+      // ❌ Opposite direction drop-off
+      if (diff > 120) return false;
+
+      // ❌ Check AFTER-drop-off compatibility
+      if (activeMainDestLat != null && activeMainDestLng != null) {
+        const ok = isDestinationCompatible(
+          { lat: activeMainDestLat, lng: activeMainDestLng },
+          { lat: dLat, lng: dLng },
+          mainHeadingDeg
+        );
+        if (!ok) return false;
+      }
+
+      return true;
+    });
+
+    // 4) sort + limit
+    filtered = filtered
       .sort((a, b) => a._distKm - b._distKm)
       .slice(0, lim)
       // 5) shape output for driver app

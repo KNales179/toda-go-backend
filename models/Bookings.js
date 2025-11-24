@@ -34,6 +34,11 @@ const BookingSchema = new mongoose.Schema(
       default: null,
     },
 
+    pickupTodaRejected: {
+      type: Boolean,
+      default: false,
+    },
+
     // 🔹 TODA LINE (based on destination / route)
     destinationTodaId: {
       type: mongoose.Schema.Types.ObjectId,
