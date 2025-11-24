@@ -15,9 +15,9 @@ const BookingSchema = new mongoose.Schema(
     driverId: { type: String, default: null },
 
     // "Book for someone else"
-    bookedFor: { type: Boolean, default: false },     // true if rider != account owner
-    riderName: { type: String, default: "" },         // visible to driver if bookedFor=true
-    riderPhone: { type: String, default: "" },        // optional but recommended
+    bookedFor: { type: Boolean, default: false },    
+    riderName: { type: String, default: "" },     
+    riderPhone: { type: String, default: "" },       
 
     // Where
     pickupLat: Number,
@@ -27,12 +27,27 @@ const BookingSchema = new mongoose.Schema(
     pickupPlace: { type: String, default: null },
     destinationPlace: { type: String, default: null },
 
-    // 🔹 NEW: which TODA zone this pickup belongs to (if any)
+    // 🔹 TODA ZONE (pickup)
     pickupTodaId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Toda",
       default: null,
     },
+
+    // 🔹 TODA LINE (based on destination / route)
+    destinationTodaId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Toda",
+      default: null,
+    },
+
+    // 🔹 All TODAs that look compatible with this trip (for debugging / future AI)
+    candidateTodaIds: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Toda",
+      },
+    ],
 
     // Fare & misc
     fare: Number,
@@ -91,7 +106,8 @@ BookingSchema.index({ driverId: 1 });
 BookingSchema.index({ bookingType: 1 });
 BookingSchema.index({ reservationExpiresAt: 1 });
 BookingSchema.index({ paymentStatus: 1 });
-BookingSchema.index({ bookedFor: 1 }); // quick filter for driver UI if needed
-BookingSchema.index({ pickupTodaId: 1 }); // 🔹 TODA-aware queries
+BookingSchema.index({ bookedFor: 1 });
+BookingSchema.index({ pickupTodaId: 1 });        
+BookingSchema.index({ destinationTodaId: 1 });  
 
 module.exports = mongoose.model("Booking", BookingSchema);

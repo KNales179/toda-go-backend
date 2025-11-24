@@ -384,6 +384,97 @@ async function findPickupTodaId(pickupLat, pickupLng) {
 }
 
 
+// 🔹 Match trip to TODA line based on destination (and a bit of pickup)
+async function matchTripToToda(pickupLat, pickupLng, destinationLat, destinationLng) {
+  if (
+    !Number.isFinite(pickupLat) ||
+    !Number.isFinite(pickupLng) ||
+    !Number.isFinite(destinationLat) ||
+    !Number.isFinite(destinationLng)
+  ) {
+    return { destinationTodaId: null, candidateTodaIds: [] };
+  }
+
+  const todas = await Toda.find({ isActive: true }).lean();
+  if (!todas.length) {
+    return { destinationTodaId: null, candidateTodaIds: [] };
+  }
+
+  const candidates = [];
+
+  for (const t of todas) {
+    let bestDestDistM = Infinity;
+
+    const tLat = Number(t.latitude);
+    const tLng = Number(t.longitude);
+
+    // 🔸 1) distance from pickup to TODA terminal (avoid matching super far trips)
+    const pickupToTerminalM = Number.isFinite(tLat) && Number.isFinite(tLng)
+      ? haversine(pickupLat, pickupLng, tLat, tLng)
+      : Infinity;
+
+    // soft guard: > 8km from terminal? we still allow but mark it “weak”
+    const pickupOK = pickupToTerminalM <= 8000 || !Number.isFinite(pickupToTerminalM);
+
+    // 🔸 2) check FINAL DESTINATIONS
+    if (Array.isArray(t.finalDestinations)) {
+      for (const fd of t.finalDestinations) {
+        const fdLat = Number(fd.latitude);
+        const fdLng = Number(fd.longitude);
+        if (!Number.isFinite(fdLat) || !Number.isFinite(fdLng)) continue;
+
+        const d = haversine(destinationLat, destinationLng, fdLat, fdLng);
+        if (d < bestDestDistM) bestDestDistM = d;
+      }
+    }
+
+    // 🔸 3) check SERVED DESTINATIONS
+    if (Array.isArray(t.servedDestinations)) {
+      for (const sd of t.servedDestinations) {
+        const sdLat = Number(sd.latitude);
+        const sdLng = Number(sd.longitude);
+        if (!Number.isFinite(sdLat) || !Number.isFinite(sdLng)) continue;
+
+        const d = haversine(destinationLat, destinationLng, sdLat, sdLng);
+        if (d < bestDestDistM) bestDestDistM = d;
+      }
+    }
+
+    // If we never got a good distance, skip
+    if (!Number.isFinite(bestDestDistM)) continue;
+
+    // 🔸 4) threshold for “good enough” match
+    //    - destination within 1.5km of any final/served stop
+    const DEST_THRESHOLD_M = 1500;
+
+    if (bestDestDistM <= DEST_THRESHOLD_M && pickupOK) {
+      candidates.push({
+        todaId: t._id,
+        bestDestDistM,
+        pickupToTerminalM,
+      });
+    }
+  }
+
+  if (!candidates.length) {
+    return { destinationTodaId: null, candidateTodaIds: [] };
+  }
+
+  // 🔹 choose BEST by smallest destination distance (tie-breaker by closer terminal)
+  candidates.sort((a, b) => {
+    if (a.bestDestDistM !== b.bestDestDistM) {
+      return a.bestDestDistM - b.bestDestDistM;
+    }
+    return a.pickupToTerminalM - b.pickupToTerminalM;
+  });
+
+  const destinationTodaId = candidates[0].todaId;
+  const candidateTodaIds = candidates.map((c) => c.todaId);
+
+  return { destinationTodaId, candidateTodaIds };
+}
+
+
 // 🔹 TODA-aware filter for /waiting-bookings
 async function todaAwareFilterForDriver(candidates, driverId) {
   if (!driverId || !isObjectId(driverId)) return candidates;
@@ -528,6 +619,15 @@ router.post("/book", async (req, res) => {
       Number(pickupLng)
     );
 
+        // 🔹 Match trip to TODA line based on destination & route
+    const { destinationTodaId, candidateTodaIds } = await matchTripToToda(
+      Number(pickupLat),
+      Number(pickupLng),
+      Number(destinationLat),
+      Number(destinationLng)
+    );
+
+
     const booking = await Booking.create({
       passengerId,
       pickupLat,
@@ -540,12 +640,14 @@ router.post("/book", async (req, res) => {
       pickupPlace,
       destinationPlace,
 
-      // NEW: TODA info
+      // TODA info
       pickupTodaId: pickupTodaId || null,
+      destinationTodaId: destinationTodaId || null,
+      candidateTodaIds: candidateTodaIds || [],
 
-      bookedFor: bookedForBool,  
-      riderName: riderNameStr,    
-      riderPhone: riderPhoneStr,  
+      bookedFor: bookedForBool,
+      riderName: riderNameStr,
+      riderPhone: riderPhoneStr,
 
       bookingType: type,
       partySize: size,
@@ -557,6 +659,7 @@ router.post("/book", async (req, res) => {
       passengerName,
       paymentStatus,
     });
+
 
 
     const plain = booking.toObject();
