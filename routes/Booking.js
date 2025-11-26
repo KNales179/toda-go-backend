@@ -601,8 +601,9 @@ async function todaAwareFilterForDriver(candidates, driverId) {
       // - And NOT rejected by TODA routing rules
       // - INTODA or NEARTODA only; FAR is for roaming pool
       const matchedToThisToda =
-        (destTodaId && destTodaId === memberTodaId) ||
-        (!destTodaId && pickupTodaId && pickupTodaId === memberTodaId);
+        (pickupTodaId && pickupTodaId === memberTodaId) ||
+        (destTodaId && destTodaId === memberTodaId);
+
 
       const keep =
         matchedToThisToda &&
