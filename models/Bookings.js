@@ -76,6 +76,8 @@ const BookingSchema = new mongoose.Schema(
     isShareable: { type: Boolean, default: true },
     reservedSeats: { type: Number, default: 1 },
 
+    passengerZoneTag: { type: String, enum: ["INTODA", "NEARTODA", "FAR"], default: "FAR" },
+
     // Matching / lock
     driverLock: { type: Boolean, default: false },
     reservationExpiresAt: { type: Date, default: null },
