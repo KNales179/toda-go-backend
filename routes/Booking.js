@@ -369,7 +369,7 @@ async function findPickupTodaId(pickupLat, pickupLng) {
     const radiusM =
       typeof t.radiusMeters === "number" && Number.isFinite(t.radiusMeters)
         ? t.radiusMeters
-        : 100;
+        : 300;
 
     if (distM <= radiusM && distM < bestDist) {
       bestDist = distM;
