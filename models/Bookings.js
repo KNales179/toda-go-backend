@@ -77,6 +77,16 @@ const BookingSchema = new mongoose.Schema(
     reservedSeats: { type: Number, default: 1 },
 
     passengerZoneTag: { type: String, enum: ["INTODA", "NEARTODA", "FAR"], default: "FAR" },
+    chosenRoute: {
+      type: {
+        preference: { type: String },
+        distanceMeters: { type: Number },
+        durationSeconds: { type: Number },
+        coords: { type: [[Number]], default: [] }, // [ [lng,lat], ... ]
+      },
+      default: null,
+    },
+
 
     // Matching / lock
     driverLock: { type: Boolean, default: false },

@@ -438,6 +438,52 @@ function isDestinationServedByToda(toda, destLat, destLng) {
   return false;
 }
 
+function isRouteCompatibleWithToda(toda, chosenRoute) {
+  if (!chosenRoute || !Array.isArray(chosenRoute.coords) || !chosenRoute.coords.length) {
+    // no route info → don't block based on route
+    return true;
+  }
+
+  const routes = extractTodaRoutes(toda);
+  if (!routes.length) return true; // TODA has no geometry yet
+
+  const corridor =
+    typeof toda.routeCorridorMeters === "number" && toda.routeCorridorMeters > 0
+      ? toda.routeCorridorMeters
+      : 250; // tighter than old 500m
+
+  // chosenRoute.coords is [ [lng,lat], ... ]
+  const pts = chosenRoute.coords
+    .map(([lng, lat]) => ({
+      lat: Number(lat),
+      lng: Number(lng),
+    }))
+    .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+
+  if (pts.length < 2) return true;
+
+  // Sample at most ~30 points along the route
+  const step = Math.max(1, Math.floor(pts.length / 30));
+  let total = 0;
+  let bad = 0;
+
+  for (let i = 0; i < pts.length; i += step) {
+    const p = pts[i];
+    let best = Infinity;
+
+    for (const poly of routes) {
+      const d = routeDistanceMeters(poly, p);
+      if (d < best) best = d;
+    }
+
+    total++;
+    if (best > corridor) bad++;
+  }
+
+  // If more than 30% of sampled points are outside corridor → not compatible
+  return bad <= total * 0.3;
+}
+
 // 🔹 Match trip to TODA line based on destination (and a bit of pickup)
 async function matchTripToToda(pickupLat, pickupLng, destinationLat, destinationLng) {
   if (
@@ -672,9 +718,10 @@ router.post("/book", async (req, res) => {
       destinationPlace,
       bookingType = "CLASSIC",
       partySize,
-      bookedFor,      // NEW
-      riderName,      // NEW
-      riderPhone,     // NEW
+      bookedFor,     
+      riderName,     
+      riderPhone,     
+      chosenRoute,
     } = req.body;
 
     const paymentStatus =
@@ -745,20 +792,32 @@ router.post("/book", async (req, res) => {
         if (toda) {
           const destLatNum = Number(destinationLat);
           const destLngNum = Number(destinationLng);
-          const served = isDestinationServedByToda(toda, destLatNum, destLngNum);
-          pickupTodaRejected = !served; // true when inside zone but route doesn't match
+
+          const servedByDest = isDestinationServedByToda(toda, destLatNum, destLngNum);
+          const servedByRoute = isRouteCompatibleWithToda(toda, chosenRoute);
+
+          const served = servedByDest && servedByRoute;
+          pickupTodaRejected = !served; 
         }
       } catch (e) {
         console.warn("⚠️ TODA route check failed:", e?.message || e);
       }
     }
-    let passengerZoneTag = "FAR";
+    let passengerZoneTag = "FAR"; // default
     if (pickupTodaId && !pickupTodaRejected) {
       passengerZoneTag = "INTODA";
     }
     else if (!pickupTodaId && destinationTodaId) {
       passengerZoneTag = "NEARTODA";
     }
+    if (
+      pickupTodaId &&
+      destinationTodaId &&
+      String(pickupTodaId) !== String(destinationTodaId)
+    ) {
+      passengerZoneTag = "FAR";
+    }
+
 
 
 
@@ -780,6 +839,7 @@ router.post("/book", async (req, res) => {
       destinationTodaId: destinationTodaId || null,
       candidateTodaIds: candidateTodaIds || [],
       passengerZoneTag,
+      chosenRoute: chosenRoute || null,
 
       bookedFor: bookedForBool,
       riderName: riderNameStr,
