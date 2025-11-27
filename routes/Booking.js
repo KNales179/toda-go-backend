@@ -417,6 +417,153 @@ function extractTodaRoutes(t) {
   return routes;
 }
 
+const PICKUP_ROUTE_RADIUS_M = 300;   
+const DEST_ROUTE_RADIUS_M   = 250; 
+const DEST_STOP_EXTRA_M     = 200;  
+const INTODA_RADIUS_M       = 100; 
+const NEARTODA_RADIUS_M     = 300; 
+
+async function classifyTodaForTrip(pickupLat, pickupLng, destinationLat, destinationLng, chosenRoute) {
+  if (
+    !Number.isFinite(pickupLat) ||
+    !Number.isFinite(pickupLng) ||
+    !Number.isFinite(destinationLat) ||
+    !Number.isFinite(destinationLng)
+  ) {
+    return {
+      serviceTodaId: null,
+      candidateTodaIds: [],
+      pickupTodaRejected: true,
+      passengerZoneTag: "FAR",
+    };
+  }
+
+  const pickup = { lat: pickupLat, lng: pickupLng };
+  const dest   = { lat: destinationLat, lng: destinationLng };
+
+  const todas = await Toda.find({ isActive: true }).lean();
+  if (!todas.length) {
+    return {
+      serviceTodaId: null,
+      candidateTodaIds: [],
+      pickupTodaRejected: true,
+      passengerZoneTag: "FAR",
+    };
+  }
+
+  const candidates = [];
+
+  for (const t of todas) {
+    const routes = extractTodaRoutes(t);
+    if (!routes.length) continue;
+
+    // 🔹 1) distance from pickup to TODA route
+    let pickupRouteDistM = Infinity;
+    for (const poly of routes) {
+      const d = routeDistanceMeters(poly, pickup);
+      if (d < pickupRouteDistM) pickupRouteDistM = d;
+    }
+    if (!Number.isFinite(pickupRouteDistM) || pickupRouteDistM > PICKUP_ROUTE_RADIUS_M) {
+      // pickup is too far from this TODA line → skip
+      continue;
+    }
+
+    // 🔹 2) distance from destination to TODA route
+    let destRouteDistM = Infinity;
+    for (const poly of routes) {
+      const d = routeDistanceMeters(poly, dest);
+      if (d < destRouteDistM) destRouteDistM = d;
+    }
+
+    // 🔹 3) distance from destination to any final/served stop (extra tolerance)
+    let destStopDistM = Infinity;
+    const checkStops = (arr) => {
+      if (!Array.isArray(arr)) return;
+      for (const s of arr) {
+        const slat = Number(s.latitude ?? s.lat);
+        const slng = Number(s.longitude ?? s.lng);
+        if (!Number.isFinite(slat) || !Number.isFinite(slng)) continue;
+        const d = haversine(destinationLat, destinationLng, slat, slng);
+        if (d < destStopDistM) destStopDistM = d;
+      }
+    };
+    checkStops(t.finalDestinations);
+    checkStops(t.servedDestinations);
+
+    const destNearRoute = destRouteDistM <= DEST_ROUTE_RADIUS_M;
+    const destNearStop  = destStopDistM <= DEST_STOP_EXTRA_M;
+
+    // 🔹 4) route compatibility (uses chosenRoute polyline if present)
+    const routeOk = isRouteCompatibleWithToda(t, chosenRoute);
+
+    // 🔹 5) is this trip served by this TODA?
+    const tripServed = routeOk && (destNearRoute || destNearStop);
+    if (!tripServed) continue;
+
+    candidates.push({
+      toda: t,
+      pickupRouteDistM,
+      destRouteDistM,
+    });
+  }
+
+  if (!candidates.length) {
+    // ❌ No TODA line really serves this trip → roaming only
+    return {
+      serviceTodaId: null,
+      candidateTodaIds: [],
+      pickupTodaRejected: true,
+      passengerZoneTag: "FAR",
+    };
+  }
+
+  // 🔹 choose BEST by nearest route to pickup (tie-breaker: dest distance)
+  candidates.sort((a, b) => {
+    if (a.pickupRouteDistM !== b.pickupRouteDistM) {
+      return a.pickupRouteDistM - b.pickupRouteDistM;
+    }
+    return a.destRouteDistM - b.destRouteDistM;
+  });
+
+  const main = candidates[0];
+  const mainToda = main.toda;
+  const candidateTodaIds = candidates.map((c) => c.toda._id);
+
+  // 🔹 zone classification for THAT TODA only
+  let passengerZoneTag = "FAR";
+  let pickupTodaRejected = true;
+
+  let centerDistM = Infinity;
+  if (typeof mainToda.latitude === "number" && typeof mainToda.longitude === "number") {
+    centerDistM = haversine(
+      pickupLat,
+      pickupLng,
+      mainToda.latitude,
+      mainToda.longitude
+    );
+  }
+
+  if (Number.isFinite(centerDistM)) {
+    if (centerDistM <= INTODA_RADIUS_M) {
+      passengerZoneTag = "INTODA";
+      pickupTodaRejected = false;
+    } else if (centerDistM <= NEARTODA_RADIUS_M) {
+      passengerZoneTag = "NEARTODA";
+      pickupTodaRejected = false;
+    } else {
+      passengerZoneTag = "FAR";
+      pickupTodaRejected = true; // trip served by route, but passenger is too far → give to roaming
+    }
+  }
+
+  return {
+    serviceTodaId: mainToda._id,
+    candidateTodaIds,
+    pickupTodaRejected,
+    passengerZoneTag,
+  };
+}
+
 // 🔹 Check if a destination lies within a corridor around TODA routes
 function isDestinationServedByToda(toda, destLat, destLng) {
   if (!Number.isFinite(destLat) || !Number.isFinite(destLng)) return true;
@@ -778,51 +925,24 @@ router.post("/book", async (req, res) => {
       }
     } catch {}
 
-        // 🔹 Detect which TODA zone this pickup belongs to (if any)
-    const pickupTodaId = await findPickupTodaId(
-      Number(pickupLat),
-      Number(pickupLng)
-    );
-
-        // 🔹 Match trip to TODA line based on destination & route
-    const { destinationTodaId, candidateTodaIds } = await matchTripToToda(
+    // 🔹 New: classify trip vs TODA lines (route + destination + zone)
+    const {
+      serviceTodaId,
+      candidateTodaIds,
+      pickupTodaRejected,
+      passengerZoneTag,
+    } = await classifyTodaForTrip(
       Number(pickupLat),
       Number(pickupLng),
       Number(destinationLat),
-      Number(destinationLng)
+      Number(destinationLng),
+      chosenRoute || null
     );
 
-    // 🔹 Decide if TODA actually serves this destination
-    let pickupTodaRejected = false;
-    if (pickupTodaId) {
-      try {
-        const toda = await Toda.findById(pickupTodaId).lean();
-        if (toda) {
-          const destLatNum = Number(destinationLat);
-          const destLngNum = Number(destinationLng);
+    // For storage we treat the "service TODA" as both pickup/destination TODA when accepted
+    const pickupTodaId = serviceTodaId || null;
+    const destinationTodaId = serviceTodaId || null;
 
-          const servedByDest = isDestinationServedByToda(toda, destLatNum, destLngNum);
-          const servedByRoute = isRouteCompatibleWithToda(toda, chosenRoute);
-
-          const served = servedByDest && servedByRoute;
-          pickupTodaRejected = !served; 
-        }
-      } catch (e) {
-        console.warn("⚠️ TODA route check failed:", e?.message || e);
-      }
-    }
-    // ZONING LOGIC — FINAL & CORRECT
-    let passengerZoneTag = "FAR"; // default
-
-    // A) Passenger is inside a TODA and that TODA SERVES the route
-    if (pickupTodaId && !pickupTodaRejected) {
-      passengerZoneTag = "INTODA";
-    }
-
-    // B) Passenger NOT inside TODA but destination matches a TODA
-    else if (!pickupTodaId && destinationTodaId) {
-      passengerZoneTag = "NEARTODA";
-    }
 
 
 
