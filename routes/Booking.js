@@ -383,39 +383,29 @@ async function findPickupTodaId(pickupLat, pickupLng) {
 // 🔹 Try to extract route polylines from a TODA doc
 function extractTodaRoutes(t) {
   const routes = [];
+  if (Array.isArray(t.finalDestinations)) {
+    for (const fd of t.finalDestinations) {
+      const main = fd && fd.mainRoute;
+      if (!main || !Array.isArray(main.coords)) continue;
 
-  // Common pattern: an array of routeVariants, each with points/coords/path
-  if (Array.isArray(t.routeVariants)) {
-    for (const rv of t.routeVariants) {
-      const raw =
-        (Array.isArray(rv.points) && rv.points) ||
-        (Array.isArray(rv.coords) && rv.coords) ||
-        (Array.isArray(rv.path) && rv.path) ||
-        [];
-      const pts = raw
-        .map((p) => ({
-          lat: Number(p.lat ?? p.latitude),
-          lng: Number(p.lng ?? p.longitude),
+      const pts = main.coords
+        .map(([lng, lat]) => ({
+          lat: Number(lat),
+          lng: Number(lng),
         }))
-        .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+        .filter(
+          (p) => Number.isFinite(p.lat) && Number.isFinite(p.lng)
+        );
 
-      if (pts.length >= 2) routes.push(pts);
+      if (pts.length >= 2) {
+        routes.push(pts);
+      }
     }
-  }
-
-  // Fallback: flat array of points directly on the TODA
-  if (Array.isArray(t.routePoints)) {
-    const pts = t.routePoints
-      .map((p) => ({
-        lat: Number(p.lat ?? p.latitude),
-        lng: Number(p.lng ?? p.longitude),
-      }))
-      .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
-    if (pts.length >= 2) routes.push(pts);
   }
 
   return routes;
 }
+
 
 const PICKUP_ROUTE_RADIUS_M = 300;   
 const DEST_ROUTE_RADIUS_M   = 250; 
@@ -423,23 +413,37 @@ const DEST_STOP_EXTRA_M     = 200;
 const INTODA_RADIUS_M       = 100; 
 const NEARTODA_RADIUS_M     = 300; 
 
-async function classifyTodaForTrip(pickupLat, pickupLng, destinationLat, destinationLng, chosenRoute) {
+async function classifyTodaForTrip(
+  pickupLat,
+  pickupLng,
+  destinationLat,
+  destinationLng,
+  chosenRoute
+) {
   const pickup = { lat: pickupLat, lng: pickupLng };
-  const dest   = { lat: destinationLat, lng: destinationLng };
+  const dest = { lat: destinationLat, lng: destinationLng };
 
   if (DEBUG_WAITING) {
     console.log("🟡 [classifyTodaForTrip] START", {
       pickup: { lat: pickupLat, lng: pickupLng },
-      dest:   { lat: destinationLat, lng: destinationLng },
-      hasChosenRoute: !!(chosenRoute && Array.isArray(chosenRoute.coords) && chosenRoute.coords.length),
+      dest: { lat: destinationLat, lng: destinationLng },
+      hasChosenRoute:
+        !!(
+          chosenRoute &&
+          Array.isArray(chosenRoute.coords) &&
+          chosenRoute.coords.length
+        ),
     });
   }
 
-  
-
   const todas = await Toda.find({ isActive: true }).lean();
   if (!todas.length) {
-    return { serviceTodaId: null, candidateTodaIds: [], pickupTodaRejected: true, passengerZoneTag: "FAR" };
+    return {
+      serviceTodaId: null,
+      candidateTodaIds: [],
+      pickupTodaRejected: true,
+      passengerZoneTag: "FAR",
+    };
   }
 
   const candidates = [];
@@ -466,35 +470,120 @@ async function classifyTodaForTrip(pickupLat, pickupLng, destinationLat, destina
     // 1) pickup near route
     let pickupRouteDistM = Infinity;
     for (const poly of routes) {
-      pickupRouteDistM = Math.min(pickupRouteDistM, routeDistanceMeters(poly, pickup));
+      pickupRouteDistM = Math.min(
+        pickupRouteDistM,
+        routeDistanceMeters(poly, pickup)
+      );
     }
     if (pickupRouteDistM > PICKUP_ROUTE_RADIUS_M) continue;
 
-    // 2) destination near route or near terminal
+    // 2) destination near route
     let destRouteDistM = Infinity;
     for (const poly of routes) {
-      destRouteDistM = Math.min(destRouteDistM, routeDistanceMeters(poly, dest));
+      destRouteDistM = Math.min(
+        destRouteDistM,
+        routeDistanceMeters(poly, dest)
+      );
     }
 
+    // 3) find nearest stop (final or served) + distance
     let destStopDistM = Infinity;
-    const checkStops = arr => {
+    let bestStop = null;
+
+    const mainRoute = routes[0]; // assume official line is first
+
+    const checkStops = (arr) => {
       if (!Array.isArray(arr)) return;
       for (const s of arr) {
-        const d = haversine(dest.lat, dest.lng, Number(s.latitude), Number(s.longitude));
-        destStopDistM = Math.min(destStopDistM, d);
+        const sLat = Number(s.latitude);
+        const sLng = Number(s.longitude);
+        if (!Number.isFinite(sLat) || !Number.isFinite(sLng)) continue;
+
+        const d = haversine(dest.lat, dest.lng, sLat, sLng);
+        if (d < destStopDistM) {
+          destStopDistM = d;
+          bestStop = { lat: sLat, lng: sLng };
+        }
       }
     };
+
     checkStops(t.finalDestinations);
     checkStops(t.servedDestinations);
 
     const nearRoute = destRouteDistM <= DEST_ROUTE_RADIUS_M;
-    const nearStop  = destStopDistM <= DEST_STOP_EXTRA_M;
 
-    // 3) route compatibility
+    // 4) destination near stop BUT must be slightly "forward" along route, not backwards
+    let nearStop = false;
+
+    if (Number.isFinite(destStopDistM)) {
+      if (!Array.isArray(mainRoute) || mainRoute.length < 2) {
+        // no usable route geometry → simple radial rule
+        nearStop = destStopDistM <= DEST_STOP_EXTRA_M;
+      } else if (destStopDistM <= 50) {
+        // very close to stop, direction doesn’t really matter
+        nearStop = true;
+      } else if (destStopDistM <= DEST_STOP_EXTRA_M && bestStop) {
+        // use forward-direction rule along route
+        // find closest point on mainRoute to the stop
+        let bestIdx = 0;
+        let bestIdxDist = Infinity;
+        for (let i = 0; i < mainRoute.length; i++) {
+          const rp = mainRoute[i];
+          const d = haversine(
+            bestStop.lat,
+            bestStop.lng,
+            rp.lat,
+            rp.lng
+          );
+          if (d < bestIdxDist) {
+            bestIdxDist = d;
+            bestIdx = i;
+          }
+        }
+
+        const prev = mainRoute[Math.max(bestIdx - 1, 0)];
+        const next = mainRoute[Math.min(bestIdx + 1, mainRoute.length - 1)];
+
+        let routeHeading = null;
+        if (
+          prev &&
+          next &&
+          Number.isFinite(prev.lat) &&
+          Number.isFinite(prev.lng) &&
+          Number.isFinite(next.lat) &&
+          Number.isFinite(next.lng)
+        ) {
+          routeHeading = bearingDeg(
+            prev.lat,
+            prev.lng,
+            next.lat,
+            next.lng
+          );
+        }
+
+        if (routeHeading != null) {
+          const destHeading = bearingDeg(
+            bestStop.lat,
+            bestStop.lng,
+            dest.lat,
+            dest.lng
+          );
+          const diff = angleDiffDeg(routeHeading, destHeading);
+
+          // Forward-ish (≤ 90°) within DEST_STOP_EXTRA_M
+          if (diff <= 90) {
+            nearStop = true;
+          }
+        }
+      }
+    }
+
+    // 5) route compatibility (corridor check along TODA line)
     const routeOk = isRouteCompatibleWithToda(t, chosenRoute);
 
-    // 4) TODA matches only if (routeOk + nearRoute OR nearStop)
+    // 6) TODA matches only if (routeOk + nearRoute OR forward-acceptable nearStop)
     const tripServed = routeOk && (nearRoute || nearStop);
+
     if (DEBUG_WAITING) {
       console.log("🟡 [classifyTodaForTrip] TODA EVAL", {
         todaId: t._id,
@@ -502,27 +591,43 @@ async function classifyTodaForTrip(pickupLat, pickupLng, destinationLat, destina
         pickupRouteDistM,
         destRouteDistM,
         destStopDistM,
+        hasBestStop: !!bestStop,
         nearRoute,
         nearStop,
         routeOk,
         tripServed,
       });
     }
+
     if (!tripServed) continue;
 
     candidates.push({ toda: t, pickupRouteDistM, destRouteDistM });
   }
 
   if (!candidates.length) {
-    return { serviceTodaId: null, candidateTodaIds: [], pickupTodaRejected: true, passengerZoneTag: "FAR" };
+    return {
+      serviceTodaId: null,
+      candidateTodaIds: [],
+      pickupTodaRejected: true,
+      passengerZoneTag: "FAR",
+    };
   }
 
-  candidates.sort((a, b) => a.pickupRouteDistM - b.pickupRouteDistM || a.destRouteDistM - b.destRouteDistM);
+  candidates.sort(
+    (a, b) =>
+      a.pickupRouteDistM - b.pickupRouteDistM ||
+      a.destRouteDistM - b.destRouteDistM
+  );
   const best = candidates[0];
   const mainToda = best.toda;
 
   // zone classification AFTER confirming matched TODA
-  const centerDistM = haversine(pickup.lat, pickup.lng, mainToda.latitude, mainToda.longitude);
+  const centerDistM = haversine(
+    pickup.lat,
+    pickup.lng,
+    mainToda.latitude,
+    mainToda.longitude
+  );
 
   let passengerZoneTag = "FAR";
   let pickupTodaRejected = true;
@@ -547,11 +652,12 @@ async function classifyTodaForTrip(pickupLat, pickupLng, destinationLat, destina
 
   return {
     serviceTodaId: mainToda._id,
-    candidateTodaIds: candidates.map(c => c.toda._id),
+    candidateTodaIds: candidates.map((c) => c.toda._id),
     pickupTodaRejected,
-    passengerZoneTag
+    passengerZoneTag,
   };
 }
+
 
 // 🔹 Check if a destination lies within a corridor around TODA routes
 function isDestinationServedByToda(toda, destLat, destLng) {
