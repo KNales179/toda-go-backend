@@ -840,19 +840,24 @@ async function todaAwareFilterForDriver(candidates, driverId) {
     .select("currentTodaId inTodaZone isOnline updatedAt")
     .lean();
 
+  const currentTodaId = ds?.currentTodaId ? String(ds.currentTodaId) : null;
+  const inTodaZone = !!ds?.inTodaZone;
 
-  // 2) Load Driver (membership TODA name)
+  // 2) Load Driver (membership TODA name – fallback)
   const driver = await Driver.findById(driverId).select("todaName").lean();
   const todaName = driver?.todaName || null;
 
-  let memberToda = null;
-  if (todaName) {
-    memberToda = await Toda.findOne({ name: todaName }).select("_id name").lean();
+  let memberTodaFromName = null;
+  if (!currentTodaId && todaName) {
+    memberTodaFromName = await Toda.findOne({ name: todaName }).select("_id name").lean();
   }
 
-  const memberTodaId = memberToda ? String(memberToda._id) : null;
-  const currentTodaId = ds?.currentTodaId ? String(ds.currentTodaId) : null;
-  const inTodaZone = !!ds?.inTodaZone;
+  // 👇 Prefer currentTodaId; fallback to name-based mapping only if needed
+  const memberTodaId = currentTodaId
+    ? currentTodaId
+    : memberTodaFromName
+    ? String(memberTodaFromName._id)
+    : null;
 
   // 3) Classify driver: TODA / NON_TODA / NORMAL
   let driverType = "NORMAL";
