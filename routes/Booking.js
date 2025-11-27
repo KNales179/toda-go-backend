@@ -9,6 +9,8 @@ const RideHistory = require("../models/RideHistory");
 const Booking = require("../models/Bookings");
 const Driver = require("../models/Drivers");
 const Toda = require("../models/Toda");
+const DEBUG_WAITING = false; 
+
 
 
 // ---------- helpers ----------
@@ -656,14 +658,17 @@ async function todaAwareFilterForDriver(candidates, driverId) {
         !rejected &&
         (zoneTag === "INTODA" || zoneTag === "NEARTODA");
 
-      console.log("🚕 [TODA] booking decision", {
-        bookingId: b.bookingId,
-        pickupTodaId,
-        destinationTodaId: destTodaId,
-        passengerZoneTag: zoneTag,
-        pickupTodaRejected: rejected,
-        keep,
-      });
+      if (DEBUG_WAITING) {
+        console.log("🚕 [TODA] booking decision", {
+          bookingId: b.bookingId,
+          pickupTodaId,
+          destinationTodaId: destTodaId,
+          passengerZoneTag: zoneTag,
+          pickupTodaRejected: rejected,
+          keep,
+        });
+      }
+
 
       return keep;
     });
@@ -687,13 +692,16 @@ async function todaAwareFilterForDriver(candidates, driverId) {
 
     const keep = rejected || noTodaMatch || isFar;
 
-    console.log("🚕 [ROAMING/NON_TODA] booking decision", {
-      bookingId: b.bookingId,
-      destinationTodaId: destTodaId,
-      passengerZoneTag: zoneTag,
-      pickupTodaRejected: rejected,
-      keep,
-    });
+    if (DEBUG_WAITING) {
+      console.log("🚕 [ROAMING/NON_TODA] booking decision", {
+        bookingId: b.bookingId,
+        destinationTodaId: destTodaId,
+        passengerZoneTag: zoneTag,
+        pickupTodaRejected: rejected,
+        keep,
+      });
+    }
+
 
     return keep;
   });
@@ -1046,7 +1054,7 @@ router.get("/waiting-bookings", async (req, res) => {
       })
       .filter((b) => {
         const keep = b._distKm <= rad;
-        if (!keep) {
+        if (!keep && DEBUG_WAITING) {
           console.log("⛔ drop by radius", {
             bookingId: b.bookingId,
             distKm: b._distKm,
@@ -1055,6 +1063,7 @@ router.get("/waiting-bookings", async (req, res) => {
         }
         return keep;
       });
+
 
     console.log("🔎 after radius filter:", filteredBase.length, "bookings");
 
@@ -1082,12 +1091,14 @@ router.get("/waiting-bookings", async (req, res) => {
       const diff = angleDiffDegLocal(mainHeadingDeg, candHeading);
 
       if (diff > 120) {
-        console.log("⛔ drop by AI heading", {
-          bookingId: b.bookingId,
-          diff,
-          mainHeadingDeg,
-          candHeading,
-        });
+        if (DEBUG_WAITING) {
+          console.log("⛔ drop by AI heading", {
+            bookingId: b.bookingId,
+            diff,
+            mainHeadingDeg,
+            candHeading,
+          });
+        }
         return false;
       }
 
@@ -1098,12 +1109,15 @@ router.get("/waiting-bookings", async (req, res) => {
           mainHeadingDeg
         );
         if (!ok) {
-          console.log("⛔ drop by AI compatibility", {
-            bookingId: b.bookingId,
-          });
+          if (DEBUG_WAITING) {
+            console.log("⛔ drop by AI compatibility", {
+              bookingId: b.bookingId,
+            });
+          }
           return false;
         }
       }
+
 
       return true;
     });
