@@ -490,7 +490,8 @@ async function classifyTodaForTrip(
     let destStopDistM = Infinity;
     let bestStop = null;
 
-    const mainRoute = routes[0]; // assume official line is first
+    const allRoutes = routes;
+    const mainRoute = allRoutes[0]; // assume first is official line
 
     const checkStops = (arr) => {
       if (!Array.isArray(arr)) return;
@@ -578,11 +579,11 @@ async function classifyTodaForTrip(
       }
     }
 
-    // 5) route compatibility (corridor check along TODA line)
+    // 5) route compatibility (still logged, but no longer a hard blocker)
     const routeOk = isRouteCompatibleWithToda(t, chosenRoute);
 
-    // 6) TODA matches only if (routeOk + nearRoute OR forward-acceptable nearStop)
-    const tripServed = routeOk && (nearRoute || nearStop);
+    // 6) TODA matches if destination is along/near the line OR near a forward stop
+    const tripServed = nearRoute || nearStop;
 
     if (DEBUG_WAITING) {
       console.log("🟡 [classifyTodaForTrip] TODA EVAL", {
@@ -657,6 +658,7 @@ async function classifyTodaForTrip(
     passengerZoneTag,
   };
 }
+
 
 
 // 🔹 Check if a destination lies within a corridor around TODA routes
