@@ -547,7 +547,7 @@ async function matchTripToToda(pickupLat, pickupLng, destinationLat, destination
 
     // 🔸 4) threshold for “good enough” match
     //    - destination within 1.5km of any final/served stop
-    const DEST_THRESHOLD_M = 1500;
+    const DEST_THRESHOLD_M = 200;
 
     if (bestDestDistM <= DEST_THRESHOLD_M && pickupOK) {
       candidates.push({
