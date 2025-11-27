@@ -1,6 +1,7 @@
 // models/Toda.js
 const mongoose = require("mongoose");
 
+// 🔹 Served destinations (along the way / nearby points)
 const ServedDestinationSchema = new mongoose.Schema(
   {
     name: {
@@ -23,7 +24,7 @@ const ServedDestinationSchema = new mongoose.Schema(
   { _id: false }
 );
 
-// 🔹 Shape of a routed path (we'll store ORS result here)
+// 🔹 Shape of a routed path (aligned with Booking.chosenRoute)
 const RouteShapeSchema = new mongoose.Schema(
   {
     // stored as [[lng, lat], [lng, lat], ...]
@@ -37,11 +38,17 @@ const RouteShapeSchema = new mongoose.Schema(
     durationSeconds: {
       type: Number, // ORS summary.duration
     },
+    // optional label like "FASTEST", "SHORTEST", etc. (similar to chosenRoute.preference)
+    preference: {
+      type: String,
+      default: null,
+      trim: true,
+    },
   },
   { _id: false }
 );
 
-// 🔹 Final destination of a TODA line (terminal → final stop)
+// 🔹 Final endpoint of a TODA line (terminal → final stop)
 const FinalDestinationSchema = new mongoose.Schema(
   {
     name: {
@@ -55,12 +62,14 @@ const FinalDestinationSchema = new mongoose.Schema(
     longitude: {
       type: Number,
     },
-    // Main chosen route terminal→final
+
+    // Main chosen route from TODA terminal → this final destination
     mainRoute: {
       type: RouteShapeSchema,
       default: null,
     },
-    // Optional alternative routes (other major variants)
+
+    // Optional alternative routes / variants
     altRoutes: {
       type: [RouteShapeSchema],
       default: [],
@@ -108,19 +117,20 @@ const TodaSchema = new mongoose.Schema(
       default: "",
     },
 
-    // 🔹 optional radius used for driver TODA-zone detection
+    // optional radius used for driver TODA-zone detection
     radiusMeters: {
       type: Number,
-      default: 0, // 0 = use frontend default (e.g. 100m)
+      default: 0, // 0 = use frontend default (e.g., 100m)
     },
 
-    // list of along-the-way / nearby destinations
+    // along-the-way / nearby destinations (for info + future logic)
     servedDestinations: {
       type: [ServedDestinationSchema],
       default: [],
     },
 
-    // 🔹 new: main endpoints this TODA line officially serves
+    // 🔹 main endpoints this TODA line officially serves
+    // each with mainRoute + altRoutes using RouteShapeSchema
     finalDestinations: {
       type: [FinalDestinationSchema],
       default: [],

@@ -14,12 +14,6 @@ router.get("/todas", async (req, res) => {
   }
 });
 
-/**
- * ✅ ADD + EDIT in ONE route
- * POST /api/admin/todas
- * - if body contains id / _id → update
- * - else → create new
- */
 router.post("/todas", async (req, res) => {
   try {
     const {
@@ -46,6 +40,13 @@ router.post("/todas", async (req, res) => {
       });
     }
 
+    // Normalize radius (in case frontend sends as string)
+    let normalizedRadius = undefined;
+    if (radiusMeters !== undefined) {
+      const num = Number(radiusMeters);
+      if (!Number.isNaN(num)) normalizedRadius = num;
+    }
+
     // 🔁 If there is an id → UPDATE
     if (todaId) {
       const existing = await Toda.findById(todaId);
@@ -61,15 +62,20 @@ router.post("/todas", async (req, res) => {
       if (city !== undefined) existing.city = city;
       if (notes !== undefined) existing.notes = notes;
 
+      // ✅ servedDestinations (plain list)
       if (Array.isArray(servedDestinations)) {
         existing.servedDestinations = servedDestinations;
       }
+
+      // ✅ finalDestinations with routes (mainRoute + altRoutes)
+      // Whatever the frontend sends, as long as it matches the schema,
+      // Mongoose will handle nested RouteShapeSchema.
       if (Array.isArray(finalDestinations)) {
         existing.finalDestinations = finalDestinations;
       }
 
-      if (typeof radiusMeters === "number") {
-        existing.radiusMeters = radiusMeters;
+      if (normalizedRadius !== undefined) {
+        existing.radiusMeters = normalizedRadius;
       }
 
       if (typeof isActive === "boolean") {
@@ -96,7 +102,7 @@ router.post("/todas", async (req, res) => {
         ? finalDestinations
         : [],
       radiusMeters:
-        typeof radiusMeters === "number" ? radiusMeters : 0,
+        normalizedRadius !== undefined ? normalizedRadius : 0,
       isActive: typeof isActive === "boolean" ? isActive : true,
     });
 
