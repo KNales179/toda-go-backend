@@ -811,21 +811,18 @@ router.post("/book", async (req, res) => {
         console.warn("⚠️ TODA route check failed:", e?.message || e);
       }
     }
+    // ZONING LOGIC — FINAL & CORRECT
     let passengerZoneTag = "FAR"; // default
+
+    // A) Passenger is inside a TODA and that TODA SERVES the route
     if (pickupTodaId && !pickupTodaRejected) {
       passengerZoneTag = "INTODA";
     }
+
+    // B) Passenger NOT inside TODA but destination matches a TODA
     else if (!pickupTodaId && destinationTodaId) {
       passengerZoneTag = "NEARTODA";
     }
-    if (
-      pickupTodaId &&
-      destinationTodaId &&
-      String(pickupTodaId) !== String(destinationTodaId)
-    ) {
-      passengerZoneTag = "FAR";
-    }
-
 
 
 
