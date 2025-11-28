@@ -834,7 +834,6 @@ async function matchTripToToda(pickupLat, pickupLng, destinationLat, destination
 
 // 🔹 TODA-aware filter for /waiting-bookings with driver/passenger classification
 async function todaAwareFilterForDriver(candidates, driverId) {
-
   // 1) Load DriverStatus (zone context)
   const ds = await DriverStatus.findOne({
     driverId: new mongoose.Types.ObjectId(driverId),
@@ -842,36 +841,44 @@ async function todaAwareFilterForDriver(candidates, driverId) {
     .select("currentTodaId inTodaZone isOnline updatedAt")
     .lean();
 
-  const currentTodaId = ds?.currentTodaId ? String(ds.currentTodaId) : null;
+  const zoneTodaId = ds?.currentTodaId ? String(ds.currentTodaId) : null; // where the driver is
   const inTodaZone = !!ds?.inTodaZone;
 
-  // 2) Load Driver (membership TODA name – fallback)
+  // 2) Load Driver (membership TODA name)
   const driver = await Driver.findById(driverId).select("todaName").lean();
   const todaName = driver?.todaName || null;
 
-  let memberTodaFromName = null;
-  if (!currentTodaId && todaName) {
-    memberTodaFromName = await Toda.findOne({ name: todaName }).select("_id name").lean();
+  let memberTodaId = null;
+  if (todaName) {
+    const memberToda = await Toda.findOne({ name: todaName })
+      .select("_id name")
+      .lean();
+    if (memberToda) {
+      memberTodaId = String(memberToda._id); // which TODA they belong to
+    }
   }
-
-  // 👇 Prefer currentTodaId; fallback to name-based mapping only if needed
-  const memberTodaId = currentTodaId
-    ? currentTodaId
-    : memberTodaFromName
-    ? String(memberTodaFromName._id)
-    : null;
 
   // 3) Classify driver: TODA / NON_TODA / NORMAL
   let driverType = "NORMAL";
 
-  if (inTodaZone && currentTodaId && memberTodaId) {
-    if (currentTodaId === memberTodaId) {
-      driverType = "TODA";        // inside zone + TODA name matches
+  if (inTodaZone && zoneTodaId) {
+    if (memberTodaId && zoneTodaId === memberTodaId) {
+      driverType = "TODA";      // inside zone + member of that TODA
     } else {
-      driverType = "NON_TODA";    // inside some TODA, but name mismatch
+      driverType = "NON_TODA";  // inside some TODA but not a member
     }
   }
 
+  if (DEBUG_WAITING) {
+    console.log("🚕 [DRIVER CLASS]", {
+      driverId: String(driverId),
+      todaName,
+      zoneTodaId,
+      memberTodaId,
+      inTodaZone,
+      driverType,
+    });
+  }
 
   // ---------- CASE 1: TODA DRIVER ----------
   if (driverType === "TODA" && memberTodaId) {
@@ -879,25 +886,20 @@ async function todaAwareFilterForDriver(candidates, driverId) {
       const destTodaId = b.destinationTodaId ? String(b.destinationTodaId) : null;
       const pickupTodaId = b.pickupTodaId ? String(b.pickupTodaId) : null;
       const rejected = !!b.pickupTodaRejected;
-
       const zoneTag = (b.passengerZoneTag || "FAR").toUpperCase();
 
-      // TODA driver rule:
-      // - Only see bookings that are matched to THEIR TODA
-      // - And NOT rejected by TODA routing rules
-      // - INTODA or NEARTODA only; FAR is for roaming pool
       const matchedToThisToda =
         (pickupTodaId && pickupTodaId === memberTodaId) ||
         (destTodaId && destTodaId === memberTodaId);
-
 
       const keep =
         matchedToThisToda &&
         !rejected &&
         (zoneTag === "INTODA" || zoneTag === "NEARTODA");
-      
+
       if (DEBUG_WAITING) {
         console.log("🚕 [TODA] booking decision", {
+          driverId: String(driverId),
           bookingId: b.bookingId,
           pickupTodaId,
           destinationTodaId: destTodaId,
@@ -907,17 +909,12 @@ async function todaAwareFilterForDriver(candidates, driverId) {
         });
       }
 
-
       return keep;
     });
     return out;
   }
 
   // ---------- CASE 2: NON-TODA or NORMAL DRIVER ----------
-  // These see:
-  // - FAR passengers (no TODA coverage)
-  // - OR bookings rejected by TODA (pickupTodaRejected=true)
-  // - OR trips not matched to any TODA (destinationTodaId null)
   const out = candidates.filter((b) => {
     const destTodaId = b.destinationTodaId ? String(b.destinationTodaId) : null;
     const rejected = !!b.pickupTodaRejected;
@@ -930,6 +927,7 @@ async function todaAwareFilterForDriver(candidates, driverId) {
 
     if (DEBUG_WAITING) {
       console.log("🚕 [ROAMING/NON_TODA] booking decision", {
+        driverId: String(driverId),
         bookingId: b.bookingId,
         destinationTodaId: destTodaId,
         passengerZoneTag: zoneTag,
@@ -938,12 +936,13 @@ async function todaAwareFilterForDriver(candidates, driverId) {
       });
     }
 
-
     return keep;
   });
+
   console.log("🚕 [ROAMING/NON_TODA] result count:", out.length);
   return out;
 }
+
 
 // ---------- POST /book ----------
 router.post("/book", async (req, res) => {
