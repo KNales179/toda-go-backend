@@ -407,11 +407,12 @@ function extractTodaRoutes(t) {
 }
 
 
-const PICKUP_ROUTE_RADIUS_M = 300;   
-const DEST_ROUTE_RADIUS_M   = 250; 
-const DEST_STOP_EXTRA_M     = 200;  
-const INTODA_RADIUS_M       = 100; 
-const NEARTODA_RADIUS_M     = 300; 
+const PICKUP_ROUTE_RADIUS_M = 300;
+const DEST_ROUTE_RADIUS_M   = 250;
+const DEST_STOP_EXTRA_M     = 200;
+const INTODA_RADIUS_M       = 100;
+const NEARTODA_RADIUS_M     = 300;
+
 
 async function classifyTodaForTrip(
   pickupLat,
@@ -460,10 +461,17 @@ async function classifyTodaForTrip(
       continue;
     }
 
+    const tLat = Number(t.latitude);
+    const tLng = Number(t.longitude);
+    const terminalDistM = (Number.isFinite(tLat) && Number.isFinite(tLng))
+      ? haversine(pickup.lat, pickup.lng, tLat, tLng)
+      : Infinity;
+
     if (DEBUG_WAITING) {
       console.log("🟡 [classifyTodaForTrip] CHECK TODA", {
         todaId: t._id,
         name: t.name,
+        terminalDistM,
       });
     }
 
@@ -530,12 +538,7 @@ async function classifyTodaForTrip(
         let bestIdxDist = Infinity;
         for (let i = 0; i < mainRoute.length; i++) {
           const rp = mainRoute[i];
-          const d = haversine(
-            bestStop.lat,
-            bestStop.lng,
-            rp.lat,
-            rp.lng
-          );
+          const d = haversine(bestStop.lat, bestStop.lng, rp.lat, rp.lng);
           if (d < bestIdxDist) {
             bestIdxDist = d;
             bestIdx = i;
@@ -554,12 +557,7 @@ async function classifyTodaForTrip(
           Number.isFinite(next.lat) &&
           Number.isFinite(next.lng)
         ) {
-          routeHeading = bearingDeg(
-            prev.lat,
-            prev.lng,
-            next.lat,
-            next.lng
-          );
+          routeHeading = bearingDeg(prev.lat, prev.lng, next.lat, next.lng);
         }
 
         if (routeHeading != null) {
@@ -579,7 +577,7 @@ async function classifyTodaForTrip(
       }
     }
 
-    // 5) route compatibility (still logged, but no longer a hard blocker)
+    // 5) route compatibility (still logged, but not a hard blocker here)
     const routeOk = isRouteCompatibleWithToda(t, chosenRoute);
 
     // 6) TODA matches if destination is along/near the line OR near a forward stop
@@ -589,6 +587,7 @@ async function classifyTodaForTrip(
       console.log("🟡 [classifyTodaForTrip] TODA EVAL", {
         todaId: t._id,
         name: t.name,
+        terminalDistM,
         pickupRouteDistM,
         destRouteDistM,
         destStopDistM,
@@ -602,7 +601,13 @@ async function classifyTodaForTrip(
 
     if (!tripServed) continue;
 
-    candidates.push({ toda: t, pickupRouteDistM, destRouteDistM });
+    // 👉 store terminal distance so we can later choose "closest TODA"
+    candidates.push({
+      toda: t,
+      terminalDistM,
+      pickupRouteDistM,
+      destRouteDistM,
+    });
   }
 
   if (!candidates.length) {
@@ -614,21 +619,18 @@ async function classifyTodaForTrip(
     };
   }
 
-  candidates.sort(
-    (a, b) =>
-      a.pickupRouteDistM - b.pickupRouteDistM ||
-      a.destRouteDistM - b.destRouteDistM
+  // 👉 primary key = distance to TODA terminal (closest TODA wins)
+  candidates.sort((a, b) =>
+    a.terminalDistM - b.terminalDistM ||
+    a.destRouteDistM - b.destRouteDistM ||
+    a.pickupRouteDistM - b.pickupRouteDistM
   );
+
   const best = candidates[0];
   const mainToda = best.toda;
 
-  // zone classification AFTER confirming matched TODA
-  const centerDistM = haversine(
-    pickup.lat,
-    pickup.lng,
-    mainToda.latitude,
-    mainToda.longitude
-  );
+  // zone classification using terminal distance
+  const centerDistM = best.terminalDistM;
 
   let passengerZoneTag = "FAR";
   let pickupTodaRejected = true;
