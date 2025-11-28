@@ -12,6 +12,25 @@ const Toda = require("../models/Toda");
 const DEBUG_WAITING = true; 
 
 
+async function sendExpoPush(to, title, body, data = {}) {
+  if (!to) return;
+  try {
+    await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to,
+        sound: "default",
+        title,
+        body,
+        data,
+      }),
+    });
+    console.log("Push sent to", to);
+  } catch (err) {
+    console.error("❌ Failed to send push:", err?.message || err);
+  }
+}
 
 // ---------- helpers ----------
 const toRad = (v) => (v * Math.PI) / 180;
@@ -413,7 +432,6 @@ const DEST_STOP_EXTRA_M     = 200;
 const INTODA_RADIUS_M       = 100;
 const NEARTODA_RADIUS_M     = 300;
 
-
 async function classifyTodaForTrip(
   pickupLat,
   pickupLng,
@@ -660,8 +678,6 @@ async function classifyTodaForTrip(
     passengerZoneTag,
   };
 }
-
-
 
 // 🔹 Check if a destination lies within a corridor around TODA routes
 function isDestinationServedByToda(toda, destLat, destLng) {
@@ -1447,7 +1463,9 @@ router.post("/accept-booking", async (req, res) => {
     try {
       const method = String(result.booking?.paymentMethod || "").toLowerCase();
       if (method === "gcash") {
-        const d = await Driver.findById(driverId).select("gcashNumber gcashQRUrl gcashQRPublicId");
+        const d = await Driver.findById(driverId).select(
+          "gcashNumber gcashQRUrl gcashQRPublicId"
+        );
         if (d) {
           await Booking.updateOne(
             { bookingId },
@@ -1468,8 +1486,37 @@ router.post("/accept-booking", async (req, res) => {
       console.warn("GCash snapshot failed:", e?.message || e);
     }
 
-    // Return fresh booking
+    // 🔄 Return fresh booking
     const fresh = await Booking.findOne({ bookingId }).lean();
+
+    // 🔔 NEW: send push notification to passenger
+    try {
+      if (fresh && fresh.passengerId) {
+        const passenger = await Passenger.findById(fresh.passengerId).select(
+          "pushToken"
+        );
+        if (passenger?.pushToken) {
+          await sendExpoPush(
+            passenger.pushToken,
+            "TODA Go",
+            "A driver accepted your booking.",
+            {
+              bookingId: fresh.bookingId,
+              driverId: String(driverId),
+            }
+          );
+        } else {
+          console.log(
+            "ℹ️ No pushToken for passenger",
+            String(fresh.passengerId)
+          );
+        }
+      }
+    } catch (err) {
+      console.error("❌ Error sending accept-booking push:", err);
+      // don't fail the API just because push failed
+    }
+
     return res.status(200).json({
       message: "Booking accepted",
       booking: fresh || result.booking,
@@ -1646,6 +1693,26 @@ router.post("/booking/:bookingId/payment-status", async (req, res) => {
     return res.json({ ok: true, paymentStatus: b.paymentStatus });
   } catch (e) {
     return res.status(500).json({ ok: false, error: "Server error" });
+  }
+});
+
+router.post("/passenger/push-token", async (req, res) => {
+  try {
+    const { passengerId, pushToken } = req.body;
+    if (!passengerId || !pushToken) {
+      return res.status(400).json({ error: "Missing passengerId or pushToken" });
+    }
+
+    await Passenger.findByIdAndUpdate(
+      passengerId,
+      { pushToken },
+      { new: true }
+    );
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("Save push token failed:", e);
+    res.status(500).json({ error: "Server error" });
   }
 });
 

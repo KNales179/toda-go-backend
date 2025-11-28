@@ -23,6 +23,7 @@ const passengerSchema = new mongoose.Schema({
   profileImage: { type: String },
   profileImagePublicId: { type: String },
   homeAddress: { type:String },
+  pushToken: { type: String },
 
   // From original app
   email: { type: String, unique: true, required: true },
