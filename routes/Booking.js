@@ -12,7 +12,7 @@ const Toda = require("../models/Toda");
 const DEBUG_WAITING = true; 
 
 
-async function sendExpoPush(to, title, body, data = {}) {
+async function sendPush(to, title, body, extra = {}) {
   if (!to) return;
   try {
     await fetch("https://exp.host/--/api/v2/push/send", {
@@ -23,14 +23,16 @@ async function sendExpoPush(to, title, body, data = {}) {
         sound: "default",
         title,
         body,
-        data,
+        data: extra,
       }),
     });
-    console.log("Push sent to", to);
+    console.log("📨 Push sent:", title);
   } catch (err) {
-    console.error("❌ Failed to send push:", err?.message || err);
+    console.error("❌ Push send failed:", err);
   }
 }
+
+
 
 // ---------- helpers ----------
 const toRad = (v) => (v * Math.PI) / 180;
@@ -1496,7 +1498,7 @@ router.post("/accept-booking", async (req, res) => {
           "pushToken"
         );
         if (passenger?.pushToken) {
-          await sendExpoPush(
+          await sendPush(
             passenger.pushToken,
             "TODA Go",
             "A driver accepted your booking.",
@@ -1556,6 +1558,30 @@ router.post("/cancel-booking", async (req, res) => {
       },
       { new: true }
     ).lean();
+
+    // 🔔 Notify driver ONLY if passenger cancelled and there is a driver
+    try {
+      const by = (cancelledBy || "passenger").toLowerCase();
+      if ((by === "passenger" || !cancelledBy) && b.driverId) {
+        const driver = await Driver.findById(b.driverId).select("pushToken");
+        if (driver?.pushToken) {
+          await sendPush(
+            driver.pushToken,
+            "Booking Cancelled",
+            "The passenger has cancelled the booking.",
+            {
+              bookingId: updated?.bookingId || bookingId,
+              passengerId: String(b.passengerId || ""),
+            }
+          );
+        } else {
+          console.log("ℹ️ No pushToken for driver", String(b.driverId));
+        }
+      }
+    } catch (err) {
+      console.error("❌ Error sending cancel notification to driver:", err);
+      // Don't fail the API just because push failed
+    }
 
     return res.status(200).json({ message: "Booking cancelled", booking: updated });
   } catch (e) {
@@ -1638,6 +1664,36 @@ router.post("/complete-booking", async (req, res) => {
       console.error("❌ Error saving ride history:", e);
     }
 
+    // 🔔 Send push notification to passenger (no driver push here)
+    try {
+      if (updated && updated.passengerId) {
+        const passenger = await Passenger.findById(updated.passengerId).select(
+          "pushToken"
+        );
+        if (passenger?.pushToken) {
+          await sendPush(
+            passenger.pushToken,
+            "Trip Complete",
+            "Your trip is completed. Thank you for riding!",
+            {
+              bookingId: updated.bookingId,
+              driverId: String(updated.driverId || ""),
+            }
+          );
+        } else {
+          console.log(
+            "ℹ️ No pushToken for passenger",
+            String(updated.passengerId)
+          );
+        }
+      }
+    } catch (err) {
+      console.error("❌ Error sending complete-booking push:", err);
+      // don't fail the API just because push failed
+    }
+
+
+
     return res.status(200).json({
       message: "Booking marked as completed and history saved!",
       booking: { ...(updated.toObject?.() ?? updated), id: updated.bookingId },
@@ -1645,6 +1701,46 @@ router.post("/complete-booking", async (req, res) => {
   } catch (e) {
     console.error("❌ complete-booking error:", e);
     return res.status(500).json({ message: "Server error", details: e.message });
+  }
+});
+
+router.post("/passenger/push-token", async (req, res) => {
+  try {
+    const { passengerId, pushToken } = req.body;
+    if (!passengerId || !pushToken) {
+      return res.status(400).json({ error: "Missing passengerId or pushToken" });
+    }
+
+    await Passenger.findByIdAndUpdate(
+      passengerId,
+      { pushToken },
+      { new: true }
+    );
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("Save push token failed:", e);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+router.post("/driver/push-token", async (req, res) => {
+  try {
+    const { driverId, pushToken } = req.body;
+    if (!driverId || !pushToken) {
+      return res.status(400).json({ error: "Missing driverId or pushToken" });
+    }
+
+    await Driver.findByIdAndUpdate(
+      driverId,
+      { pushToken },
+      { new: true }
+    );
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("Save driver push token failed:", e);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
@@ -1693,26 +1789,6 @@ router.post("/booking/:bookingId/payment-status", async (req, res) => {
     return res.json({ ok: true, paymentStatus: b.paymentStatus });
   } catch (e) {
     return res.status(500).json({ ok: false, error: "Server error" });
-  }
-});
-
-router.post("/passenger/push-token", async (req, res) => {
-  try {
-    const { passengerId, pushToken } = req.body;
-    if (!passengerId || !pushToken) {
-      return res.status(400).json({ error: "Missing passengerId or pushToken" });
-    }
-
-    await Passenger.findByIdAndUpdate(
-      passengerId,
-      { pushToken },
-      { new: true }
-    );
-
-    res.json({ ok: true });
-  } catch (e) {
-    console.error("Save push token failed:", e);
-    res.status(500).json({ error: "Server error" });
   }
 });
 
