@@ -444,19 +444,6 @@ async function classifyTodaForTrip(
   const pickup = { lat: pickupLat, lng: pickupLng };
   const dest = { lat: destinationLat, lng: destinationLng };
 
-  if (DEBUG_WAITING) {
-    console.log("🟡 [classifyTodaForTrip] START", {
-      pickup: { lat: pickupLat, lng: pickupLng },
-      dest: { lat: destinationLat, lng: destinationLng },
-      hasChosenRoute:
-        !!(
-          chosenRoute &&
-          Array.isArray(chosenRoute.coords) &&
-          chosenRoute.coords.length
-        ),
-    });
-  }
-
   const todas = await Toda.find({ isActive: true }).lean();
   if (!todas.length) {
     return {
@@ -472,12 +459,6 @@ async function classifyTodaForTrip(
   for (const t of todas) {
     const routes = extractTodaRoutes(t);
     if (!routes.length) {
-      if (DEBUG_WAITING) {
-        console.log("🟡 [classifyTodaForTrip] TODA has no routes, skip", {
-          todaId: t._id,
-          name: t.name,
-        });
-      }
       continue;
     }
 
@@ -486,14 +467,6 @@ async function classifyTodaForTrip(
     const terminalDistM = (Number.isFinite(tLat) && Number.isFinite(tLng))
       ? haversine(pickup.lat, pickup.lng, tLat, tLng)
       : Infinity;
-
-    if (DEBUG_WAITING) {
-      console.log("🟡 [classifyTodaForTrip] CHECK TODA", {
-        todaId: t._id,
-        name: t.name,
-        terminalDistM,
-      });
-    }
 
     // 1) pickup near route
     let pickupRouteDistM = Infinity;
@@ -603,22 +576,6 @@ async function classifyTodaForTrip(
     // 6) TODA matches if destination is along/near the line OR near a forward stop
     const tripServed = nearRoute || nearStop;
 
-    if (DEBUG_WAITING) {
-      console.log("🟡 [classifyTodaForTrip] TODA EVAL", {
-        todaId: t._id,
-        name: t.name,
-        terminalDistM,
-        pickupRouteDistM,
-        destRouteDistM,
-        destStopDistM,
-        hasBestStop: !!bestStop,
-        nearRoute,
-        nearStop,
-        routeOk,
-        tripServed,
-      });
-    }
-
     if (!tripServed) continue;
 
     // 👉 store terminal distance so we can later choose "closest TODA"
@@ -661,16 +618,6 @@ async function classifyTodaForTrip(
   } else if (centerDistM <= NEARTODA_RADIUS_M) {
     passengerZoneTag = "NEARTODA";
     pickupTodaRejected = false;
-  }
-
-  if (DEBUG_WAITING) {
-    console.log("✅ [classifyTodaForTrip] FINAL CLASS", {
-      serviceTodaId: mainToda._id,
-      serviceTodaName: mainToda.name,
-      passengerZoneTag,
-      pickupTodaRejected,
-      centerDistM,
-    });
   }
 
   return {
@@ -839,14 +786,6 @@ async function matchTripToToda(pickupLat, pickupLng, destinationLat, destination
   const destinationTodaId = candidates[0].todaId;
   const candidateTodaIds = candidates.map((c) => c.todaId);
 
-  if (DEBUG_WAITING) {
-    console.log("✅ [classifyTodaForTrip] CANDIDATES", {
-      bestTodaId: destinationTodaId,
-      bestTodaName: mainToda.name,
-      candidates: candidateTodaIds,
-    });
-  }
-
   return { destinationTodaId, candidateTodaIds };
 }
 
@@ -886,18 +825,6 @@ async function todaAwareFilterForDriver(candidates, driverId) {
       driverType = "NON_TODA";  // inside some TODA but not a member
     }
   }
-
-  if (DEBUG_WAITING) {
-    console.log("🚕 [DRIVER CLASS]", {
-      driverId: String(driverId),
-      todaName,
-      zoneTodaId,
-      memberTodaId,
-      inTodaZone,
-      driverType,
-    });
-  }
-
   // ---------- CASE 1: TODA DRIVER ----------
   if (driverType === "TODA" && memberTodaId) {
     const out = candidates.filter((b) => {
@@ -915,18 +842,6 @@ async function todaAwareFilterForDriver(candidates, driverId) {
         !rejected &&
         (zoneTag === "INTODA" || zoneTag === "NEARTODA");
 
-      if (DEBUG_WAITING) {
-        console.log("🚕 [TODA] booking decision", {
-          driverId: String(driverId),
-          bookingId: b.bookingId,
-          pickupTodaId,
-          destinationTodaId: destTodaId,
-          passengerZoneTag: zoneTag,
-          pickupTodaRejected: rejected,
-          keep,
-        });
-      }
-
       return keep;
     });
     return out;
@@ -943,21 +858,9 @@ async function todaAwareFilterForDriver(candidates, driverId) {
 
     const keep = rejected || noTodaMatch || isFar;
 
-    if (DEBUG_WAITING) {
-      console.log("🚕 [ROAMING/NON_TODA] booking decision", {
-        driverId: String(driverId),
-        bookingId: b.bookingId,
-        destinationTodaId: destTodaId,
-        passengerZoneTag: zoneTag,
-        pickupTodaRejected: rejected,
-        keep,
-      });
-    }
-
     return keep;
   });
 
-  console.log("🚕 [ROAMING/NON_TODA] result count:", out.length);
   return out;
 }
 
@@ -1043,17 +946,6 @@ router.post("/book", async (req, res) => {
       Number(destinationLng),
       chosenRoute || null
     );
-
-    if (DEBUG_WAITING) {
-      console.log("💾 [/book] CLASSIFY RESULT", {
-        bookingPickup: { lat: Number(pickupLat), lng: Number(pickupLng) },
-        bookingDest:   { lat: Number(destinationLat), lng: Number(destinationLng) },
-        serviceTodaId,
-        candidateTodaIds,
-        pickupTodaRejected,
-        passengerZoneTag,
-      });
-    }
 
     // For storage we treat the "service TODA" as both pickup/destination TODA when accepted
     const pickupTodaId = serviceTodaId || null;
