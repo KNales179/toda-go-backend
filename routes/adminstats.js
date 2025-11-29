@@ -150,7 +150,7 @@ router.get("/admin/stats/weekly", async (req, res) => {
   try {
     const now = new Date();
     const year = now.getFullYear();
-    const monthIndex = now.getMonth(); // 0-based
+    const monthIndex = now.getMonth(); // 0-based 
 
     const startOfMonth = new Date(year, monthIndex, 1);
     const endOfMonth = new Date(year, monthIndex + 1, 0, 23, 59, 59, 999);
@@ -230,6 +230,42 @@ router.get("/admin/stats/weekly", async (req, res) => {
   } catch (err) {
     console.error("Weekly stats error:", err);
     res.status(500).json({ error: "Failed to load weekly stats" });
+  }
+});
+
+
+router.post("/admin/dev/seed-ridehistory", async (req, res) => {
+  try {
+    const { raw } = req.body;
+    if (!raw || typeof raw !== "string") {
+      return res.status(400).json({ error: "Missing raw JSON text" });
+    }
+
+    let docs;
+    try {
+      const parsed = JSON.parse(raw);
+      docs = Array.isArray(parsed) ? parsed : [parsed];
+    } catch (e) {
+      return res
+        .status(400)
+        .json({ error: "Invalid JSON", details: String(e) });
+    }
+
+    const cleaned = docs.map((d) => {
+      const copy = { ...d };
+      delete copy._id;
+      return copy;
+    });
+
+    if (!cleaned.length) {
+      return res.status(400).json({ error: "No documents to insert" });
+    }
+
+    const result = await RideHistory.insertMany(cleaned, { ordered: false });
+    return res.json({ insertedCount: result.length });
+  } catch (err) {
+    console.error("[DEV SEED] Error seeding RideHistory:", err);
+    return res.status(500).json({ error: "Failed to seed RideHistory" });
   }
 });
 
