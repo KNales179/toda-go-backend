@@ -345,5 +345,221 @@ router.post("/admin/dev/ridehistory-trim", async (req, res) => {
   }
 });
 
+// ========== DEV: SEED PASSENGERS ==========
+router.post("/admin/dev/seed-passengers", async (req, res) => {
+  try {
+    const { raw } = req.body;
+    if (!raw || typeof raw !== "string") {
+      return res.status(400).json({ error: "Missing raw JSON text" });
+    }
+
+    let docs;
+    try {
+      const parsed = JSON.parse(raw);
+      docs = Array.isArray(parsed) ? parsed : [parsed];
+    } catch (e) {
+      return res
+        .status(400)
+        .json({ error: "Invalid JSON", details: String(e) });
+    }
+
+    // strip _id so Mongo generates new ones
+    const cleaned = docs.map((d) => {
+      const copy = { ...d };
+      delete copy._id;
+      delete copy.__v;
+      return copy;
+    });
+
+    if (!cleaned.length) {
+      return res.status(400).json({ error: "No documents to insert" });
+    }
+
+    const result = await Passenger.insertMany(cleaned, { ordered: false });
+    return res.json({ insertedCount: result.length });
+  } catch (err) {
+    console.error("[DEV SEED] Error seeding Passengers:", err);
+    return res.status(500).json({ error: "Failed to seed Passengers" });
+  }
+});
+
+// ========== DEV: TRIM PASSENGERS BY MONTH ==========
+router.post("/admin/dev/passenger-trim", async (req, res) => {
+  try {
+    const { month, count } = req.body;
+
+    if (!month || typeof month !== "string") {
+      return res.status(400).json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
+    }
+    const n = Number(count);
+    if (!n || n <= 0) {
+      return res.status(400).json({ error: "Missing or invalid count (must be > 0)." });
+    }
+
+    const [yearStr, monthStr] = month.split("-");
+    const year = Number(yearStr);
+    const monthIndex = Number(monthStr) - 1;
+
+    if (
+      !Number.isInteger(year) ||
+      !Number.isInteger(monthIndex) ||
+      monthIndex < 0 ||
+      monthIndex > 11
+    ) {
+      return res.status(400).json({ error: "Invalid month format. Use 'YYYY-MM'." });
+    }
+
+    const start = new Date(year, monthIndex, 1);
+    const end = new Date(year, monthIndex + 1, 1);
+
+    const idsToDelete = await Passenger.aggregate([
+      {
+        $addFields: {
+          eventDate: {
+            $ifNull: ["$createdAt", { $toDate: "$_id" }],
+          },
+        },
+      },
+      {
+        $match: { eventDate: { $gte: start, $lt: end } },
+      },
+      {
+        $sort: { eventDate: -1, _id: -1 },
+      },
+      { $limit: n },
+      { $project: { _id: 1 } },
+    ]);
+
+    if (!idsToDelete.length) {
+      return res.json({
+        deletedCount: 0,
+        message: `No Passenger docs found for ${month}.`,
+      });
+    }
+
+    const idList = idsToDelete.map((d) => d._id);
+    const delResult = await Passenger.deleteMany({ _id: { $in: idList } });
+
+    console.log(
+      `🧹 [DEV TRIM] Deleted ${delResult.deletedCount} Passenger docs for month ${month}`
+    );
+
+    return res.json({
+      deletedCount: delResult.deletedCount,
+      month,
+    });
+  } catch (err) {
+    console.error("[DEV TRIM] Error trimming Passengers:", err);
+    return res.status(500).json({ error: "Failed to trim Passengers" });
+  }
+});
+
+// ========== DEV: SEED DRIVERS ==========
+router.post("/admin/dev/seed-drivers", async (req, res) => {
+  try {
+    const { raw } = req.body;
+    if (!raw || typeof raw !== "string") {
+      return res.status(400).json({ error: "Missing raw JSON text" });
+    }
+
+    let docs;
+    try {
+      const parsed = JSON.parse(raw);
+      docs = Array.isArray(parsed) ? parsed : [parsed];
+    } catch (e) {
+      return res
+        .status(400)
+        .json({ error: "Invalid JSON", details: String(e) });
+    }
+
+    const cleaned = docs.map((d) => {
+      const copy = { ...d };
+      delete copy._id;
+      delete copy.__v;
+      return copy;
+    });
+
+    if (!cleaned.length) {
+      return res.status(400).json({ error: "No documents to insert" });
+    }
+
+    const result = await Driver.insertMany(cleaned, { ordered: false });
+    return res.json({ insertedCount: result.length });
+  } catch (err) {
+    console.error("[DEV SEED] Error seeding Drivers:", err);
+    return res.status(500).json({ error: "Failed to seed Drivers" });
+  }
+});
+
+// ========== DEV: TRIM DRIVERS BY MONTH ==========
+router.post("/admin/dev/driver-trim", async (req, res) => {
+  try {
+    const { month, count } = req.body;
+
+    if (!month || typeof month !== "string") {
+      return res.status(400).json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
+    }
+    const n = Number(count);
+    if (!n || n <= 0) {
+      return res.status(400).json({ error: "Missing or invalid count (must be > 0)." });
+    }
+
+    const [yearStr, monthStr] = month.split("-");
+    const year = Number(yearStr);
+    const monthIndex = Number(monthStr) - 1;
+
+    if (
+      !Number.isInteger(year) ||
+      !Number.isInteger(monthIndex) ||
+      monthIndex < 0 ||
+      monthIndex > 11
+    ) {
+      return res.status(400).json({ error: "Invalid month format. Use 'YYYY-MM'." });
+    }
+
+    const start = new Date(year, monthIndex, 1);
+    const end = new Date(year, monthIndex + 1, 1);
+
+    const idsToDelete = await Driver.aggregate([
+      {
+        $addFields: {
+          eventDate: {
+            $ifNull: ["$createdAt", { $toDate: "$_id" }],
+          },
+        },
+      },
+      {
+        $match: { eventDate: { $gte: start, $lt: end } },
+      },
+      {
+        $sort: { eventDate: -1, _id: -1 },
+      },
+      { $limit: n },
+      { $project: { _id: 1 } },
+    ]);
+
+    if (!idsToDelete.length) {
+      return res.json({
+        deletedCount: 0,
+        message: `No Driver docs found for ${month}.`,
+      });
+    }
+
+    const idList = idsToDelete.map((d) => d._id);
+    const delResult = await Driver.deleteMany({ _id: { $in: idList } });
+
+    console.log(
+      `🧹 [DEV TRIM] Deleted ${delResult.deletedCount} Driver docs for month ${month}`
+    );
+
+    return res.json({
+      deletedCount: delResult.deletedCount,
+      month,
+    });
+  } catch (err) {
+    console.error("[DEV TRIM] Error trimming Drivers:", err);
+    return res.status(500).json({ error: "Failed to trim Drivers" });
+  }
+});
 
 module.exports = router;
