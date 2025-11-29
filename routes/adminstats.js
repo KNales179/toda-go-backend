@@ -51,22 +51,35 @@ function monthlyAggPipeline() {
 // ---------- MONTHLY STATS ----------
 router.get("/admin/stats/monthly", async (req, res) => {
   try {
-    // 🔍 DEBUG: check if there are ANY RideHistory docs in January (this year)
     const now = new Date();
     const year = now.getFullYear();
-    const janStart = new Date(year, 0, 1);  // Jan 1, 00:00
-    const febStart = new Date(year, 1, 1);  // Feb 1, 00:00
+    const janStart = new Date(year, 0, 1);  // Jan 1
+    const febStart = new Date(year, 1, 1);  // Feb 1
 
+    // 🔍 1) How many RideHistory docs exist in total?
+    const totalTripsAll = await RideHistory.countDocuments({});
+    console.log("🟢 [ADMIN STATS] TOTAL RideHistory docs in DB =", totalTripsAll);
+
+    // 🔍 2) How many of those are in January (by createdAt)?
     const janTripsCount = await RideHistory.countDocuments({
       createdAt: { $gte: janStart, $lt: febStart },
     });
+    console.log("🟡 [ADMIN STATS] RideHistory January count (createdAt) =", janTripsCount);
 
-    console.log("🟡 [ADMIN STATS] RideHistory January count =", janTripsCount);
-
-    // 👉 existing logic (keep this part)
+    // 👉 3) Run the existing aggregation (what the dashboard uses)
     const tripsAgg = await RideHistory.aggregate(monthlyAggPipeline());
     const usersAgg = await Passenger.aggregate(monthlyAggPipeline());
     const driversAgg = await Driver.aggregate(monthlyAggPipeline());
+
+    // 🔍 4) Sum what the aggregation sees (all months combined)
+    const totalTripsAgg = tripsAgg.reduce(
+      (sum, row) => sum + (row.count || 0),
+      0
+    );
+    console.log(
+      "🔵 [ADMIN STATS] TOTAL trips counted by monthlyAgg (sum of all months) =",
+      totalTripsAgg
+    );
 
     const map = new Map();
 
@@ -129,6 +142,7 @@ router.get("/admin/stats/monthly", async (req, res) => {
     res.status(500).json({ error: "Failed to load monthly stats" });
   }
 });
+
 
 
 // ---------- WEEKLY STATS (current month, per week) ----------
