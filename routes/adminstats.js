@@ -51,6 +51,19 @@ function monthlyAggPipeline() {
 // ---------- MONTHLY STATS ----------
 router.get("/admin/stats/monthly", async (req, res) => {
   try {
+    // 🔍 DEBUG: check if there are ANY RideHistory docs in January (this year)
+    const now = new Date();
+    const year = now.getFullYear();
+    const janStart = new Date(year, 0, 1);  // Jan 1, 00:00
+    const febStart = new Date(year, 1, 1);  // Feb 1, 00:00
+
+    const janTripsCount = await RideHistory.countDocuments({
+      createdAt: { $gte: janStart, $lt: febStart },
+    });
+
+    console.log("🟡 [ADMIN STATS] RideHistory January count =", janTripsCount);
+
+    // 👉 existing logic (keep this part)
     const tripsAgg = await RideHistory.aggregate(monthlyAggPipeline());
     const usersAgg = await Passenger.aggregate(monthlyAggPipeline());
     const driversAgg = await Driver.aggregate(monthlyAggPipeline());
@@ -116,6 +129,7 @@ router.get("/admin/stats/monthly", async (req, res) => {
     res.status(500).json({ error: "Failed to load monthly stats" });
   }
 });
+
 
 // ---------- WEEKLY STATS (current month, per week) ----------
 router.get("/admin/stats/weekly", async (req, res) => {
