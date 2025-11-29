@@ -381,14 +381,29 @@ router.post("/admin/dev/seed-passengers", async (req, res) => {
     );
 
     try {
-      const result = await Passenger.insertMany(cleaned, { ordered: false });
+      // 🔥 BYPASS MONGOOSE insertMany, use raw Mongo driver
+      const rawResult = await Passenger.collection.insertMany(cleaned, {
+        ordered: false,
+      });
+
       console.log(
-        "[DEV SEED] Passengers insertMany result count =",
-        result.length
+        "[DEV SEED] Passengers raw insertMany result:",
+        JSON.stringify(
+          {
+            insertedCount: rawResult.insertedCount,
+            insertedIdsCount: Object.keys(rawResult.insertedIds || {}).length,
+          },
+          null,
+          2
+        )
       );
-      return res.json({ insertedCount: result.length });
+
+      return res.json({
+        insertedCount: rawResult.insertedCount || 0,
+        insertedIdsCount: Object.keys(rawResult.insertedIds || {}).length,
+      });
     } catch (err) {
-      console.error("[DEV SEED] Error in Passenger.insertMany:", err);
+      console.error("[DEV SEED] Error in Passenger.collection.insertMany:", err);
 
       const payload = {
         error: "Failed to insert passengers",
@@ -397,44 +412,16 @@ router.post("/admin/dev/seed-passengers", async (req, res) => {
         code: err.code,
       };
 
-      // Mongoose validation error (missing required fields, wrong types, etc.)
-      if (err.name === "ValidationError" && err.errors) {
-        payload.type = "ValidationError";
-        payload.validationErrors = Object.keys(err.errors).map((k) => {
-          const e = err.errors[k];
-          return {
-            path: e.path,
-            message: e.message,
-            kind: e.kind,
-            value: e.value,
-          };
-        });
-      }
-
-      // Bulk write errors (e.g., duplicate key on email)
       if (Array.isArray(err.writeErrors)) {
-        payload.type = "BulkWriteError";
         payload.writeErrors = err.writeErrors.map((we) => ({
           index: we.index,
           code: we.code,
           errmsg: we.errmsg,
-          op: we.op
-            ? {
-                email: we.op.email,
-                createdAt: we.op.createdAt,
-              }
-            : null,
+          op: {
+            email: we.op?.email,
+            createdAt: we.op?.createdAt,
+          },
         }));
-      }
-
-      // Some drivers use err.result instead
-      if (!payload.writeErrors && err.result && err.result.result) {
-        payload.bulkResult = {
-          nInserted: err.result.result.nInserted,
-          nMatched: err.result.result.nMatched,
-          nModified: err.result.result.nModified,
-          nUpserted: err.result.result.nUpserted,
-        };
       }
 
       return res.status(500).json(payload);
