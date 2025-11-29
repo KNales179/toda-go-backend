@@ -46,8 +46,6 @@ function monthlyAggPipeline() {
   ];
 }
 
-
-
 // ---------- MONTHLY STATS ----------
 router.get("/admin/stats/monthly", async (req, res) => {
   try {
@@ -143,8 +141,6 @@ router.get("/admin/stats/monthly", async (req, res) => {
   }
 });
 
-
-
 // ---------- WEEKLY STATS (current month, per week) ----------
 router.get("/admin/stats/weekly", async (req, res) => {
   try {
@@ -233,7 +229,6 @@ router.get("/admin/stats/weekly", async (req, res) => {
   }
 });
 
-
 router.post("/admin/dev/seed-ridehistory", async (req, res) => {
   try {
     const { raw } = req.body;
@@ -268,5 +263,87 @@ router.post("/admin/dev/seed-ridehistory", async (req, res) => {
     return res.status(500).json({ error: "Failed to seed RideHistory" });
   }
 });
+
+router.post("/admin/dev/ridehistory-trim", async (req, res) => {
+  try {
+    const { month, count } = req.body;
+
+    // month: "2025-09", count: number
+    if (!month || typeof month !== "string") {
+      return res.status(400).json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
+    }
+    const n = Number(count);
+    if (!n || n <= 0) {
+      return res.status(400).json({ error: "Missing or invalid count (must be > 0)." });
+    }
+
+    const [yearStr, monthStr] = month.split("-");
+    const year = Number(yearStr);
+    const monthIndex = Number(monthStr) - 1; // JS Date: 0-based
+
+    if (
+      !Number.isInteger(year) ||
+      !Number.isInteger(monthIndex) ||
+      monthIndex < 0 ||
+      monthIndex > 11
+    ) {
+      return res.status(400).json({ error: "Invalid month format. Use 'YYYY-MM'." });
+    }
+
+    const start = new Date(year, monthIndex, 1);
+    const end = new Date(year, monthIndex + 1, 1);
+
+    // 1) Find up to N docs for that month (by createdAt OR _id timestamp)
+    const idsToDelete = await RideHistory.aggregate([
+      {
+        $addFields: {
+          eventDate: {
+            $ifNull: ["$createdAt", { $toDate: "$_id" }],
+          },
+        },
+      },
+      {
+        $match: {
+          eventDate: { $gte: start, $lt: end },
+        },
+      },
+      {
+        // delete the most recent ones first (you can flip to 1 for oldest first)
+        $sort: { eventDate: -1, _id: -1 },
+      },
+      {
+        $limit: n,
+      },
+      {
+        $project: { _id: 1 },
+      },
+    ]);
+
+    if (!idsToDelete.length) {
+      return res.json({
+        deletedCount: 0,
+        message: `No RideHistory docs found for ${month}.`,
+      });
+    }
+
+    const idList = idsToDelete.map((d) => d._id);
+
+    // 2) Delete them
+    const delResult = await RideHistory.deleteMany({ _id: { $in: idList } });
+
+    console.log(
+      `🧹 [DEV TRIM] Deleted ${delResult.deletedCount} RideHistory docs for month ${month}`
+    );
+
+    return res.json({
+      deletedCount: delResult.deletedCount,
+      month,
+    });
+  } catch (err) {
+    console.error("[DEV TRIM] Error trimming RideHistory:", err);
+    return res.status(500).json({ error: "Failed to trim RideHistory" });
+  }
+});
+
 
 module.exports = router;
