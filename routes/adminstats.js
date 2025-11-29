@@ -8,28 +8,34 @@ const Driver = require("../models/Drivers");
 
 // --- Helper: Build monthly aggregation pipeline ---
 function monthlyAggPipeline() {
+  const now = new Date();
+  const currentYear = now.getFullYear();
+
+  const yearStart = new Date(currentYear, 0, 1);          // Jan 1, current year
+  const nextYearStart = new Date(currentYear + 1, 0, 1);  // Jan 1 next year
+
   return [
     {
+      // Use createdAt if available, otherwise fall back to ObjectId timestamp
       $addFields: {
-        createdAtFromId: { $toDate: "$_id" },
+        eventDate: {
+          $ifNull: ["$createdAt", { $toDate: "$_id" }],
+        },
       },
     },
     {
       $match: {
-        createdAtFromId: {
-          $gte: new Date(
-            new Date().getFullYear(),
-            new Date().getMonth() - 5,
-            1
-          ),
+        eventDate: {
+          $gte: yearStart,
+          $lt: nextYearStart,
         },
       },
     },
     {
       $group: {
         _id: {
-          year: { $year: "$createdAtFromId" },
-          month: { $month: "$createdAtFromId" },
+          year: { $year: "$eventDate" },
+          month: { $month: "$eventDate" },
         },
         count: { $sum: 1 },
       },
@@ -39,6 +45,7 @@ function monthlyAggPipeline() {
     },
   ];
 }
+
 
 // ---------- MONTHLY STATS ----------
 router.get("/admin/stats/monthly", async (req, res) => {
