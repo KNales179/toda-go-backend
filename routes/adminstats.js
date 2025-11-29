@@ -11,17 +11,21 @@ function monthlyAggPipeline() {
   const now = new Date();
   const currentYear = now.getFullYear();
 
-  const yearStart = new Date(currentYear, 0, 1);          // Jan 1
-  const nextYearStart = new Date(currentYear + 1, 0, 1);  // Jan 1 next year
+  const yearStart = new Date(currentYear, 0, 1);         // Jan 1
+  const nextYearStart = new Date(currentYear + 1, 0, 1); // Jan 1 next year
 
   return [
     {
-      // Use createdAt if present, otherwise fall back to ObjectId date
+      // Always try to convert createdAt (string or Date) to a Date,
+      // fall back to ObjectId timestamp if createdAt is missing.
       $addFields: {
         eventDate: {
-          $ifNull: ["$createdAt", { $toDate: "$_id" }],
-        },
-      },
+          $ifNull: [
+            { $toDate: "$createdAt" },
+            { $toDate: "$_id" }
+          ]
+        }
+      }
     },
     {
       $match: {
@@ -45,6 +49,7 @@ function monthlyAggPipeline() {
     },
   ];
 }
+
 
 // ---------- MONTHLY STATS ----------
 router.get("/admin/stats/monthly", async (req, res) => {
@@ -154,24 +159,28 @@ router.get("/admin/stats/weekly", async (req, res) => {
     const weeklyPipeline = [
       {
         $addFields: {
-          createdAtFromId: { $toDate: "$_id" },
+          eventDate: {
+            $ifNull: [
+              { $toDate: "$createdAt" },
+              { $toDate: "$_id" }
+            ]
+          }
         },
       },
       {
         $match: {
-          createdAtFromId: {
+          eventDate: {
             $gte: startOfMonth,
             $lte: endOfMonth,
           },
         },
       },
       {
-        // Week-of-month: 1–5 (1 = days 1–7, 2 = 8–14, etc.)
         $group: {
           _id: {
             week: {
               $ceil: {
-                $divide: [{ $dayOfMonth: "$createdAtFromId" }, 7],
+                $divide: [{ $dayOfMonth: "$eventDate" }, 7],
               },
             },
           },
@@ -182,6 +191,7 @@ router.get("/admin/stats/weekly", async (req, res) => {
         $sort: { "_id.week": 1 },
       },
     ];
+
 
     const tripsAgg = await RideHistory.aggregate(weeklyPipeline);
     const usersAgg = await Passenger.aggregate(weeklyPipeline);
