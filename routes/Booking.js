@@ -1628,6 +1628,7 @@ router.post("/driver/push-token", async (req, res) => {
       { pushToken },
       { new: true }
     );
+    console.log(pushToken)
 
     res.json({ ok: true });
   } catch (e) {
