@@ -11,12 +11,12 @@ function monthlyAggPipeline() {
   const now = new Date();
   const currentYear = now.getFullYear();
 
-  const yearStart = new Date(currentYear, 0, 1);          // Jan 1, current year
+  const yearStart = new Date(currentYear, 0, 1);          // Jan 1
   const nextYearStart = new Date(currentYear + 1, 0, 1);  // Jan 1 next year
 
   return [
     {
-      // Use createdAt if available, otherwise fall back to ObjectId timestamp
+      // Use createdAt if present, otherwise fall back to ObjectId date
       $addFields: {
         eventDate: {
           $ifNull: ["$createdAt", { $toDate: "$_id" }],
@@ -45,6 +45,7 @@ function monthlyAggPipeline() {
     },
   ];
 }
+
 
 
 // ---------- MONTHLY STATS ----------
