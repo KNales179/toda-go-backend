@@ -345,7 +345,6 @@ router.post("/admin/dev/ridehistory-trim", async (req, res) => {
   }
 });
 
-// ========== DEV: SEED PASSENGERS ==========
 router.post("/admin/dev/seed-passengers", async (req, res) => {
   try {
     const { raw } = req.body;
@@ -363,7 +362,6 @@ router.post("/admin/dev/seed-passengers", async (req, res) => {
         .json({ error: "Invalid JSON", details: String(e) });
     }
 
-    // strip _id so Mongo generates new ones
     const cleaned = docs.map((d) => {
       const copy = { ...d };
       delete copy._id;
@@ -375,11 +373,79 @@ router.post("/admin/dev/seed-passengers", async (req, res) => {
       return res.status(400).json({ error: "No documents to insert" });
     }
 
-    const result = await Passenger.insertMany(cleaned, { ordered: false });
-    return res.json({ insertedCount: result.length });
+    console.log(
+      "[DEV SEED] Passengers: prepared docs =",
+      cleaned.length,
+      "example:",
+      cleaned[0]
+    );
+
+    try {
+      const result = await Passenger.insertMany(cleaned, { ordered: false });
+      console.log(
+        "[DEV SEED] Passengers insertMany result count =",
+        result.length
+      );
+      return res.json({ insertedCount: result.length });
+    } catch (err) {
+      console.error("[DEV SEED] Error in Passenger.insertMany:", err);
+
+      const payload = {
+        error: "Failed to insert passengers",
+        message: err.message,
+        name: err.name,
+        code: err.code,
+      };
+
+      // Mongoose validation error (missing required fields, wrong types, etc.)
+      if (err.name === "ValidationError" && err.errors) {
+        payload.type = "ValidationError";
+        payload.validationErrors = Object.keys(err.errors).map((k) => {
+          const e = err.errors[k];
+          return {
+            path: e.path,
+            message: e.message,
+            kind: e.kind,
+            value: e.value,
+          };
+        });
+      }
+
+      // Bulk write errors (e.g., duplicate key on email)
+      if (Array.isArray(err.writeErrors)) {
+        payload.type = "BulkWriteError";
+        payload.writeErrors = err.writeErrors.map((we) => ({
+          index: we.index,
+          code: we.code,
+          errmsg: we.errmsg,
+          op: we.op
+            ? {
+                email: we.op.email,
+                createdAt: we.op.createdAt,
+              }
+            : null,
+        }));
+      }
+
+      // Some drivers use err.result instead
+      if (!payload.writeErrors && err.result && err.result.result) {
+        payload.bulkResult = {
+          nInserted: err.result.result.nInserted,
+          nMatched: err.result.result.nMatched,
+          nModified: err.result.result.nModified,
+          nUpserted: err.result.result.nUpserted,
+        };
+      }
+
+      return res.status(500).json(payload);
+    }
   } catch (err) {
-    console.error("[DEV SEED] Error seeding Passengers:", err);
-    return res.status(500).json({ error: "Failed to seed Passengers" });
+    console.error("[DEV SEED] Error seeding Passengers (outer):", err);
+    return res.status(500).json({
+      error: "Failed to seed Passengers",
+      message: err.message,
+      name: err.name,
+    });
   }
 });
 
