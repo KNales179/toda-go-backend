@@ -125,6 +125,8 @@ router.get("/bookings/active", async (req, res) => {
       destinationTodaId: b.destinationTodaId,
       passengerZoneTag: b.passengerZoneTag,
 
+      chosenRoute: b.chosenRoute || null,
+
       createdAt: b.createdAt,
       acceptedAt: b.acceptedAt,
       completedAt: b.completedAt,
