@@ -1,16 +1,22 @@
-// routes/DebugLog.js
 const express = require("express");
 const router = express.Router();
 
-router.post("/debug-log", (req, res) => {
-  const { tag, payload } = req.body || {};
+router.post("/debug-log", async (req, res) => {
+  try {
+    const { source, message, extra } = req.body;
 
-  console.log(
-    `[FRONTEND:${tag || "general"}]`,
-    JSON.stringify(payload || {}, null, 2)
-  );
+    console.log("🟣 DEBUG LOG:", {
+      source,
+      message,
+      extra,
+      time: new Date().toISOString(),
+    });
 
-  return res.json({ ok: true });
+    res.json({ ok: true });
+  } catch (err) {
+    console.log("❌ debug-log error:", err);
+    res.status(500).json({ ok: false });
+  }
 });
 
 module.exports = router;
