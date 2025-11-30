@@ -1,6 +1,7 @@
 // routes/Booking.js (Mongo-only)
 const express = require("express");
 const router = express.Router();
+const fetch = require("node-fetch");
 
 const mongoose = require("mongoose");
 const DriverStatus = require("../models/DriverStatus");
@@ -14,10 +15,14 @@ const DEBUG_WAITING = true;
 
 async function sendPush(to, title, body, extra = {}) {
   if (!to) return;
+
   try {
-    await fetch("https://exp.host/--/api/v2/push/send", {
+    const resp = await fetch("https://exp.host/--/api/v2/push/send", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
       body: JSON.stringify({
         to,
         sound: "default",
@@ -26,11 +31,19 @@ async function sendPush(to, title, body, extra = {}) {
         data: extra,
       }),
     });
-    console.log("📨 Push sent:", title);
+
+    const json = await resp.json().catch(() => null);
+
+    console.log("📨 Expo push response:", {
+      status: resp.status,
+      ok: resp.ok,
+      body: json,
+    });
   } catch (err) {
     console.error("❌ Push send failed:", err);
   }
 }
+
 
 
 
