@@ -3,7 +3,7 @@ const express = require("express");
 const router = express.Router();
 
 const Toda = require("../models/Toda");
-const Driver = require("../models/Driver");
+const Driver = require("../models/Drivers");
 const DriverStatus = require("../models/DriverStatus");
 const Booking = require("../models/Bookings");
 
@@ -38,7 +38,7 @@ router.get("/toda/locations", async (req, res) => {
 router.get("/drivers/active", async (req, res) => {
   try {
     const statuses = await DriverStatus.find({ isOnline: true })
-      .populate("driverId") // pulls from Driver model
+      .populate("driverId") 
       .lean();
 
     const payload = statuses
