@@ -41,7 +41,24 @@ function windowBounds(window = "7d") {
 }
 
 // Completed rides use this bucket date (so “today” income works even if only updatedAt is set)
-const completedDateExpr = { $ifNull: ["$completedAt", "$updatedAt"] };
+// Completed rides use this bucket date (coerce strings → Date, fallback to _id)
+const completedDateExpr = {
+  $ifNull: [
+    { $toDate: "$completedAt" },
+    {
+      $ifNull: [
+        { $toDate: "$updatedAt" },
+        {
+          $ifNull: [
+            { $toDate: "$createdAt" },
+            { $toDate: "$_id" }
+          ]
+        }
+      ]
+    }
+  ]
+};
+
 
 // $match helper for pipelines that already did: { $addFields: { bucketAt: ... } }
 const bucketWindowMatch = (start, end, isOverall) =>
@@ -108,10 +125,29 @@ router.get("/driver/:driverId/summary", async (req, res) => {
 
     /* ---- 1) Status distribution for ALL bookings in the window (based on createdAt) ---- */
     const statusAgg = await Booking.aggregate([
+      {
+        $addFields: {
+          statusBucketAt: {
+            $ifNull: [
+              { $toDate: "$createdAt" },
+              { $toDate: "$_id" }
+            ]
+          }
+        }
+      },
       { $match: { driverId } },
       ...(isOverall
         ? []
-        : [{ $match: { createdAt: { $gte: start, $lt: end } } }]),
+        : [{
+            $match: {
+              $expr: {
+                $and: [
+                  { $gte: ["$statusBucketAt", start] },
+                  { $lt: ["$statusBucketAt", end] }
+                ]
+              }
+            }
+          }]),
       {
         $group: {
           _id: "$status",
@@ -119,6 +155,7 @@ router.get("/driver/:driverId/summary", async (req, res) => {
         },
       },
     ]);
+
 
     const statusCounts = statusAgg.reduce(
       (acc, r) => {
