@@ -7,6 +7,10 @@ const Driver = require("../models/Drivers");
 const DriverStatus = require("../models/DriverStatus");
 const Booking = require("../models/Bookings");
 
+/**
+ * GET /api/toda/locations
+ * All active TODA zones for admin map
+ */
 router.get("/toda/locations", async (req, res) => {
   try {
     const todas = await Toda.find({ isActive: true }).lean();
@@ -20,8 +24,8 @@ router.get("/toda/locations", async (req, res) => {
       barangay: t.barangay || "",
       city: t.city || "Lucena City",
       notes: t.notes || "",
-      // use schema radius if set, otherwise fallback to 100m for monitor
-      radiusMeters: t.radiusMeters && t.radiusMeters > 0 ? t.radiusMeters : 100,
+      radiusMeters:
+        t.radiusMeters && t.radiusMeters > 0 ? t.radiusMeters : 100,
     }));
 
     res.json(payload);
@@ -33,21 +37,23 @@ router.get("/toda/locations", async (req, res) => {
 
 /**
  * GET /api/drivers/active
- * Online drivers + basic info for monitor.
+ * Online drivers + status for admin map
  */
 router.get("/drivers/active", async (req, res) => {
   try {
     const statuses = await DriverStatus.find({ isOnline: true })
-      .populate("driverId") 
+      .populate("driverId")
       .lean();
 
     const payload = statuses
-      .filter((s) => s.location && s.location.latitude && s.location.longitude)
+      .filter(
+        (s) => s.location && s.location.latitude && s.location.longitude
+      )
       .map((s) => {
         const d = s.driverId || {};
         return {
           id: d._id,
-          driverId: d._id,           // explicit id
+          driverId: d._id,
           name: d.driverName,
           franchiseNumber: d.franchiseNumber,
           todaName: d.todaName,
@@ -55,16 +61,20 @@ router.get("/drivers/active", async (req, res) => {
           phone: d.driverPhone,
           rating: d.rating ?? 0,
           ratingCount: d.ratingCount ?? 0,
+
           capacityTotal: s.capacityTotal,
           capacityUsed: s.capacityUsed,
           lockedSolo: s.lockedSolo,
           isOnline: s.isOnline,
-          // map location
+
           latitude: s.location.latitude,
           longitude: s.location.longitude,
-          // “has job” if status has any activeBookingIds
-          hasJob: Array.isArray(s.activeBookingIds) && s.activeBookingIds.length > 0,
+
+          hasJob:
+            Array.isArray(s.activeBookingIds) &&
+            s.activeBookingIds.length > 0,
           activeBookingIds: s.activeBookingIds || [],
+
           currentTodaId: s.currentTodaId || null,
           inTodaZone: !!s.inTodaZone,
           updatedAt: s.updatedAt,
@@ -80,7 +90,7 @@ router.get("/drivers/active", async (req, res) => {
 
 /**
  * GET /api/bookings/active
- * All bookings that are not completed/canceled.
+ * All bookings that are not completed/canceled
  */
 router.get("/bookings/active", async (req, res) => {
   try {
@@ -126,5 +136,21 @@ router.get("/bookings/active", async (req, res) => {
     res.status(500).json({ error: "Failed to load active bookings" });
   }
 });
+
+// DELETE /api/bookings/:id  (admin cleanup tool)
+router.delete("/bookings/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = await Booking.findByIdAndDelete(id);
+    if (!deleted) {
+      return res.status(404).json({ error: "Booking not found" });
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Error deleting booking:", err);
+    res.status(500).json({ error: "Failed to delete booking" });
+  }
+});
+
 
 module.exports = router;
