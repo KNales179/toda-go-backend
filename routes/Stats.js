@@ -2,6 +2,7 @@
 const express = require("express");
 const router = express.Router();
 
+const RideHistory = require("../models/RideHistory");
 const Booking = require("../models/Bookings");
 const Driver = require("../models/Drivers");
 const Passenger = require("../models/Passenger"); // used by /counts
@@ -40,24 +41,24 @@ function windowBounds(window = "7d") {
   return { start, end };
 }
 
-// Completed rides use this bucket date (so “today” income works even if only updatedAt is set)
-// Completed rides use this bucket date (coerce strings → Date, fallback to _id)
 const completedDateExpr = {
-  $ifNull: [
-    { $toDate: "$completedAt" },
-    {
-      $ifNull: [
-        { $toDate: "$updatedAt" },
-        {
-          $ifNull: [
-            { $toDate: "$createdAt" },
-            { $toDate: "$_id" }
-          ]
-        }
-      ]
-    }
-  ]
+  $toDate: {
+    $ifNull: [
+      "$completedAt",
+      {
+        $ifNull: [
+          "$updatedAt",
+          {
+            $ifNull: ["$createdAt", "$_id"]
+          }
+        ]
+      }
+    ]
+  }
 };
+
+
+
 
 
 // $match helper for pipelines that already did: { $addFields: { bucketAt: ... } }
@@ -123,7 +124,6 @@ router.get("/driver/:driverId/summary", async (req, res) => {
     const { start, end } = windowBounds(window);
     const isOverall = window === "overall";
 
-    /* ---- 1) Status distribution for ALL bookings in the window (based on createdAt) ---- */
     const statusAgg = await Booking.aggregate([
       {
         $addFields: {
@@ -136,25 +136,19 @@ router.get("/driver/:driverId/summary", async (req, res) => {
         }
       },
       { $match: { driverId } },
-      ...(isOverall
-        ? []
-        : [{
-            $match: {
-              $expr: {
-                $and: [
-                  { $gte: ["$statusBucketAt", start] },
-                  { $lt: ["$statusBucketAt", end] }
-                ]
-              }
-            }
-          }]),
-      {
-        $group: {
-          _id: "$status",
-          count: { $sum: 1 },
-        },
-      },
+      ...(isOverall ? [] : [{
+        $match: {
+          $expr: {
+            $and: [
+              { $gte: ["$statusBucketAt", start] },
+              { $lt: ["$statusBucketAt", end] }
+            ]
+          }
+        }
+      }]),
+      { $group: { _id: "$status", count: { $sum: 1 } } },
     ]);
+
 
 
     const statusCounts = statusAgg.reduce(
@@ -172,14 +166,10 @@ router.get("/driver/:driverId/summary", async (req, res) => {
       statusCounts.completed +
       statusCounts.canceled;
 
-    console.log( statusCounts, totalBookings);
-
     const completeRate = totalBookings
       ? statusCounts.completed / totalBookings
       : 0;
     const cancelRate = totalBookings ? statusCounts.canceled / totalBookings : 0;
-
-    console.log(completeRate, cancelRate);
 
     /* ---- 2) Income/avgFare/daily series from COMPLETED rides (windowed by completedAt/updatedAt) ---- */
     const daily = await Booking.aggregate([
@@ -474,6 +464,82 @@ router.get("/driver/:driverId/report", async (req, res) => {
   } catch (e) {
     console.error("stats report error:", e);
     res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.post("/admin/dev/hydrate-bookings-from-history", async (req, res) => {
+  try {
+    const year = Number(req.query.year) || new Date().getFullYear();
+    const month = Number(req.query.month); // 1–12 or NaN for whole year
+
+    const start = month
+      ? new Date(year, month - 1, 1)
+      : new Date(year, 0, 1);
+    const end = month
+      ? new Date(year, month, 1)
+      : new Date(year + 1, 0, 1);
+
+    // 1) Load RideHistory docs in that window
+    const historyDocs = await RideHistory.find({
+      createdAt: { $gte: start, $lt: end },
+    }).lean();
+
+    if (!historyDocs.length) {
+      return res.json({ insertedCount: 0, message: "No RideHistory docs found in range" });
+    }
+
+    // 2) For safety: skip bookings that already exist with same bookingId
+    const bookingIds = historyDocs
+      .map((h) => h.bookingId)
+      .filter(Boolean);
+
+    const existingBookings = await Booking.find(
+      { bookingId: { $in: bookingIds } },
+      { bookingId: 1 }
+    ).lean();
+
+    const existingSet = new Set(
+      existingBookings.map((b) => String(b.bookingId))
+    );
+
+    const toInsert = historyDocs
+      .filter((h) => h.bookingId && !existingSet.has(String(h.bookingId)))
+      .map((h) => ({
+        bookingId: h.bookingId,
+        passengerId: h.passengerId,
+        driverId: h.driverId,
+        pickupLat: h.pickupLat,
+        pickupLng: h.pickupLng,
+        destinationLat: h.destinationLat,
+        destinationLng: h.destinationLng,
+        pickupPlace: h.pickupPlace,
+        destinationPlace: h.destinationPlace,
+        fare: typeof h.totalFare === "number" ? h.totalFare : h.fare,
+        paymentMethod: h.paymentMethod || "cash",
+        bookingType: h.bookingType || "Classic",
+        status: h.status || "completed",
+        createdAt: h.createdAt,
+        updatedAt: h.completedAt || h.createdAt,
+        completedAt: h.completedAt || h.createdAt,
+      }));
+
+    if (!toInsert.length) {
+      return res.json({
+        insertedCount: 0,
+        message: "All RideHistory docs already have corresponding Bookings",
+      });
+    }
+
+    const result = await Booking.insertMany(toInsert, { ordered: false });
+
+    return res.json({
+      insertedCount: result.length,
+      year,
+      month: month || null,
+    });
+  } catch (err) {
+    console.error("[DEV HYDRATE] Error hydrating Bookings from RideHistory:", err);
+    return res.status(500).json({ error: "Failed to hydrate Bookings" });
   }
 });
 
