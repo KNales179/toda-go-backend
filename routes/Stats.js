@@ -41,6 +41,21 @@ function windowBounds(window = "7d") {
   return { start, end };
 }
 
+const normalizeBookingType = (bt) => {
+  if (!bt) return "CLASSIC";
+  const upper = String(bt).toUpperCase();
+  if (["CLASSIC", "GROUP", "SOLO"].includes(upper)) return upper;
+  return "CLASSIC";
+};
+
+const normalizePaymentMethod = (pm) => {
+  const v = (pm || "cash").toString().toLowerCase();
+  if (v === "gcash") return "gcash";
+  if (v === "cash") return "cash";
+  return "cash"; // fallback
+};
+
+
 const completedDateExpr = {
   $toDate: {
     $ifNull: [
@@ -515,8 +530,8 @@ router.post("/admin/dev/hydrate-bookings-from-history", async (req, res) => {
         pickupPlace: h.pickupPlace,
         destinationPlace: h.destinationPlace,
         fare: typeof h.totalFare === "number" ? h.totalFare : h.fare,
-        paymentMethod: h.paymentMethod || "cash",
-        bookingType: h.bookingType || "Classic",
+        paymentMethod: normalizePaymentMethod(h.paymentMethod),
+        bookingType: normalizeBookingType(h.bookingType),
         status: h.status || "completed",
         createdAt: h.createdAt,
         updatedAt: h.completedAt || h.createdAt,
