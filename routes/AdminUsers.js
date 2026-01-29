@@ -64,6 +64,166 @@ router.get("/admin/passengers", async (req, res) => {
     }
 });
 
+// ------------------------------
+// 🔔 (Optional) Expo push notify helper
+// ------------------------------
+async function sendExpoPush(pushToken, title, body, data = {}) {
+  if (!pushToken) return;
+  try {
+    await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to: pushToken,
+        title,
+        body,
+        data,
+        sound: "default",
+      }),
+    });
+  } catch (e) {
+    console.error("❌ Expo push failed:", e);
+  }
+}
+
+// ------------------------------
+// ✅ APPROVE discount verification (ADMIN)
+// PATCH /api/admin/passengers/:id/discount/approve
+// ------------------------------
+router.patch("/admin/passengers/:id/discount/approve", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { discountType } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, error: "invalid_id" });
+    }
+
+    // If admin didn’t send type, fallback to whatever passenger submitted
+    const p = await Passenger.findById(id).lean();
+    if (!p) return res.status(404).json({ ok: false, error: "not_found" });
+
+    const typeFinal = discountType || p?.discountVerification?.type || null;
+
+    const updated = await Passenger.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          discount: true,
+          discountType: typeFinal,
+
+          "discountVerification.status": "approved",
+          "discountVerification.reviewedAt": new Date(),
+          "discountVerification.rejectionReason": null,
+          // if you have admin auth later, put admin id here:
+          "discountVerification.reviewedByAdminId": null,
+        },
+      },
+      { new: true }
+    ).lean();
+
+    // notify passenger (push + socket)
+    if (updated?.pushToken) {
+      await sendExpoPush(
+        updated.pushToken,
+        "Discount Verification Approved",
+        `Your ${typeFinal || "discount"} verification was approved.`,
+        { type: "discount_verification", status: "approved", discountType: typeFinal }
+      );
+    }
+
+    // optional socket broadcast
+    if (req.io) {
+      req.io.emit("passenger:discount_verification", {
+        passengerId: String(updated._id),
+        status: "approved",
+        discountType: typeFinal,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      passenger: {
+        id: String(updated._id),
+        discount: updated.discount,
+        discountType: updated.discountType,
+        discountVerification: updated.discountVerification,
+      },
+    });
+  } catch (err) {
+    console.error("❌ approve discount error:", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+// ------------------------------
+// ❌ REJECT discount verification (ADMIN)
+// PATCH /api/admin/passengers/:id/discount/reject
+// ------------------------------
+router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rejectionReason } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, error: "invalid_id" });
+    }
+
+    const updated = await Passenger.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          discount: false,
+          discountType: null,
+
+          "discountVerification.status": "rejected",
+          "discountVerification.reviewedAt": new Date(),
+          "discountVerification.rejectionReason": rejectionReason || "No reason provided",
+          "discountVerification.reviewedByAdminId": null,
+        },
+      },
+      { new: true }
+    ).lean();
+
+    if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
+
+    // notify passenger (push + socket)
+    if (updated?.pushToken) {
+      await sendExpoPush(
+        updated.pushToken,
+        "Discount Verification Rejected",
+        `Your discount verification was rejected.`,
+        {
+          type: "discount_verification",
+          status: "rejected",
+          rejectionReason: updated.discountVerification?.rejectionReason || "",
+        }
+      );
+    }
+
+    if (req.io) {
+      req.io.emit("passenger:discount_verification", {
+        passengerId: String(updated._id),
+        status: "rejected",
+        rejectionReason: updated.discountVerification?.rejectionReason || "",
+      });
+    }
+
+    return res.json({
+      ok: true,
+      passenger: {
+        id: String(updated._id),
+        discount: updated.discount,
+        discountType: updated.discountType,
+        discountVerification: updated.discountVerification,
+      },
+    });
+  } catch (err) {
+    console.error("❌ reject discount error:", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
 
 // ------------------------------
 // 🟩 GET ALL DRIVERS (unchanged)

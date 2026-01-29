@@ -24,6 +24,13 @@ const passengerSchema = new mongoose.Schema({
   profileImagePublicId: { type: String },
   homeAddress: { type:String },
   pushToken: { type: String },
+  discount: { type: Boolean, default: false },
+  discountType: {
+    type: String,
+    enum: ["Student", "Senior Citizen", "PWD", null],
+    default: null,
+  },
+
 
   discountVerification: {
     type: {
