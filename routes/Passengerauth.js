@@ -177,14 +177,6 @@ router.post("/:id/photo", uploadMem.single("profileImage"), async (req, res) => 
       return res.status(400).json({ message: "No image uploaded (profileImage)" });
     }
 
-    // 🔍 debug logs (temporary)
-    console.log("[PPhoto] id:", passengerId);
-    console.log("[PPhoto] file:", {
-      size: req.file.size,
-      mimetype: req.file.mimetype,
-      originalname: req.file.originalname,
-    });
-
     if (!req.file.mimetype?.startsWith("image/")) {
       return res.status(400).json({ message: "Only image uploads are allowed" });
     }
@@ -193,7 +185,6 @@ router.post("/:id/photo", uploadMem.single("profileImage"), async (req, res) => 
     if (p.profileImagePublicId) {
       try {
         await cloudinary.uploader.destroy(p.profileImagePublicId);
-        console.log("[PPhoto] destroyed old:", p.profileImagePublicId);
       } catch (e) {
         console.warn("[PPhoto] destroy old failed:", e?.message || e);
       }
@@ -203,12 +194,6 @@ router.post("/:id/photo", uploadMem.single("profileImage"), async (req, res) => 
       folder: "toda-go/passengers",
       resource_type: "image",
       transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
-    });
-
-    // 🔍 debug log (temporary)
-    console.log("[PPhoto] cloudinary result:", {
-      secure_url: result.secure_url,
-      public_id: result.public_id,
     });
 
     p.profileImage = result.secure_url;       // full https URL

@@ -4,8 +4,6 @@ const RideHistorySchema = new mongoose.Schema(
   {
     bookingId: String,
     passengerId: String,
-
-    // store ID internally for joins; do NOT expose in sanitized route
     driverId: String,
 
     // coordinates (kept)

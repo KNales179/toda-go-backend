@@ -6,7 +6,7 @@ const passengerSchema = new mongoose.Schema({
     type: String, 
   },
   firstName: { type: String, required: true },
-  middleName: { type: String, required: true },
+  middleName: { type: String },
   lastName: { type: String, required: true },
   suffix: { type: String },
   gender: { type:String },
@@ -24,6 +24,47 @@ const passengerSchema = new mongoose.Schema({
   profileImagePublicId: { type: String },
   homeAddress: { type:String },
   pushToken: { type: String },
+
+  discountVerification: {
+    type: {
+      type: String,
+      enum: ["Student", "Senior Citizen", "PWD"],
+      default: null,
+    },
+
+    // Required only when type === "Student"
+    schoolYear: {
+      type: String, // example: "2025-2026"
+      default: null,
+    },
+
+    // system computed
+    validUntil: {
+      type: Date,
+      default: null,
+    },
+
+    // status lifecycle
+    status: {
+      type: String,
+      enum: ["none", "pending", "approved", "rejected"],
+      default: "none",
+    },
+
+    // evidence images stored in Cloudinary
+    idFrontUrl: { type: String, default: null },
+    idFrontPublicId: { type: String, default: null },
+
+    idBackUrl: { type: String, default: null },
+    idBackPublicId: { type: String, default: null },
+
+    // admin will fill these later (not now, but schema-ready)
+    submittedAt: { type: Date, default: null },
+    reviewedAt: { type: Date, default: null },
+    reviewedByAdminId: { type: String, default: null },
+
+    rejectionReason: { type: String, default: null },
+  },
 
   // From original app
   email: { type: String, unique: true, required: true },

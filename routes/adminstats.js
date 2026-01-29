@@ -61,14 +61,11 @@ router.get("/admin/stats/monthly", async (req, res) => {
 
     // 🔍 1) How many RideHistory docs exist in total?
     const totalTripsAll = await RideHistory.countDocuments({});
-    console.log("🟢 [ADMIN STATS] TOTAL RideHistory docs in DB =", totalTripsAll);
 
     // 🔍 2) How many of those are in January (by createdAt)?
     const janTripsCount = await RideHistory.countDocuments({
       createdAt: { $gte: janStart, $lt: febStart },
     });
-    console.log("🟡 [ADMIN STATS] RideHistory January count (createdAt) =", janTripsCount);
-
     // 👉 3) Run the existing aggregation (what the dashboard uses)
     const tripsAgg = await RideHistory.aggregate(monthlyAggPipeline());
     const usersAgg = await Passenger.aggregate(monthlyAggPipeline());
@@ -78,10 +75,6 @@ router.get("/admin/stats/monthly", async (req, res) => {
     const totalTripsAgg = tripsAgg.reduce(
       (sum, row) => sum + (row.count || 0),
       0
-    );
-    console.log(
-      "🔵 [ADMIN STATS] TOTAL trips counted by monthlyAgg (sum of all months) =",
-      totalTripsAgg
     );
 
     const map = new Map();
@@ -341,10 +334,6 @@ router.post("/admin/dev/ridehistory-trim", async (req, res) => {
     // 2) Delete them
     const delResult = await RideHistory.deleteMany({ _id: { $in: idList } });
 
-    console.log(
-      `🧹 [DEV TRIM] Deleted ${delResult.deletedCount} RideHistory docs for month ${month}`
-    );
-
     return res.json({
       deletedCount: delResult.deletedCount,
       month,
@@ -383,30 +372,11 @@ router.post("/admin/dev/seed-passengers", async (req, res) => {
       return res.status(400).json({ error: "No documents to insert" });
     }
 
-    console.log(
-      "[DEV SEED] Passengers: prepared docs =",
-      cleaned.length,
-      "example:",
-      cleaned[0]
-    );
-
     try {
       // 🔥 BYPASS MONGOOSE insertMany, use raw Mongo driver
       const rawResult = await Passenger.collection.insertMany(cleaned, {
         ordered: false,
       });
-
-      console.log(
-        "[DEV SEED] Passengers raw insertMany result:",
-        JSON.stringify(
-          {
-            insertedCount: rawResult.insertedCount,
-            insertedIdsCount: Object.keys(rawResult.insertedIds || {}).length,
-          },
-          null,
-          2
-        )
-      );
 
       return res.json({
         insertedCount: rawResult.insertedCount || 0,
@@ -502,10 +472,6 @@ router.post("/admin/dev/passenger-trim", async (req, res) => {
 
     const idList = idsToDelete.map((d) => d._id);
     const delResult = await Passenger.deleteMany({ _id: { $in: idList } });
-
-    console.log(
-      `🧹 [DEV TRIM] Deleted ${delResult.deletedCount} Passenger docs for month ${month}`
-    );
 
     return res.json({
       deletedCount: delResult.deletedCount,
@@ -611,9 +577,6 @@ router.post("/admin/dev/driver-trim", async (req, res) => {
     const idList = idsToDelete.map((d) => d._id);
     const delResult = await Driver.deleteMany({ _id: { $in: idList } });
 
-    console.log(
-      `🧹 [DEV TRIM] Deleted ${delResult.deletedCount} Driver docs for month ${month}`
-    );
 
     return res.json({
       deletedCount: delResult.deletedCount,
