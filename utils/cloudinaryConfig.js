@@ -1,4 +1,3 @@
-// src/utils/cloudinaryConfig.js
 const cloudinary = require("cloudinary").v2;
 
 cloudinary.config({
@@ -8,4 +7,14 @@ cloudinary.config({
   secure: true,
 });
 
-module.exports = cloudinary;
+async function safeDestroy(publicId) {
+  if (!publicId) return { result: "skipped" };
+  try {
+    return await cloudinary.uploader.destroy(publicId);
+  } catch (e) {
+    console.error("❌ Cloudinary destroy failed:", publicId, e?.message);
+    return { result: "error", error: e?.message };
+  }
+}
+
+module.exports = { cloudinary, safeDestroy };

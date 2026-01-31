@@ -6,7 +6,7 @@ const mongoose = require("mongoose");
 const Passenger = require("../models/Passenger");
 const Driver = require("../models/Drivers");
 const Notification = require("../models/Notification");
-
+const { safeDestroy } = require("../utils/cloudinaryConfig");
 const requireAdminAuth = require("../middleware/requireAdminAuth");
 
 router.use("/admin", requireAdminAuth);
@@ -159,10 +159,7 @@ router.patch("/admin/passengers/:id/discount/approve", async (req, res) => {
   }
 });
 
-// ------------------------------
 // ❌ REJECT discount verification (ADMIN)
-// PATCH /api/admin/passengers/:id/discount/reject
-// ------------------------------
 router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
   try {
     const { id } = req.params;
@@ -171,6 +168,23 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ ok: false, error: "invalid_id" });
     }
+
+    // ✅ Load passenger first so we can delete Cloudinary images
+    const existing = await Passenger.findById(id).lean();
+    if (!existing) return res.status(404).json({ ok: false, error: "not_found" });
+
+    const frontPublicId = existing?.idFrontPublicId || null;
+    const backPublicId = existing?.idBackPublicId || null;
+
+    console.log("🧹 [DISCOUNT REJECT] delete front:", frontPublicId);
+    console.log("🧹 [DISCOUNT REJECT] delete back:", backPublicId);
+
+    // ✅ Delete from Cloudinary (safe even if null)
+    const delFront = await safeDestroy(frontPublicId);
+    const delBack = await safeDestroy(backPublicId);
+
+    console.log("🧹 [DISCOUNT REJECT] cloudinary delFront:", delFront);
+    console.log("🧹 [DISCOUNT REJECT] cloudinary delBack:", delBack);
 
     const updated = await Passenger.findByIdAndUpdate(
       id,
@@ -183,13 +197,19 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
           "discountVerification.reviewedAt": new Date(),
           "discountVerification.rejectionReason": rejectionReason || "No reason provided",
           "discountVerification.reviewedByAdminId": req.admin.id,
+
+          // ✅ clear stored proof image refs so they don’t linger
+          idFrontUrl: null,
+          idFrontPublicId: null,
+          idBackUrl: null,
+          idBackPublicId: null,
         },
       },
       { new: true }
     ).lean();
+
     if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
 
-    // ✅ Internal notification (INS) - save to DB
     await Notification.create({
       userId: updated._id,
       userType: "passenger",
@@ -207,10 +227,6 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
       },
     });
 
-
-    if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
-
-    // notify passenger (push + socket)
     if (updated?.pushToken) {
       await sendExpoPush(
         updated.pushToken,
