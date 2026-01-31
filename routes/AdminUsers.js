@@ -5,6 +5,11 @@ const router = express.Router();
 const mongoose = require("mongoose");
 const Passenger = require("../models/Passenger");
 const Driver = require("../models/Drivers");
+const Notification = require("../models/Notification");
+
+const requireAdminAuth = require("../middleware/requireAdminAuth");
+
+router.use(requireAdminAuth);
 
 // ------------------------------
 // 🔧 HELPERS
@@ -115,12 +120,29 @@ router.patch("/admin/passengers/:id/discount/approve", async (req, res) => {
           "discountVerification.status": "approved",
           "discountVerification.reviewedAt": new Date(),
           "discountVerification.rejectionReason": null,
-          // if you have admin auth later, put admin id here:
-          "discountVerification.reviewedByAdminId": null,
+          "discountVerification.reviewedByAdminId": req.admin.id,
         },
       },
       { new: true }
     ).lean();
+    if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
+
+    await Notification.create({
+      userId: updated._id,
+      userType: "passenger",
+      category: "verification",
+      title: "Discount Verification Approved",
+      message: `Your ${typeFinal || "discount"} verification was approved.`,
+      createdByAdminId: req.admin.id,
+      createdByAdminName: req.admin.username || req.admin.email || "Admin",
+      seenAt: null,
+      readAt: null,
+      meta: {
+        type: "discount_verification",
+        status: "approved",
+        discountType: typeFinal,
+      },
+    });
 
     // notify passenger (push + socket)
     if (updated?.pushToken) {
@@ -179,11 +201,31 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
           "discountVerification.status": "rejected",
           "discountVerification.reviewedAt": new Date(),
           "discountVerification.rejectionReason": rejectionReason || "No reason provided",
-          "discountVerification.reviewedByAdminId": null,
+          "discountVerification.reviewedByAdminId": req.admin.id,
         },
       },
       { new: true }
     ).lean();
+    if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
+
+    // ✅ Internal notification (INS) - save to DB
+    await Notification.create({
+      userId: updated._id,
+      userType: "passenger",
+      category: "verification",
+      title: "Discount Verification Rejected",
+      message: `Your discount verification was rejected.`,
+      createdByAdminId: req.admin.id,
+      createdByAdminName: req.admin.username || req.admin.email || "Admin",
+      seenAt: null,
+      readAt: null,
+      meta: {
+        type: "discount_verification",
+        status: "rejected",
+        rejectionReason: updated.discountVerification?.rejectionReason || "",
+      },
+    });
+
 
     if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
 

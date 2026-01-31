@@ -78,6 +78,7 @@ const fareConfigRoutes = require("./routes/FareConfig");
 const adminTodaRoutes = require("./routes/adminTodaRoutes");
 const debugLogRoutes = require("./routes/DebugLog");
 const liveMonitorRoutes = require("./routes/liveMonitor");
+const notificationRoutes = require("./routes/Notifications");
 
 // Mount routes AFTER io is attached
 app.use("/api/auth/passenger", passengerRoutes);
@@ -108,6 +109,7 @@ app.use("/api", fareConfigRoutes);
 app.use("/api/admin", adminTodaRoutes);
 app.use("/api", debugLogRoutes);
 app.use("/api", liveMonitorRoutes);
+app.use("/api", notificationRoutes)
 
 // Static uploads
 app.use("/uploads", express.static("uploads"));
