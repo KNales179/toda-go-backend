@@ -9,7 +9,7 @@ const Notification = require("../models/Notification");
 
 const requireAdminAuth = require("../middleware/requireAdminAuth");
 
-router.use(requireAdminAuth);
+router.use("/admin", requireAdminAuth);
 
 // ------------------------------
 // 🔧 HELPERS
