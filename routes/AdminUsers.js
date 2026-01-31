@@ -51,7 +51,7 @@ router.get("/admin/passengers", async (req, res) => {
 });
 
 // ------------------------------
-// 🔔 (Optional) Expo push notify helper
+// 🔔Expo push notify helper
 // ------------------------------
 async function sendExpoPush(pushToken, title, body, data = {}) {
   if (!pushToken) return;
@@ -74,7 +74,6 @@ async function sendExpoPush(pushToken, title, body, data = {}) {
 
 // ------------------------------
 // ✅ APPROVE discount verification (ADMIN)
-// PATCH /api/admin/passengers/:id/discount/approve
 // ------------------------------
 router.patch("/admin/passengers/:id/discount/approve", async (req, res) => {
   try {
@@ -171,21 +170,39 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
 
     // ✅ Load passenger first so we can delete Cloudinary images
     const existing = await Passenger.findById(id).lean();
-    if (!existing) return res.status(404).json({ ok: false, error: "not_found" });
+    if (!existing) {
+      return res.status(404).json({ ok: false, error: "not_found" });
+    }
 
-    const frontPublicId = existing?.idFrontPublicId || null;
-    const backPublicId = existing?.idBackPublicId || null;
+    const frontPublicId = existing.idFrontPublicId || null;
+    const backPublicId = existing.idBackPublicId || null;
 
-    console.log("🧹 [DISCOUNT REJECT] delete front:", frontPublicId);
-    console.log("🧹 [DISCOUNT REJECT] delete back:", backPublicId);
+    console.log("\n🧹 [DISCOUNT REJECT] passenger:", String(existing._id));
+    console.log("🧹 [DISCOUNT REJECT] frontPublicId:", frontPublicId);
+    console.log("🧹 [DISCOUNT REJECT] backPublicId:", backPublicId);
 
-    // ✅ Delete from Cloudinary (safe even if null)
-    const delFront = await safeDestroy(frontPublicId);
-    const delBack = await safeDestroy(backPublicId);
+    // ✅ Delete from Cloudinary (never let this crash the whole reject flow)
+    let delFront = { result: "skipped" };
+    let delBack = { result: "skipped" };
+
+    try {
+      delFront = await safeDestroy(frontPublicId);
+    } catch (e) {
+      console.error("❌ [DISCOUNT REJECT] delFront failed:", e?.message);
+      delFront = { result: "error", error: e?.message };
+    }
+
+    try {
+      delBack = await safeDestroy(backPublicId);
+    } catch (e) {
+      console.error("❌ [DISCOUNT REJECT] delBack failed:", e?.message);
+      delBack = { result: "error", error: e?.message };
+    }
 
     console.log("🧹 [DISCOUNT REJECT] cloudinary delFront:", delFront);
     console.log("🧹 [DISCOUNT REJECT] cloudinary delBack:", delBack);
 
+    // ✅ Update passenger status + clear proof image refs (prevents lingering)
     const updated = await Passenger.findByIdAndUpdate(
       id,
       {
@@ -195,10 +212,11 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
 
           "discountVerification.status": "rejected",
           "discountVerification.reviewedAt": new Date(),
-          "discountVerification.rejectionReason": rejectionReason || "No reason provided",
+          "discountVerification.rejectionReason":
+            rejectionReason || "No reason provided",
           "discountVerification.reviewedByAdminId": req.admin.id,
 
-          // ✅ clear stored proof image refs so they don’t linger
+          // ✅ Clear image refs (so passenger must upload again)
           idFrontUrl: null,
           idFrontPublicId: null,
           idBackUrl: null,
@@ -208,8 +226,11 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
       { new: true }
     ).lean();
 
-    if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
+    if (!updated) {
+      return res.status(404).json({ ok: false, error: "not_found" });
+    }
 
+    // ✅ Save notification to DB
     await Notification.create({
       userId: updated._id,
       userType: "passenger",
@@ -224,9 +245,11 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
         type: "discount_verification",
         status: "rejected",
         rejectionReason: updated.discountVerification?.rejectionReason || "",
+        cloudinaryDelete: { delFront, delBack }, // ✅ helpful debug metadata
       },
     });
 
+    // ✅ Push notification
     if (updated?.pushToken) {
       await sendExpoPush(
         updated.pushToken,
@@ -240,6 +263,7 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
       );
     }
 
+    // ✅ Socket
     if (req.io) {
       req.io.emit("passenger:discount_verification", {
         passengerId: String(updated._id),
@@ -250,6 +274,7 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
 
     return res.json({
       ok: true,
+      cloudinaryDelete: { delFront, delBack }, // ✅ visible to admin if needed
       passenger: {
         id: String(updated._id),
         discount: updated.discount,
@@ -265,7 +290,7 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
 
 
 // ------------------------------
-// 🟩 GET ALL DRIVERS (unchanged)
+// 🟩 GET ALL DRIVERS
 // ------------------------------
 router.get("/admin/drivers", async (req, res) => {
   try {
