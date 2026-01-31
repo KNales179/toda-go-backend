@@ -7,28 +7,43 @@ const Notification = require("../models/Notification");
 // /api/notifications?userType=passenger&userId=...
 router.get("/notifications", async (req, res) => {
   try {
+    console.log("\n🧪 [NOTIF API] HIT GET /notifications");
+    console.log("🧪 [NOTIF API] req.originalUrl:", req.originalUrl);
+    console.log("🧪 [NOTIF API] query:", req.query);
+
     const { userId, userType } = req.query;
 
     if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      console.log("❌ [NOTIF API] invalid userId:", userId);
       return res.status(400).json({ ok: false, message: "invalid userId" });
     }
-    if (!userType || !["passenger", "driver"].includes(String(userType).toLowerCase())) {
+
+    const uType = String(userType || "").toLowerCase();
+    if (!uType || !["passenger", "driver"].includes(uType)) {
+      console.log("❌ [NOTIF API] invalid userType:", userType);
       return res.status(400).json({ ok: false, message: "invalid userType" });
     }
 
+    // force ObjectId
+    const uid = new mongoose.Types.ObjectId(userId);
+
     const rows = await Notification.find({
-      userId,
-      userType: String(userType).toLowerCase(),
+      userId: uid,
+      userType: uType,
     })
       .sort({ createdAt: -1 })
       .lean();
 
+    console.log("✅ [NOTIF API] matched rows:", rows.length);
+    if (rows[0]) console.log("✅ [NOTIF API] first row:", rows[0]);
+
     return res.json({ ok: true, items: rows });
   } catch (e) {
-    console.error("❌ notifications list error:", e);
+    console.error("❌ [NOTIF API] list error:", e);
     return res.status(500).json({ ok: false, message: "server_error" });
   }
 });
+
 
 // mark as seen
 router.patch("/notifications/:id/seen", async (req, res) => {
