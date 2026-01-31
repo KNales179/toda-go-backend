@@ -1396,7 +1396,7 @@ router.post("/accept-booking", async (req, res) => {
     // 🔄 Return fresh booking
     const fresh = await Booking.findOne({ bookingId }).lean();
 
-    // 🔔 NEW: send push notification to passenger
+    // 🔔 NEW: send push notification to passenger  
     try {
       if (fresh && fresh.passengerId) {
         const passenger = await Passenger.findById(fresh.passengerId).select(

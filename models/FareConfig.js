@@ -68,7 +68,7 @@ const FareConfigSchema = new mongoose.Schema(
       },
       percent: {
         type: Number,
-        default: 20, // 20% by ordinance
+        default: 20, 
         min: 0,
         max: 100,
       },
