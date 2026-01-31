@@ -29,15 +29,6 @@ router.get("/admin/passengers", async (req, res) => {
     try {
         const rows = await Passenger.find({}).sort({ createdAt: -1 }).lean();
 
-        console.log(
-        "📥 RAW FROM DB (first 3):",
-        rows.slice(0, 3).map((p) => ({
-            id: p._id,
-            email: p.email,
-            isVerified: p.isVerified,
-        }))
-        );
-
         const items = rows.map((p) => {
         const isVerified = !!p.isVerified;
 
@@ -51,16 +42,6 @@ router.get("/admin/passengers", async (req, res) => {
             raw: p,
         };
         });
-
-        console.log(
-        "📦 NORMALIZED PASSENGERS (first 3):",
-        items.slice(0, 3).map((p) => ({
-            id: p.id,
-            email: p.email,
-            isVerified: p.isVerified,
-            status: p.status,
-        }))
-        );
 
         return res.json({ items, total: items.length });
     } catch (err) {
