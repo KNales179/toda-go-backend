@@ -181,10 +181,10 @@ router.post(
         role,
         driverEmail, driverPassword,
         operatorEmail, operatorPassword,
-        franchiseNumber, todaName, sector,
+        franchiseNumber, plateNumber, todaName, sector,
         operatorFirstName, operatorMiddleName, operatorLastName, operatorSuffix, operatorBirthdate, operatorPhone,
         driverFirstName, driverMiddleName, driverLastName, driverSuffix, driverBirthdate, driverPhone,
-        experienceYears, isLucenaVoter, votingLocation, capacity,
+        experienceYears, isLucenaVoter, votingLocation, capacity, 
       } = req.body;
 
       if (!req.files?.votersIDImage) {
@@ -246,7 +246,7 @@ router.post(
 
       // Operator doc
       const newOperator = new Operator({
-        profileID, franchiseNumber, todaName, sector,
+        profileID, franchiseNumber, todaName, sector, plateNumber,
         operatorFirstName, operatorMiddleName, operatorLastName, operatorSuffix,
         operatorName: `${operatorFirstName} ${operatorMiddleName} ${operatorLastName} ${operatorSuffix || ""}`.trim(),
         operatorBirthdate, operatorPhone,
@@ -285,6 +285,7 @@ router.post(
         driverBirthdate: dBirth,
         driverPhone: dPhone,
         experienceYears, isLucenaVoter, votingLocation,
+        plateNumber,
 
         votersIDImage: savedImgs.votersIDImage,
         driversLicenseImage: savedImgs.driversLicenseImage,

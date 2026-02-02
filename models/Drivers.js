@@ -14,6 +14,7 @@ const DriverSchema = new mongoose.Schema({
   franchiseNumber: { type: String, required: true },
   todaName: { type: String, required: true },
   sector: { type: String, enum: ["East", "West", "North", "South", "Other"], required: true },
+  plateNumber: { type: String, default: "" },
 
   driverFirstName: { type: String, required: true },
   driverMiddleName: { type: String, required: true },
@@ -66,7 +67,7 @@ const DriverSchema = new mongoose.Schema({
 
 DriverSchema.pre("save", async function (next) {
   if (!this.password || !this.isModified("password")) return next();
-  const salt = await bcrypt.genSalt(10);
+  const salt = await bcrypt.genSalt(10); 
   this.password = await bcrypt.hash(this.password, salt);
   next();
 });
