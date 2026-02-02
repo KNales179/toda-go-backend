@@ -1,4 +1,4 @@
-// routes/AdminUsers.js (or wherever this lives)
+// routes/AdminUsers.js
 const express = require("express");
 const router = express.Router();
 
@@ -6,10 +6,32 @@ const mongoose = require("mongoose");
 const Passenger = require("../models/Passenger");
 const Driver = require("../models/Drivers");
 const Notification = require("../models/Notification");
-const { safeDestroy } = require("../utils/cloudinaryConfig");
 const requireAdminAuth = require("../middleware/requireAdminAuth");
 
-router.use("/admin", requireAdminAuth);
+// ✅ robust Cloudinary delete (prevents "safeDestroy is not a function" crash)
+let safeDestroy = async () => ({ result: "skipped" });
+try {
+  // If your utils/cloudinaryConfig exports { cloudinary }
+  const cloud = require("../utils/cloudinaryConfig");
+  const cloudinary = cloud?.cloudinary || cloud; // supports either export style
+  safeDestroy = async (publicId) => {
+    if (!publicId) return { result: "skipped" };
+    try {
+      const r = await cloudinary.uploader.destroy(publicId, {
+        resource_type: "image",
+        invalidate: true,
+      });
+      return r || { result: "ok" };
+    } catch (e) {
+      return { result: "error", error: e?.message || String(e) };
+    }
+  };
+} catch {
+  // keep safeDestroy stub
+}
+
+// ✅ protect all routes in this router (your endpoints are all /admin/* anyway)
+router.use(requireAdminAuth);
 
 // ------------------------------
 // 🔧 HELPERS
@@ -23,35 +45,7 @@ function fullName(first, middle, last, suffix = "") {
 }
 
 // ------------------------------
-// 🟩 GET ALL PASSENGERS (ADMIN)
-// ------------------------------
-router.get("/admin/passengers", async (req, res) => {
-    try {
-        const rows = await Passenger.find({}).sort({ createdAt: -1 }).lean();
-
-        const items = rows.map((p) => {
-        const isVerified = !!p.isVerified;
-
-        return {
-            id: String(p._id),
-            name: fullName(p.firstName, p.middleName, p.lastName, p.suffix),
-            email: p.email || "",
-            contact: p.phone || p.contact || "",
-            isVerified,
-            status: isVerified ? "verified" : "not verified",
-            raw: p,
-        };
-        });
-
-        return res.json({ items, total: items.length });
-    } catch (err) {
-        console.error("❌ FAILED TO LOAD PASSENGERS:", err);
-        return res.status(500).json({ error: "server_error" });
-    }
-});
-
-// ------------------------------
-// 🔔Expo push notify helper
+// 🔔 Expo push notify helper
 // ------------------------------
 async function sendExpoPush(pushToken, title, body, data = {}) {
   if (!pushToken) return;
@@ -73,6 +67,34 @@ async function sendExpoPush(pushToken, title, body, data = {}) {
 }
 
 // ------------------------------
+// 🟩 GET ALL PASSENGERS (ADMIN)
+// ------------------------------
+router.get("/admin/passengers", async (req, res) => {
+  try {
+    const rows = await Passenger.find({}).sort({ createdAt: -1 }).lean();
+
+    const items = rows.map((p) => {
+      const isVerified = !!p.isVerified;
+
+      return {
+        id: String(p._id),
+        name: fullName(p.firstName, p.middleName, p.lastName, p.suffix),
+        email: p.email || "",
+        contact: p.phone || p.contact || "",
+        isVerified,
+        status: isVerified ? "verified" : "not verified",
+        raw: p,
+      };
+    });
+
+    return res.json({ items, total: items.length });
+  } catch (err) {
+    console.error("❌ FAILED TO LOAD PASSENGERS:", err);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+// ------------------------------
 // ✅ APPROVE discount verification (ADMIN)
 // ------------------------------
 router.patch("/admin/passengers/:id/discount/approve", async (req, res) => {
@@ -84,7 +106,6 @@ router.patch("/admin/passengers/:id/discount/approve", async (req, res) => {
       return res.status(400).json({ ok: false, error: "invalid_id" });
     }
 
-    // If admin didn’t send type, fallback to whatever passenger submitted
     const p = await Passenger.findById(id).lean();
     if (!p) return res.status(404).json({ ok: false, error: "not_found" });
 
@@ -124,7 +145,6 @@ router.patch("/admin/passengers/:id/discount/approve", async (req, res) => {
       },
     });
 
-    // notify passenger (push + socket)
     if (updated?.pushToken) {
       await sendExpoPush(
         updated.pushToken,
@@ -134,7 +154,6 @@ router.patch("/admin/passengers/:id/discount/approve", async (req, res) => {
       );
     }
 
-    // optional socket broadcast
     if (req.io) {
       req.io.emit("passenger:discount_verification", {
         passengerId: String(updated._id),
@@ -168,11 +187,8 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
       return res.status(400).json({ ok: false, error: "invalid_id" });
     }
 
-    // ✅ Load passenger first so we can delete Cloudinary images
     const existing = await Passenger.findById(id).lean();
-    if (!existing) {
-      return res.status(404).json({ ok: false, error: "not_found" });
-    }
+    if (!existing) return res.status(404).json({ ok: false, error: "not_found" });
 
     const frontPublicId = existing.idFrontPublicId || null;
     const backPublicId = existing.idBackPublicId || null;
@@ -181,7 +197,6 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
     console.log("🧹 [DISCOUNT REJECT] frontPublicId:", frontPublicId);
     console.log("🧹 [DISCOUNT REJECT] backPublicId:", backPublicId);
 
-    // ✅ Delete from Cloudinary (never let this crash the whole reject flow)
     let delFront = { result: "skipped" };
     let delBack = { result: "skipped" };
 
@@ -202,7 +217,6 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
     console.log("🧹 [DISCOUNT REJECT] cloudinary delFront:", delFront);
     console.log("🧹 [DISCOUNT REJECT] cloudinary delBack:", delBack);
 
-    // ✅ Update passenger status + clear proof image refs (prevents lingering)
     const updated = await Passenger.findByIdAndUpdate(
       id,
       {
@@ -212,11 +226,9 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
 
           "discountVerification.status": "rejected",
           "discountVerification.reviewedAt": new Date(),
-          "discountVerification.rejectionReason":
-            rejectionReason || "No reason provided",
+          "discountVerification.rejectionReason": rejectionReason || "No reason provided",
           "discountVerification.reviewedByAdminId": req.admin.id,
 
-          // ✅ Clear image refs (so passenger must upload again)
           idFrontUrl: null,
           idFrontPublicId: null,
           idBackUrl: null,
@@ -226,11 +238,8 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
       { new: true }
     ).lean();
 
-    if (!updated) {
-      return res.status(404).json({ ok: false, error: "not_found" });
-    }
+    if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
 
-    // ✅ Save notification to DB
     await Notification.create({
       userId: updated._id,
       userType: "passenger",
@@ -245,11 +254,10 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
         type: "discount_verification",
         status: "rejected",
         rejectionReason: updated.discountVerification?.rejectionReason || "",
-        cloudinaryDelete: { delFront, delBack }, // ✅ helpful debug metadata
+        cloudinaryDelete: { delFront, delBack },
       },
     });
 
-    // ✅ Push notification
     if (updated?.pushToken) {
       await sendExpoPush(
         updated.pushToken,
@@ -263,7 +271,6 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
       );
     }
 
-    // ✅ Socket
     if (req.io) {
       req.io.emit("passenger:discount_verification", {
         passengerId: String(updated._id),
@@ -274,7 +281,7 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
 
     return res.json({
       ok: true,
-      cloudinaryDelete: { delFront, delBack }, // ✅ visible to admin if needed
+      cloudinaryDelete: { delFront, delBack },
       passenger: {
         id: String(updated._id),
         discount: updated.discount,
@@ -288,7 +295,6 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
   }
 });
 
-
 // ------------------------------
 // 🟩 GET ALL DRIVERS
 // ------------------------------
@@ -300,14 +306,9 @@ router.get("/admin/drivers", async (req, res) => {
       id: String(d._id),
       name:
         d.driverName ||
-        fullName(
-          d.driverFirstName,
-          d.driverMiddleName,
-          d.driverLastName,
-          d.driverSuffix
-        ),
+        fullName(d.driverFirstName, d.driverMiddleName, d.driverLastName, d.driverSuffix),
       email: d.email || "",
-      driverVerified: !!d.driverVerified,       
+      driverVerified: !!d.driverVerified,
       isVerified: !!d.isVerified,
       contact: d.driverPhone || "",
       gender: d.gender || "",
@@ -352,18 +353,11 @@ router.get("/admin/drivers", async (req, res) => {
 router.delete("/admin/drivers/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    if (!id) {
-      return res.status(400).json({ error: "missing_id" });
-    }
-
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ error: "invalid_id" });
-    }
+    if (!id) return res.status(400).json({ error: "missing_id" });
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ error: "invalid_id" });
 
     const deleted = await Driver.findByIdAndDelete(id);
-    if (!deleted) {
-      return res.status(404).json({ error: "not_found" });
-    }
+    if (!deleted) return res.status(404).json({ error: "not_found" });
 
     return res.json({ ok: true });
   } catch (err) {
@@ -373,12 +367,18 @@ router.delete("/admin/drivers/:id", async (req, res) => {
 });
 
 // ------------------------------
-// ✅ PATCH /api/drivers/:id/verify
+// ✅ PATCH /api/admin/drivers/:id/verify
+// - saves internal notification for driver
+// - optional push + socket
 // ------------------------------
 router.patch("/admin/drivers/:id/verify", async (req, res) => {
   try {
     const { id } = req.params;
     const { driverVerified = true } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, error: "invalid_id" });
+    }
 
     const updated = await Driver.findByIdAndUpdate(
       id,
@@ -388,6 +388,46 @@ router.patch("/admin/drivers/:id/verify", async (req, res) => {
 
     if (!updated) {
       return res.status(404).json({ ok: false, error: "driver_not_found" });
+    }
+
+    // ✅ Save to Notification DB (internal notif for driver app)
+    const adminName = req.admin?.username || req.admin?.email || "Admin";
+    const title = !!driverVerified ? "Driver Account Verified" : "Driver Verification Removed";
+    const message = !!driverVerified
+      ? "Your driver account has been verified by the admin."
+      : "Your driver verification status was removed. Please contact admin if this is unexpected.";
+
+    await Notification.create({
+      userId: updated._id,
+      userType: "driver",
+      category: "verification",
+      title,
+      message,
+      createdByAdminId: req.admin.id,
+      createdByAdminName: adminName,
+      seenAt: null,
+      readAt: null,
+      meta: {
+        type: "driver_verification",
+        status: !!driverVerified ? "approved" : "reverted",
+        driverVerified: !!driverVerified,
+      },
+    });
+
+    // ✅ Optional push notification (if driver has pushToken)
+    if (updated?.pushToken) {
+      await sendExpoPush(updated.pushToken, title, message, {
+        type: "driver_verification",
+        status: !!driverVerified ? "approved" : "reverted",
+      });
+    }
+
+    // ✅ Optional socket broadcast (driver can listen if you implement)
+    if (req.io) {
+      req.io.emit("driver:verification", {
+        driverId: String(updated._id),
+        driverVerified: !!driverVerified,
+      });
     }
 
     return res.json({
@@ -402,6 +442,5 @@ router.patch("/admin/drivers/:id/verify", async (req, res) => {
     return res.status(500).json({ ok: false, error: "server_error" });
   }
 });
-
 
 module.exports = router;

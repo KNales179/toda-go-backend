@@ -4,6 +4,7 @@ const router = express.Router();
 
 const Driver = require("../models/Drivers");
 const Operator = require("../models/Operator");
+const Notification = require("../models/Notification");
 
 const { v4: uuidv4 } = require("uuid");
 const jwt = require("jsonwebtoken");
@@ -31,7 +32,7 @@ function uploadBufferToCloudinary(buffer, options = {}) {
   return new Promise((resolve, reject) => {
     const up = cloudinary.uploader.upload_stream(options, (err, result) => {
       if (err) return reject(err);
-      resolve(result); // { secure_url, public_id, ... }
+      resolve(result);
     });
     streamifier.createReadStream(buffer).pipe(up);
   });
@@ -52,9 +53,26 @@ async function safeDestroy(publicId) {
       resource_type: "image",
       invalidate: true,
     });
-    log("destroyed old Cloudinary asset:", publicId);
   } catch (e) {
     console.warn("⚠️ Cloudinary destroy failed:", publicId, e?.message);
+  }
+}
+
+// ✅ create internal notification helper
+async function pushNotif({ userId, userType, category, title, message, meta = {} }) {
+  try {
+    if (!userId) return;
+    await Notification.create({
+      userId,
+      userType, // "driver" or "passenger"
+      category, // "verification" | "report" | "feedback" | "notice"
+      title,
+      message,
+      meta,
+      createdByAdminName: "System",
+    });
+  } catch (e) {
+    console.warn("⚠️ pushNotif failed:", e?.message);
   }
 }
 
@@ -81,11 +99,6 @@ router.get("/:id/payment-info", async (req, res) => {
   }
 });
 
-/**
- * POST /api/auth/driver/:id/gcash-number
- * Body: { gcashNumber }
- * Normalizes and saves.
- */
 router.post("/:id/gcash-number", async (req, res) => {
   try {
     const { id } = req.params;
@@ -104,7 +117,6 @@ router.post("/:id/gcash-number", async (req, res) => {
     );
 
     if (!driver) return res.status(404).json({ ok: false, error: "Driver not found" });
-
     return res.json({ ok: true, gcashNumber: driver.gcashNumber });
   } catch (err) {
     console.error("GCASH_NUM_SAVE", err);
@@ -112,11 +124,6 @@ router.post("/:id/gcash-number", async (req, res) => {
   }
 });
 
-/**
- * POST /api/auth/driver/:id/gcash-qr
- * FormData: field "qr" (image)
- * Uploads new QR to Cloudinary, saves URL + public_id, deletes the old image.
- */
 router.post("/:id/gcash-qr", upload.single("qr"), async (req, res) => {
   try {
     const { id } = req.params;
@@ -125,13 +132,11 @@ router.post("/:id/gcash-qr", upload.single("qr"), async (req, res) => {
       return res.status(400).json({ ok: false, error: "No image uploaded" });
     }
 
-    // Get current to know old public id
     const current = await Driver.findById(id).select("gcashQRPublicId");
     if (!current) return res.status(404).json({ ok: false, error: "Driver not found" });
 
     const oldPublicId = current.gcashQRPublicId || null;
 
-    // Upload new asset (unique id so we can safely delete old)
     const up = await uploadBufferToCloudinary(req.file.buffer, {
       folder: "toda-go/gcash-qrs",
       resource_type: "image",
@@ -139,17 +144,13 @@ router.post("/:id/gcash-qr", upload.single("qr"), async (req, res) => {
       public_id: `driver_${id}_gcashqr_${Date.now()}`,
     });
 
-    // Persist new values
     const driver = await Driver.findByIdAndUpdate(
       id,
       { gcashQRUrl: up.secure_url, gcashQRPublicId: up.public_id },
       { new: true, select: "_id driverName gcashQRUrl gcashQRPublicId" }
     );
 
-    // Fire-and-forget delete old image
-    if (oldPublicId && oldPublicId !== up.public_id) {
-      safeDestroy(oldPublicId);
-    }
+    if (oldPublicId && oldPublicId !== up.public_id) safeDestroy(oldPublicId);
 
     return res.json({
       ok: true,
@@ -186,12 +187,10 @@ router.post(
         experienceYears, isLucenaVoter, votingLocation, capacity,
       } = req.body;
 
-      // basic validation
       if (!req.files?.votersIDImage) {
         return res.status(400).json({ error: "Voter's ID image is required" });
       }
 
-      // uniqueness checks
       if ((role === "Driver" || role === "Both") && driverEmail) {
         const exists = await Driver.findOne({ email: driverEmail });
         if (exists) return res.status(400).json({ error: "Driver already exists" });
@@ -268,7 +267,7 @@ router.post(
         isVerified: false,
       });
 
-      // Driver doc (handle "Both")
+      // Driver doc
       const dFirst = role === "Both" ? operatorFirstName : driverFirstName;
       const dMiddle = role === "Both" ? operatorMiddleName : driverMiddleName;
       const dLast  = role === "Both" ? operatorLastName : driverLastName;
@@ -305,12 +304,15 @@ router.post(
       await newOperator.save();
       await newDriver.save();
 
-      // send verification emails
+      // send verification emails + save internal notif entries
       const baseUrl = getBaseUrl(req);
+
       async function sendVerify(kind, id, toEmail, displayName) {
-        if (!toEmail) return;
-        const token = jwt.sign({ kind, id }, process.env.JWT_SECRET, { expiresIn: "1d" });
+        if (!toEmail) return null;
+
+        const token = jwt.sign({ kind, id: String(id) }, process.env.JWT_SECRET, { expiresIn: "1d" });
         const verifyUrl = `${baseUrl}/api/auth/driver/verify-email?token=${encodeURIComponent(token)}`;
+
         await sendMail({
           to: toEmail,
           subject: "Verify your TodaGo Driver Account",
@@ -321,13 +323,38 @@ router.post(
             <p>Or paste this link: ${verifyUrl}</p>
           `,
         });
+
+        return verifyUrl;
       }
 
+      let driverVerifyUrl = null;
+      let operatorVerifyUrl = null;
+
       if (role === "Driver" || role === "Both") {
-        await sendVerify("driver", newDriver._id, driverEmail, newDriver.driverName);
+        driverVerifyUrl = await sendVerify("driver", newDriver._id, driverEmail, newDriver.driverName);
+        await pushNotif({
+          userId: newDriver._id,
+          userType: "driver",
+          category: "verification",
+          title: "Verify your email",
+          message: "We sent you a verification link. Please check your email (and Spam).",
+          meta: { sentTo: driverEmail, kind: "driver" },
+        });
       }
+
       if (role === "Operator" || role === "Both") {
-        await sendVerify("operator", newOperator._id, operatorEmail, newOperator.operatorName);
+        operatorVerifyUrl = await sendVerify("operator", newOperator._id, operatorEmail, newOperator.operatorName);
+
+        // If your app treats operator as driver internally, keep userType="driver".
+        // If you later add userType="operator" in Notification enum, you can switch this.
+        await pushNotif({
+          userId: newDriver._id, // ✅ attach to driver profile so driver app can display it
+          userType: "driver",
+          category: "verification",
+          title: "Verify operator email",
+          message: "We sent a verification link for the operator account. Please check the operator email.",
+          meta: { sentTo: operatorEmail, kind: "operator" },
+        });
       }
 
       return res.status(201).json({
@@ -340,11 +367,9 @@ router.post(
   }
 );
 
-const buildVerifyUrl = (id) => {
-  const token = jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
-  return `${process.env.BACKEND_BASE_URL}/api/auth/driver/verify-email?token=${encodeURIComponent(token)}`;
-};
-
+// ✅ FIXED verify-email: supports BOTH payload styles:
+// - old: { id }
+// - new: { kind, id }
 router.get("/verify-email", async (req, res) => {
   try {
     const { token } = req.query;
@@ -357,12 +382,52 @@ router.get("/verify-email", async (req, res) => {
       return res.status(400).send("Invalid or expired verification link");
     }
 
-    const driver = await Driver.findById(decoded.id);
+    const kind = (decoded.kind || "driver").toLowerCase();
+    const id = decoded.id;
+
+    if (!id) return res.status(400).send("Invalid token payload");
+
+    if (kind === "operator") {
+      const operator = await Operator.findById(id);
+      if (!operator) return res.status(404).send("Account not found");
+
+      if (operator.isVerified) return res.send("Already verified. You can log in.");
+      operator.isVerified = true;
+      await operator.save();
+
+      // ✅ Put notif on driver account too (so driver app can show it)
+      const driver = await Driver.findOne({ profileID: operator.profileID }).select("_id").lean();
+
+      if (driver?._id) {
+        await pushNotif({
+          userId: driver._id,
+          userType: "driver",
+          category: "verification",
+          title: "Operator email verified",
+          message: "Your operator email has been verified successfully.",
+          meta: { operatorId: String(operator._id) },
+        });
+      }
+
+      return res.send("✅ Operator email verified! You can now log in.");
+    }
+
+    // default: driver
+    const driver = await Driver.findById(id);
     if (!driver) return res.status(404).send("Account not found");
 
     if (driver.isVerified) return res.send("Already verified. You can log in.");
     driver.isVerified = true;
     await driver.save();
+
+    await pushNotif({
+      userId: driver._id,
+      userType: "driver",
+      category: "verification",
+      title: "Email verified",
+      message: "Your email has been verified successfully.",
+      meta: { driverId: String(driver._id) },
+    });
 
     return res.send("✅ Driver email verified! You can now log in.");
   } catch (e) {
@@ -371,6 +436,7 @@ router.get("/verify-email", async (req, res) => {
   }
 });
 
+// ✅ resend verification now also saves notification
 router.post("/resend-verification", async (req, res) => {
   try {
     const { email } = req.body;
@@ -380,7 +446,10 @@ router.post("/resend-verification", async (req, res) => {
     if (!driver) return res.status(404).json({ message: "No driver found" });
     if (driver.isVerified) return res.json({ message: "Already verified" });
 
-    const verifyUrl = buildVerifyUrl(driver._id);
+    const baseUrl = process.env.BACKEND_BASE_URL;
+    const token = jwt.sign({ kind: "driver", id: String(driver._id) }, process.env.JWT_SECRET, { expiresIn: "1d" });
+    const verifyUrl = `${baseUrl}/api/auth/driver/verify-email?token=${encodeURIComponent(token)}`;
+
     try {
       await sendMail({
         to: driver.email,
@@ -396,6 +465,15 @@ router.post("/resend-verification", async (req, res) => {
     } catch (e) {
       console.error("❌ driver resend sendMail failed:", e.message);
     }
+
+    await pushNotif({
+      userId: driver._id,
+      userType: "driver",
+      category: "verification",
+      title: "Verification link resent",
+      message: "We resent your email verification link. Please check your inbox (and Spam).",
+      meta: { sentTo: driver.email },
+    });
 
     return res.json({ message: "Verification email sent" });
   } catch (e) {

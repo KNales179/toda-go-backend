@@ -1,3 +1,4 @@
+// middleware/requireUserAuth.js
 const jwt = require("jsonwebtoken");
 
 module.exports = function requireUserAuth(req, res, next) {
