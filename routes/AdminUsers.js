@@ -31,7 +31,7 @@ try {
 }
 
 // ✅ protect all routes in this router (your endpoints are all /admin/* anyway)
-router.use(requireAdminAuth);
+router.use("/admin",requireAdminAuth);
 
 // ------------------------------
 // 🔧 HELPERS
@@ -374,15 +374,19 @@ router.delete("/admin/drivers/:id", async (req, res) => {
 router.patch("/admin/drivers/:id/verify", async (req, res) => {
   try {
     const { id } = req.params;
-    const { driverVerified = true } = req.body;
+    const { driverVerified } = req.body; // expect boolean
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ ok: false, error: "invalid_id" });
     }
 
+    // ✅ normalize to boolean; default behavior:
+    // - if missing, treat as true (keeps old behavior)
+    const nextVerified = typeof driverVerified === "boolean" ? driverVerified : true;
+
     const updated = await Driver.findByIdAndUpdate(
       id,
-      { $set: { driverVerified: !!driverVerified } },
+      { $set: { driverVerified: nextVerified } },
       { new: true }
     ).lean();
 
@@ -390,13 +394,24 @@ router.patch("/admin/drivers/:id/verify", async (req, res) => {
       return res.status(404).json({ ok: false, error: "driver_not_found" });
     }
 
-    // ✅ Save to Notification DB (internal notif for driver app)
+    // ✅ Build message depending on verify/unverify
     const adminName = req.admin?.username || req.admin?.email || "Admin";
-    const title = !!driverVerified ? "Driver Account Verified" : "Driver Verification Removed";
-    const message = !!driverVerified
-      ? "Your driver account has been verified by the admin."
-      : "Your driver verification status was removed. Please contact admin if this is unexpected.";
 
+    const title = nextVerified
+      ? "Driver Account Verified"
+      : "Driver Account Unverified";
+
+    const message = nextVerified
+      ? "Your driver account has been verified by the admin."
+      : "Your driver verification was removed by the admin (test notification).";
+
+    const meta = {
+      type: "driver_verification",
+      status: nextVerified ? "approved" : "removed",
+      driverVerified: nextVerified,
+    };
+
+    // ✅ Save to Notification DB (internal notifications)
     await Notification.create({
       userId: updated._id,
       userType: "driver",
@@ -407,26 +422,23 @@ router.patch("/admin/drivers/:id/verify", async (req, res) => {
       createdByAdminName: adminName,
       seenAt: null,
       readAt: null,
-      meta: {
-        type: "driver_verification",
-        status: !!driverVerified ? "approved" : "reverted",
-        driverVerified: !!driverVerified,
-      },
+      meta,
     });
 
-    // ✅ Optional push notification (if driver has pushToken)
+    // ✅ Push notification for BOTH verify and unverify
     if (updated?.pushToken) {
-      await sendExpoPush(updated.pushToken, title, message, {
-        type: "driver_verification",
-        status: !!driverVerified ? "approved" : "reverted",
-      });
+      await sendExpoPush(updated.pushToken, title, message, meta);
+    } else {
+      console.log("ℹ️ driver has no pushToken, internal notif saved only:", String(updated._id));
     }
 
-    // ✅ Optional socket broadcast (driver can listen if you implement)
     if (req.io) {
       req.io.emit("driver:verification", {
         driverId: String(updated._id),
-        driverVerified: !!driverVerified,
+        driverVerified: nextVerified,
+        title,
+        message,
+        meta,
       });
     }
 
@@ -438,7 +450,7 @@ router.patch("/admin/drivers/:id/verify", async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("❌ verify driver error:", err);
+    console.error("❌ verify/unverify driver error:", err);
     return res.status(500).json({ ok: false, error: "server_error" });
   }
 });
