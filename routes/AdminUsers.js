@@ -366,93 +366,102 @@ router.delete("/admin/drivers/:id", async (req, res) => {
   }
 });
 
-// ------------------------------
-// ✅ PATCH /api/admin/drivers/:id/verify
-// - saves internal notification for driver
-// - optional push + socket
-// ------------------------------
+
 router.patch("/admin/drivers/:id/verify", async (req, res) => {
   try {
     const { id } = req.params;
-    const { driverVerified } = req.body; // expect boolean
+    const { driverVerified, action, reason } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ ok: false, error: "invalid_id" });
     }
 
-    // ✅ normalize to boolean; default behavior:
-    // - if missing, treat as true (keeps old behavior)
-    const nextVerified = typeof driverVerified === "boolean" ? driverVerified : true;
+    const nextVerified = !!driverVerified;
+
+    // ✅ enforce action validity
+    const act = String(action || "").toLowerCase();
+    const allowed = ["verify", "reject", "unverify"];
+    if (!allowed.includes(act)) {
+      return res.status(400).json({ ok: false, error: "invalid_action" });
+    }
+
+    // ✅ enforce rule mapping
+    // verify must be true, reject/unverify must be false
+    if (act === "verify" && nextVerified !== true) {
+      return res.status(400).json({ ok: false, error: "verify_must_be_true" });
+    }
+    if ((act === "reject" || act === "unverify") && nextVerified !== false) {
+      return res.status(400).json({ ok: false, error: "reject_unverify_must_be_false" });
+    }
+
+    // ✅ require reason for reject/unverify (official workflow)
+    const cleanReason = String(reason || "").trim();
+    if ((act === "reject" || act === "unverify") && !cleanReason) {
+      return res.status(400).json({ ok: false, error: "reason_required" });
+    }
 
     const updated = await Driver.findByIdAndUpdate(
       id,
-      { $set: { driverVerified: nextVerified } },
+      {
+        $set: {
+          driverVerified: nextVerified,
+
+          // optional: keep a mini audit trail on Driver doc
+          "driverVerification.status": act, // verify | reject | unverify
+          "driverVerification.reviewedAt": new Date(),
+          "driverVerification.rejectionReason": act === "verify" ? null : cleanReason,
+          "driverVerification.reviewedByAdminId": req.admin?.id || null,
+        },
+      },
       { new: true }
     ).lean();
 
-    if (!updated) {
-      return res.status(404).json({ ok: false, error: "driver_not_found" });
-    }
+    if (!updated) return res.status(404).json({ ok: false, error: "driver_not_found" });
 
-    // ✅ Build message depending on verify/unverify
+    // ✅ Internal notification
     const adminName = req.admin?.username || req.admin?.email || "Admin";
 
-    const title = nextVerified
-      ? "Driver Account Verified"
-      : "Driver Account Unverified";
+    const title =
+      act === "verify"
+        ? "Driver Account Verified"
+        : act === "reject"
+        ? "Driver Verification Rejected"
+        : "Driver Verification Removed";
 
-    const message = nextVerified
-      ? "Your driver account has been verified by the admin."
-      : "Your driver verification was removed by the admin (test notification).";
+    const message =
+      act === "verify"
+        ? "Your driver account has been verified by the admin."
+        : act === "reject"
+        ? `Your verification was rejected. Reason: ${cleanReason}`
+        : `Your verification was removed. Reason: ${cleanReason}`;
 
-    const meta = {
-      type: "driver_verification",
-      status: nextVerified ? "approved" : "removed",
-      driverVerified: nextVerified,
-    };
-
-    // ✅ Save to Notification DB (internal notifications)
     await Notification.create({
       userId: updated._id,
       userType: "driver",
       category: "verification",
       title,
       message,
-      createdByAdminId: req.admin.id,
+      createdByAdminId: req.admin?.id || null,
       createdByAdminName: adminName,
       seenAt: null,
       readAt: null,
-      meta,
+      meta: {
+        type: "driver_verification",
+        action: act,                  // ✅ verify | reject | unverify
+        driverVerified: nextVerified,  // ✅ true/false
+        reason: cleanReason || null,
+      },
     });
-
-    // ✅ Push notification for BOTH verify and unverify
-    if (updated?.pushToken) {
-      await sendExpoPush(updated.pushToken, title, message, meta);
-    } else {
-      console.log("ℹ️ driver has no pushToken, internal notif saved only:", String(updated._id));
-    }
-
-    if (req.io) {
-      req.io.emit("driver:verification", {
-        driverId: String(updated._id),
-        driverVerified: nextVerified,
-        title,
-        message,
-        meta,
-      });
-    }
 
     return res.json({
       ok: true,
-      driver: {
-        id: String(updated._id),
-        driverVerified: !!updated.driverVerified,
-      },
+      driver: { id: String(updated._id), driverVerified: !!updated.driverVerified },
     });
   } catch (err) {
-    console.error("❌ verify/unverify driver error:", err);
+    console.error("❌ driver verify/reject/unverify error:", err);
     return res.status(500).json({ ok: false, error: "server_error" });
   }
 });
+
 
 module.exports = router;

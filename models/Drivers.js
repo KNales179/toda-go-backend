@@ -54,6 +54,14 @@ const DriverSchema = new mongoose.Schema({
   selfieImagePublicId: { type: String },
 
   capacity: { type: Number, min: 1, max: 6, default: 4, required: true },
+
+  driverVerification: {
+    status: { type: String, enum: ["verify", "reject", "unverify"], default: null },
+    reviewedAt: { type: Date, default: null },
+    rejectionReason: { type: String, default: null },
+    reviewedByAdminId: { type: mongoose.Schema.Types.ObjectId, default: null },
+  },
+
 }, { timestamps: true });
 
 DriverSchema.pre("save", async function (next) {
