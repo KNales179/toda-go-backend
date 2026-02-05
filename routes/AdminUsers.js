@@ -302,43 +302,80 @@ router.get("/admin/drivers", async (req, res) => {
   try {
     const rows = await Driver.find({}).sort({ createdAt: -1 }).lean();
 
-    const items = rows.map((d) => ({
-      id: String(d._id),
-      name:
+    const items = rows.map((d) => {
+      const name =
         d.driverName ||
-        fullName(d.driverFirstName, d.driverMiddleName, d.driverLastName, d.driverSuffix),
-      email: d.email || "",
-      driverVerified: !!d.driverVerified,
-      isVerified: !!d.isVerified,
-      contact: d.driverPhone || "",
-      gender: d.gender || "",
-      birthday: d.driverBirthdate || "",
-      address: d.homeAddress || "",
-      profileID: d.profileID,
-      franchiseNumber: d.franchiseNumber,
-      todaName: d.todaName,
-      sector: d.sector,
-      experience: d.experienceYears,
-      capacity: d.capacity,
-      rating: d.rating,
-      ratingCount: d.ratingCount,
-      payment: {
-        gcashNumber: d.gcashNumber,
-        gcashQRUrl: d.gcashQRUrl,
-      },
-      verification: {
-        isVerified: d.isVerified,
-        isLucenaVoter: d.isLucenaVoter,
-        votingLocation: d.votingLocation,
-      },
-      documents: {
-        votersIDImage: d.votersIDImage,
-        driversLicenseImage: d.driversLicenseImage,
-        orcrImage: d.orcrImage,
-        selfieImage: d.selfieImage,
-      },
-      raw: d,
-    }));
+        fullName(
+          d.driverFirstName,
+          d.driverMiddleName,
+          d.driverLastName,
+          d.driverSuffix
+        ) ||
+        "Driver";
+
+      return {
+        // A
+        id: String(d._id),
+        name,
+        email: d.email || "",
+        contact: d.driverPhone || "",
+
+        // B
+        franchiseNumber: d.franchiseNumber || "",
+        plateNumber: d.plateNumber || "",
+        todaName: d.todaName || "",
+        sector: d.sector || "",
+
+        // E
+        experience: d.experienceYears || "",
+        rating: d.rating ?? 0,
+        ratingCount: d.ratingCount ?? 0,
+
+        // D (✅ make it explicit for table)
+        driverVerification: {
+          status: d?.driverVerification?.status || "", // verify|reject|unverify|""(pending)
+          reviewedAt: d?.driverVerification?.reviewedAt || null,
+          rejectionReason: d?.driverVerification?.rejectionReason || null,
+          reviewedByAdminId: d?.driverVerification?.reviewedByAdminId || null,
+        },
+
+        // keep old flags if other parts still use them
+        driverVerified: !!d.driverVerified,
+        isVerified: !!d.isVerified,
+
+        // docs (table shows check only)
+        documents: {
+          votersIDImage: d.votersIDImage || "",
+          driversLicenseImage: d.driversLicenseImage || "",
+          orcrImage: d.orcrImage || "",
+          selfieImage: d.selfieImage || "",
+        },
+        hasVotersId: !!d.votersIDImage,
+        hasLicense: !!d.driversLicenseImage,
+        hasOrcr: !!d.orcrImage,
+
+        // payment (for modals)
+        payment: {
+          gcashNumber: d.gcashNumber || "",
+          gcashQRUrl: d.gcashQRUrl || "",
+        },
+
+        // extra info for modals
+        gender: d.gender || "",
+        birthday: d.driverBirthdate || "",
+        address: d.homeAddress || "",
+        profileID: d.profileID || "",
+        capacity: d.capacity ?? null,
+        verification: {
+          isVerified: !!d.isVerified,
+          isLucenaVoter: d.isLucenaVoter || "",
+          votingLocation: d.votingLocation || "",
+        },
+
+        // keep raw if you still rely on it elsewhere
+        raw: d,
+      };
+    });
 
     return res.json({ items, total: items.length });
   } catch (err) {
@@ -346,6 +383,7 @@ router.get("/admin/drivers", async (req, res) => {
     return res.status(500).json({ error: "server_error" });
   }
 });
+
 
 // ------------------------------
 // 🗑 DELETE DRIVER (ADMIN)
