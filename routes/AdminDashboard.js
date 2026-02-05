@@ -5,6 +5,7 @@ const Driver = require("../models/Drivers");
 const DriverStatus = require("../models/DriverStatus");
 const Report = require("../models/Report");
 const Passenger = require("../models/Passenger");
+const TricycleScheduleConfig = require("../models/TricycleScheduleConfig");
 
 // 👉 DRIVERS for dashboard (merge Driver + DriverStatus, online on top)
 router.get("/admin/dashboard/drivers", async (req, res) => {
@@ -82,5 +83,54 @@ router.get("/admin/dashboard/reports", async (req, res) => {
     res.status(500).json({ error: "Failed to load reports" });
   }
 });
+
+// ------------------------------
+// 🟨 GET TRICYCLE SCHEDULE CONFIG
+// ------------------------------
+router.get("/admin/tricycle-schedule", async (req, res) => {
+  try {
+    let doc = await TricycleScheduleConfig.findOne({ key: "global" }).lean();
+
+    if (!doc) {
+      doc = await TricycleScheduleConfig.create({ key: "global" });
+      doc = doc.toObject();
+    }
+
+    return res.json({ item: doc });
+  } catch (err) {
+    console.error("Error loading tricycle schedule:", err);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+// ------------------------------
+// 🟨 UPDATE TRICYCLE SCHEDULE CONFIG
+// ------------------------------
+router.put("/admin/tricycle-schedule", async (req, res) => {
+  try {
+    const { weekly } = req.body || {};
+
+    if (!weekly || typeof weekly !== "object") {
+      return res.status(400).json({ error: "invalid_payload" });
+    }
+
+    const updated = await TricycleScheduleConfig.findOneAndUpdate(
+      { key: "global" },
+      {
+        $set: {
+          weekly,
+          updatedByAdminId: req.admin?._id ? String(req.admin._id) : null,
+        },
+      },
+      { new: true, upsert: true }
+    ).lean();
+
+    return res.json({ item: updated });
+  } catch (err) {
+    console.error("Error saving tricycle schedule:", err);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
 
 module.exports = router;
