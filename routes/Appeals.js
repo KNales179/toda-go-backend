@@ -8,6 +8,18 @@ const Passenger = require("../models/Passenger");
 const Driver = require("../models/Drivers");
 const requireAdminAuth = require("../middleware/requireAdminAuth");
 
+// ------------------------------
+// Helpers
+// ------------------------------
+function isExpiredRestriction(restriction) {
+  // expired only matters if endAt exists
+  if (!restriction) return false;
+  if (!restriction.isRestricted) return false;
+  if (!restriction.endAt) return false; // indefinite or no end
+  const end = new Date(restriction.endAt);
+  if (isNaN(end.getTime())) return false;
+  return end.getTime() <= Date.now();
+}
 
 // =============================================
 // 📌 POST /api/appeals
@@ -36,7 +48,7 @@ router.post("/", async (req, res) => {
 
     // 🔎 Fetch user restriction info
     const Model = userType === "passenger" ? Passenger : Driver;
-    const user = await Model.findById(userId).select("restriction");
+    const user = await Model.findById(userId).select("restriction").lean();
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });
@@ -76,9 +88,8 @@ router.post("/", async (req, res) => {
   }
 });
 
-
 // =============================================
-// 🔒 ADMIN ROUTES
+// ✅ PUBLIC
 // =============================================
 
 // GET /api/appeals/latest?userType=passenger|driver&userId=...
@@ -108,28 +119,88 @@ router.get("/latest", async (req, res) => {
   }
 });
 
+// =============================================
+// 🔒 ADMIN ROUTES
+// =============================================
 
 // Protect all /admin routes
 router.use("/admin", requireAdminAuth);
 
-
 // GET /api/appeals/admin
+// ✅ Now returns computedStatus + autoResolvedReason if restriction expired/lifted
 router.get("/admin", async (req, res) => {
   try {
     const appeals = await Appeal.find({})
       .sort({ createdAt: -1 })
       .lean();
 
+    // collect unique ids per type
+    const passengerIds = [];
+    const driverIds = [];
+
+    for (const a of appeals) {
+      const uid = String(a.userId || "");
+      if (!mongoose.Types.ObjectId.isValid(uid)) continue;
+
+      if (a.userType === "passenger") passengerIds.push(uid);
+      if (a.userType === "driver") driverIds.push(uid);
+    }
+
+    // fetch restrictions in bulk
+    const [passengers, drivers] = await Promise.all([
+      passengerIds.length
+        ? Passenger.find({ _id: { $in: passengerIds } }).select("restriction").lean()
+        : [],
+      driverIds.length
+        ? Driver.find({ _id: { $in: driverIds } }).select("restriction").lean()
+        : [],
+    ]);
+
+    const pMap = {};
+    for (const p of passengers) pMap[String(p._id)] = p?.restriction || null;
+
+    const dMap = {};
+    for (const d of drivers) dMap[String(d._id)] = d?.restriction || null;
+
+    // enrich each appeal with computed fields
+    const items = appeals.map((a) => {
+      const uid = String(a.userId || "");
+      const restriction =
+        a.userType === "passenger" ? pMap[uid] : dMap[uid];
+
+      const alreadyLifted =
+        restriction && restriction.isRestricted === false;
+
+      const expired = isExpiredRestriction(restriction);
+
+      // only auto-resolve "pending" ones
+      let computedStatus = a.status;
+      let autoResolvedReason = null;
+
+      if (a.status === "pending" && (expired || alreadyLifted)) {
+        computedStatus = "resolved";
+        autoResolvedReason = expired
+          ? "restriction_expired"
+          : "restriction_lifted";
+      }
+
+      return {
+        ...a,
+        computedStatus,
+        autoResolvedReason,
+        restrictionSnapshot: restriction || null, // optional: helpful for UI
+      };
+    });
+
     return res.json({
       ok: true,
-      items: appeals,
+      items,
     });
   } catch (err) {
     console.error("❌ Fetch appeals error:", err);
     return res.status(500).json({ error: "Server error" });
   }
 });
-
 
 // PATCH /api/appeals/admin/:id/approve
 router.patch("/admin/:id/approve", async (req, res) => {
@@ -158,7 +229,6 @@ router.patch("/admin/:id/approve", async (req, res) => {
   }
 });
 
-
 // PATCH /api/appeals/admin/:id/reject
 router.patch("/admin/:id/reject", async (req, res) => {
   try {
@@ -185,6 +255,5 @@ router.patch("/admin/:id/reject", async (req, res) => {
     return res.status(500).json({ error: "Server error" });
   }
 });
-
 
 module.exports = router;
