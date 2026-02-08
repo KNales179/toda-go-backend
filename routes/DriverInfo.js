@@ -32,6 +32,7 @@ router.get("/driver/:id", async (req, res) => {
         "selfieImage",
         "licenseId",
         "restriction",
+        "todaName",
         "isPresident",
         "todaPresName",
       ].join(" ")
@@ -90,7 +91,6 @@ router.patch("/driver/:id", async (req, res) => {
       driverBirthdate,
       driverPhone,
       homeAddress,
-      todaName,
       franchiseNumber,
       sector,
       experienceYears,
@@ -106,7 +106,6 @@ router.patch("/driver/:id", async (req, res) => {
     if (typeof driverBirthdate === "string") allowed.driverBirthdate = driverBirthdate.trim(); // expect YYYY-MM-DD
     if (typeof driverPhone === "string") allowed.driverPhone = driverPhone.trim();
     if (typeof homeAddress === "string") allowed.homeAddress = homeAddress.trim();
-    if (typeof todaName === "string") allowed.todaName = todaName.trim();
     if (typeof franchiseNumber === "string") allowed.franchiseNumber = franchiseNumber.trim();
     if (typeof sector === "string") allowed.sector = sector.trim();
     if (typeof experienceYears === "string") allowed.experienceYears = experienceYears.trim();
@@ -158,7 +157,6 @@ router.patch("/driver/:id", async (req, res) => {
         "driverSuffix",
         "email",
         "driverPhone",
-        "todaName",
         "franchiseNumber",
         "sector",
         "experienceYears",
@@ -225,33 +223,42 @@ router.post( "/driver/:id/photo",
 );
 
 
-// ------------------------------
-// 👑 PRESIDENT AUTH (driverToken)
-// ------------------------------
 async function requirePresidentAuth(req, res, next) {
   try {
     const auth = req.headers.authorization || "";
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
     if (!token) return res.status(401).json({ ok: false, error: "missing_token" });
 
-    const secret = process.env.JWT_SECRET || process.env.SECRET || "secret"; // adjust to your env key
+    const secret = process.env.JWT_SECRET; // ✅ use the same secret as your driver login
+    if (!secret) return res.status(500).json({ ok: false, error: "missing_jwt_secret" });
+
     const decoded = jwt.verify(token, secret);
 
-    // decoded should contain driverId (depends on how you sign it)
-    const driverId = decoded?.driverId || decoded?.id || decoded?._id;
+    // Adjust if your token payload uses a different key
+    const driverId = decoded?.sub || decoded?.driverId || decoded?.id || decoded?._id;
     if (!driverId) return res.status(401).json({ ok: false, error: "invalid_token" });
 
-    const me = await Driver.findById(driverId).select("isPresident todaPresName driverName").lean();
+    const me = await Driver.findById(driverId)
+      .select("driverName isPresident todaPresName todaName restriction")
+      .lean();
+
     if (!me) return res.status(401).json({ ok: false, error: "driver_not_found" });
 
-    if (!me.isPresident || !String(me.todaPresName || "").trim()) {
+    // blocked presidents are still blocked
+    if (me?.restriction?.isRestricted) {
+      return res.status(403).json({ ok: false, error: "restricted" });
+    }
+
+    const presToda = String(me.todaPresName || "").trim();
+    if (!me.isPresident || !presToda) {
       return res.status(403).json({ ok: false, error: "not_president" });
     }
 
     req.president = {
       id: String(me._id),
-      driverName: me.driverName || "President",
-      todaPresName: String(me.todaPresName || "").trim(),
+      name: me.driverName || "President",
+      todaPresName: presToda,
+      todaName: String(me.todaName || "").trim(),
     };
 
     next();
@@ -261,25 +268,80 @@ async function requirePresidentAuth(req, res, next) {
   }
 }
 
+
+// ------------------------------
+// 👑 PRESIDENT: WHO AM I
+// GET /api/president/me
+// ------------------------------
+router.get("/president/me", requirePresidentAuth, async (req, res) => {
+  return res.json({ ok: true, president: req.president });
+});
+
+// ------------------------------
+// 🔎 shared helpers
+// ------------------------------
+function escapeRegex(s) {
+  return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function driverCard(d) {
+  return {
+    id: String(d._id),
+    name: d.driverName || "Driver",
+    franchiseNumber: d.franchiseNumber || "",
+    todaName: d.todaName || "",
+    sector: d.sector || "",
+    email: d.email || "",
+    contact: d.driverPhone || "",
+    selfieImage: d.selfieImage || "",
+    driverVerified: !!d.driverVerified,
+    isRestricted: !!d?.restriction?.isRestricted,
+    isPresident: !!d.isPresident,
+    todaPresName: d.todaPresName || "",
+  };
+}
+
+const DRIVER_LIST_SELECT = [
+  "driverName",
+  "driverFirstName",
+  "driverMiddleName",
+  "driverLastName",
+  "driverSuffix",
+  "email",
+  "driverPhone",
+  "todaName",
+  "franchiseNumber",
+  "sector",
+  "selfieImage",
+  "driverVerified",
+  "restriction",
+  "isPresident",
+  "todaPresName",
+].join(" ");
+
+
 router.get("/president/drivers", requirePresidentAuth, async (req, res) => {
   try {
-    const mode = String(req.query.mode || "drivers").toLowerCase();
     const q = String(req.query.q || "").trim();
-
+    const includeUnassigned = String(req.query.includeUnassigned || "").trim() === "1";
     const myToda = req.president.todaPresName;
 
-    // Base filter depending on mode
-    let filter = {};
-    if (mode === "members") {
-      filter = { todaName: myToda };
-    } else {
-      // "drivers": show everyone NOT in my TODA
-      filter = { todaName: { $ne: myToda } };
+    const filter = {
+      // candidates: not already in my TODA
+      todaName: { $ne: myToda },
+      // don't allow managing presidents (keeps power clean)
+      isPresident: { $ne: true },
+    };
+
+    // optionally restrict to unassigned only (if you want later)
+    if (includeUnassigned) {
+      // leave as-is; include unassigned + other TODAs
+      // if you want ONLY unassigned, replace with:
+      // filter.todaName = { $in: ["", null] };
     }
 
-    // optional search
     if (q) {
-      const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      const rx = new RegExp(escapeRegex(q), "i");
       filter.$or = [
         { driverName: rx },
         { driverFirstName: rx },
@@ -293,54 +355,12 @@ router.get("/president/drivers", requirePresidentAuth, async (req, res) => {
       ];
     }
 
-    const rows = await Driver.find(filter)
-      .select(
-        [
-          "driverName",
-          "driverFirstName",
-          "driverMiddleName",
-          "driverLastName",
-          "driverSuffix",
-          "email",
-          "driverPhone",
-          "todaName",
-          "franchiseNumber",
-          "sector",
-          "selfieImage",
-          "isPresident",
-          "todaPresName",
-          "driverVerified",
-          "isVerified",
-          "restriction",
-        ].join(" ")
-      )
-      .sort({ createdAt: -1 })
-      .lean();
-
-    const items = rows.map((d) => ({
-      id: String(d._id),
-      name: d.driverName || "Driver",
-      franchiseNumber: d.franchiseNumber || "",
-      todaName: d.todaName || "",
-      sector: d.sector || "",
-      email: d.email || "",
-      contact: d.driverPhone || "",
-      selfieImage: d.selfieImage || "",
-
-      // for UI badges later
-      isPresident: !!d.isPresident,
-      todaPresName: d.todaPresName || "",
-
-      // optional flags
-      driverVerified: !!d.driverVerified,
-      isVerified: !!d.isVerified,
-      isRestricted: !!d?.restriction?.isRestricted,
-    }));
+    const rows = await Driver.find(filter).select(DRIVER_LIST_SELECT).sort({ createdAt: -1 }).lean();
+    const items = rows.map(driverCard);
 
     return res.json({
       ok: true,
       president: req.president,
-      mode,
       q,
       total: items.length,
       items,
@@ -350,5 +370,143 @@ router.get("/president/drivers", requirePresidentAuth, async (req, res) => {
     return res.status(500).json({ ok: false, error: "server_error" });
   }
 });
+
+// ------------------------------
+// 👑 PRESIDENT: LIST MEMBERS (in my TODA)
+// GET /api/president/members?q=...
+// ------------------------------
+router.get("/president/members", requirePresidentAuth, async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    const myToda = req.president.todaPresName;
+
+    const filter = {
+      todaName: myToda,
+      // still exclude presidents from member list unless you want them shown
+      isPresident: { $ne: true },
+    };
+
+    if (q) {
+      const rx = new RegExp(escapeRegex(q), "i");
+      filter.$or = [
+        { driverName: rx },
+        { driverFirstName: rx },
+        { driverMiddleName: rx },
+        { driverLastName: rx },
+        { franchiseNumber: rx },
+        { email: rx },
+        { driverPhone: rx },
+        { sector: rx },
+      ];
+    }
+
+    const rows = await Driver.find(filter).select(DRIVER_LIST_SELECT).sort({ createdAt: -1 }).lean();
+    const items = rows.map(driverCard);
+
+    return res.json({
+      ok: true,
+      president: req.president,
+      q,
+      total: items.length,
+      items,
+    });
+  } catch (err) {
+    console.error("❌ president members list error:", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+// ------------------------------
+// 👑 PRESIDENT: ADD MEMBER (assign to my TODA)
+// PATCH /api/president/members/:id/add
+// ------------------------------
+router.patch("/president/members/:id/add", requirePresidentAuth, async (req, res) => {
+  try {
+    const targetId = req.params.id;
+    const myToda = req.president.todaPresName;
+
+    // prevent adding self
+    if (String(targetId) === String(req.president.id)) {
+      return res.status(400).json({ ok: false, error: "cannot_assign_self" });
+    }
+
+    const target = await Driver.findById(targetId).select("isPresident todaName restriction").lean();
+    if (!target) return res.status(404).json({ ok: false, error: "driver_not_found" });
+
+    if (target?.restriction?.isRestricted) {
+      return res.status(400).json({ ok: false, error: "target_restricted" });
+    }
+
+    if (target.isPresident) {
+      return res.status(403).json({ ok: false, error: "cannot_manage_president" });
+    }
+
+    // if already member
+    if (String(target.todaName || "").trim() === myToda) {
+      return res.json({ ok: true, message: "already_member" });
+    }
+
+    const updated = await Driver.findByIdAndUpdate(
+      targetId,
+      { $set: { todaName: myToda } },
+      { new: true, runValidators: true }
+    ).select(DRIVER_LIST_SELECT).lean();
+
+    return res.json({
+      ok: true,
+      message: "member_added",
+      president: req.president,
+      member: driverCard(updated),
+    });
+  } catch (err) {
+    console.error("❌ add member error:", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+// ------------------------------
+// 👑 PRESIDENT: KICK MEMBER (remove from my TODA)
+// PATCH /api/president/members/:id/kick
+// ------------------------------
+router.patch("/president/members/:id/kick", requirePresidentAuth, async (req, res) => {
+  try {
+    const targetId = req.params.id;
+    const myToda = req.president.todaPresName;
+
+    // prevent kicking self
+    if (String(targetId) === String(req.president.id)) {
+      return res.status(400).json({ ok: false, error: "cannot_kick_self" });
+    }
+
+    const target = await Driver.findById(targetId).select("isPresident todaName").lean();
+    if (!target) return res.status(404).json({ ok: false, error: "driver_not_found" });
+
+    if (target.isPresident) {
+      return res.status(403).json({ ok: false, error: "cannot_manage_president" });
+    }
+
+    // must be in my TODA to kick
+    if (String(target.todaName || "").trim() !== myToda) {
+      return res.status(403).json({ ok: false, error: "not_my_member" });
+    }
+
+    const updated = await Driver.findByIdAndUpdate(
+      targetId,
+      { $set: { todaName: "" } }, // ✅ unassigned; change to null if you prefer
+      { new: true, runValidators: true }
+    ).select(DRIVER_LIST_SELECT).lean();
+
+    return res.json({
+      ok: true,
+      message: "member_kicked",
+      president: req.president,
+      member: driverCard(updated),
+    });
+  } catch (err) {
+    console.error("❌ kick member error:", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
 
 module.exports = router;
