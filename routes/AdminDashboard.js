@@ -7,6 +7,35 @@ const Report = require("../models/Report");
 const Passenger = require("../models/Passenger");
 const TricycleScheduleConfig = require("../models/TricycleScheduleConfig");
 
+const DAY_KEYS = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"];
+
+function normalizeWeeklyShape(weekly) {
+  const out = {};
+
+  for (const day of DAY_KEYS) {
+    const val = weekly?.[day];
+
+    // Case A: frontend sends array directly -> wrap it
+    if (Array.isArray(val)) {
+      out[day] = { segments: val };
+      continue;
+    }
+
+    // Case B: frontend sends { segments: [...] } -> keep
+    if (val && typeof val === "object") {
+      out[day] = { segments: Array.isArray(val.segments) ? val.segments : [] };
+      continue;
+    }
+
+    // Case C: missing -> default empty
+    out[day] = { segments: [] };
+  }
+
+  return out;
+}
+
+
+
 // 👉 DRIVERS for dashboard (merge Driver + DriverStatus, online on top)
 router.get("/admin/dashboard/drivers", async (req, res) => {
   try {
@@ -84,6 +113,7 @@ router.get("/admin/dashboard/reports", async (req, res) => {
   }
 });
 
+
 // ------------------------------
 // 🟨 GET TRICYCLE SCHEDULE CONFIG
 // ------------------------------
@@ -109,16 +139,17 @@ router.get("/admin/tricycle-schedule", async (req, res) => {
 router.put("/admin/tricycle-schedule", async (req, res) => {
   try {
     const { weekly } = req.body || {};
-
     if (!weekly || typeof weekly !== "object") {
       return res.status(400).json({ error: "invalid_payload" });
     }
+
+    const normalizedWeekly = normalizeWeeklyShape(weekly);
 
     const updated = await TricycleScheduleConfig.findOneAndUpdate(
       { key: "global" },
       {
         $set: {
-          weekly,
+          weekly: normalizedWeekly,
           updatedByAdminId: req.admin?._id ? String(req.admin._id) : null,
         },
       },
