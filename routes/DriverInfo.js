@@ -29,7 +29,8 @@ router.get("/driver/:id", async (req, res) => {
         "driverBirthdate",
         "homeAddress",
         "selfieImage",
-        "licenseId", // ✅ expose new field
+        "licenseId",
+        "restriction",
       ].join(" ")
     );
 

@@ -39,8 +39,9 @@ async function uploadToCloudinary(localPath, folder) {
 router.get("/passenger/:id", async (req, res) => {
   try {
     const p = await Passenger.findById(req.params.id).select(
-      "firstName middleName lastName birthday email profileImage gender phone contact eContactName eContactPhone isVerified discountVerification updatedAt"
+      "firstName middleName lastName birthday email profileImage gender phone contact eContactName eContactPhone isVerified discountVerification updatedAt restriction"
     );
+
     if (!p) return res.status(404).json({ message: "Passenger not found" });
 
     // ensure API always exposes `phone` (fallback to legacy `contact`)
