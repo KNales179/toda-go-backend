@@ -101,6 +101,7 @@ router.get("/latest", async (req, res) => {
     if (!["passenger", "driver"].includes(String(userType || ""))) {
       return res.status(400).json({ ok: false, error: "invalid_userType" });
     }
+
     if (!mongoose.Types.ObjectId.isValid(String(userId || ""))) {
       return res.status(400).json({ ok: false, error: "invalid_userId" });
     }
@@ -110,22 +111,41 @@ router.get("/latest", async (req, res) => {
     if (!user) return res.status(404).json({ ok: false, error: "user_not_found" });
 
     const r = user.restriction || null;
-    const currentStartAt = r?.startAt ? new Date(r.startAt).toISOString() : null;
 
-    // ✅ if not currently restricted, latest appeal is irrelevant (optional behavior)
-    if (!r?.isRestricted) {
-      return res.json({ ok: true, appeal: null });
+    // ✅ If user is currently restricted: return appeal for THIS restriction
+    if (r?.isRestricted) {
+      const startAt = r?.startAt ? new Date(r.startAt) : null;
+
+      const latestForThisRestriction = await Appeal.findOne({
+        userType: String(userType),
+        userId: String(userId),
+        restrictionStartAt: startAt,
+      })
+        .sort({ createdAt: -1 })
+        .lean();
+
+      return res.json({
+        ok: true,
+        appeal: latestForThisRestriction || null,
+        currentRestriction: r, // optional, helpful
+      });
     }
 
-    const latest = await Appeal.findOne({
+    // ✅ If user is NOT restricted anymore:
+    // Return the most recent handled appeal so UI can show APPROVED/REJECTED message
+    const latestHandled = await Appeal.findOne({
       userType: String(userType),
       userId: String(userId),
-      restrictionStartAt: currentStartAt ? new Date(currentStartAt) : null,
+      status: { $in: ["approved", "rejected", "resolved"] },
     })
-      .sort({ createdAt: -1 })
+      .sort({ handledAt: -1, createdAt: -1 })
       .lean();
 
-    return res.json({ ok: true, appeal: latest || null });
+    return res.json({
+      ok: true,
+      appeal: latestHandled || null,
+      currentRestriction: r, // optional
+    });
   } catch (err) {
     console.error("❌ latest appeal error:", err);
     return res.status(500).json({ ok: false, error: "server_error" });
