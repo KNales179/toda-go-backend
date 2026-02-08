@@ -1,6 +1,7 @@
 // routes/DriverInfo.js
 const express = require("express");
 const router = express.Router();
+const jwt = require("jsonwebtoken");
 
 const Driver = require("../models/Drivers");
 const upload = require("../middleware/upload"); // uses uploads/ and filters jpg/png
@@ -222,5 +223,132 @@ router.post( "/driver/:id/photo",
     }
   }
 );
+
+
+// ------------------------------
+// 👑 PRESIDENT AUTH (driverToken)
+// ------------------------------
+async function requirePresidentAuth(req, res, next) {
+  try {
+    const auth = req.headers.authorization || "";
+    const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+    if (!token) return res.status(401).json({ ok: false, error: "missing_token" });
+
+    const secret = process.env.JWT_SECRET || process.env.SECRET || "secret"; // adjust to your env key
+    const decoded = jwt.verify(token, secret);
+
+    // decoded should contain driverId (depends on how you sign it)
+    const driverId = decoded?.driverId || decoded?.id || decoded?._id;
+    if (!driverId) return res.status(401).json({ ok: false, error: "invalid_token" });
+
+    const me = await Driver.findById(driverId).select("isPresident todaPresName driverName").lean();
+    if (!me) return res.status(401).json({ ok: false, error: "driver_not_found" });
+
+    if (!me.isPresident || !String(me.todaPresName || "").trim()) {
+      return res.status(403).json({ ok: false, error: "not_president" });
+    }
+
+    req.president = {
+      id: String(me._id),
+      driverName: me.driverName || "President",
+      todaPresName: String(me.todaPresName || "").trim(),
+    };
+
+    next();
+  } catch (err) {
+    console.error("❌ requirePresidentAuth error:", err?.message || err);
+    return res.status(401).json({ ok: false, error: "unauthorized" });
+  }
+}
+
+router.get("/president/drivers", requirePresidentAuth, async (req, res) => {
+  try {
+    const mode = String(req.query.mode || "drivers").toLowerCase();
+    const q = String(req.query.q || "").trim();
+
+    const myToda = req.president.todaPresName;
+
+    // Base filter depending on mode
+    let filter = {};
+    if (mode === "members") {
+      filter = { todaName: myToda };
+    } else {
+      // "drivers": show everyone NOT in my TODA
+      filter = { todaName: { $ne: myToda } };
+    }
+
+    // optional search
+    if (q) {
+      const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      filter.$or = [
+        { driverName: rx },
+        { driverFirstName: rx },
+        { driverMiddleName: rx },
+        { driverLastName: rx },
+        { franchiseNumber: rx },
+        { email: rx },
+        { driverPhone: rx },
+        { todaName: rx },
+        { sector: rx },
+      ];
+    }
+
+    const rows = await Driver.find(filter)
+      .select(
+        [
+          "driverName",
+          "driverFirstName",
+          "driverMiddleName",
+          "driverLastName",
+          "driverSuffix",
+          "email",
+          "driverPhone",
+          "todaName",
+          "franchiseNumber",
+          "sector",
+          "selfieImage",
+          "isPresident",
+          "todaPresName",
+          "driverVerified",
+          "isVerified",
+          "restriction",
+        ].join(" ")
+      )
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const items = rows.map((d) => ({
+      id: String(d._id),
+      name: d.driverName || "Driver",
+      franchiseNumber: d.franchiseNumber || "",
+      todaName: d.todaName || "",
+      sector: d.sector || "",
+      email: d.email || "",
+      contact: d.driverPhone || "",
+      selfieImage: d.selfieImage || "",
+
+      // for UI badges later
+      isPresident: !!d.isPresident,
+      todaPresName: d.todaPresName || "",
+
+      // optional flags
+      driverVerified: !!d.driverVerified,
+      isVerified: !!d.isVerified,
+      isRestricted: !!d?.restriction?.isRestricted,
+    }));
+
+    return res.json({
+      ok: true,
+      president: req.president,
+      mode,
+      q,
+      total: items.length,
+      items,
+    });
+  } catch (err) {
+    console.error("❌ president drivers list error:", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
 
 module.exports = router;
