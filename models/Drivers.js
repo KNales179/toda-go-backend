@@ -1,4 +1,4 @@
-// ✅ models/Driver.js
+// ✅ models/Drivers.js
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
@@ -62,6 +62,17 @@ const DriverSchema = new mongoose.Schema({
     rejectionReason: { type: String, default: null },
     reviewedByAdminId: { type: mongoose.Schema.Types.ObjectId, default: null },
   },
+
+  restriction: {
+    isRestricted: { type: Boolean, default: false },
+    type: { type: String, enum: ["ban", "suspend"], default: "ban" }, // optional future-proof
+    reason: { type: String, default: "" },
+    startAt: { type: Date, default: null },
+    endAt: { type: Date, default: null }, // null = indefinite
+    createdByAdminId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    updatedAt: { type: Date, default: null },
+  },
+
 
 }, { timestamps: true });
 

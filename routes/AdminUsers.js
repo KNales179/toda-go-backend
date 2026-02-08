@@ -7,6 +7,11 @@ const Passenger = require("../models/Passenger");
 const Driver = require("../models/Drivers");
 const Notification = require("../models/Notification");
 const requireAdminAuth = require("../middleware/requireAdminAuth");
+const RestrictionLog = require("../models/RestrictionLog");
+
+// ------------------------------
+// 🔧 HELPERS
+// ------------------------------
 
 // ✅ robust Cloudinary delete (prevents "safeDestroy is not a function" crash)
 let safeDestroy = async () => ({ result: "skipped" });
@@ -33,9 +38,13 @@ try {
 // ✅ protect all routes in this router (your endpoints are all /admin/* anyway)
 router.use("/admin",requireAdminAuth);
 
-// ------------------------------
-// 🔧 HELPERS
-// ------------------------------
+function parseEndAt(endAt) {
+  if (endAt === null || endAt === undefined || endAt === "") return null; // indefinite
+  const d = new Date(endAt);
+  if (isNaN(d.getTime())) return "INVALID";
+  return d;
+}
+
 function fullName(first, middle, last, suffix = "") {
   return [first, middle, last, suffix]
     .filter(Boolean)
@@ -83,6 +92,8 @@ router.get("/admin/passengers", async (req, res) => {
         contact: p.phone || p.contact || "",
         isVerified,
         status: isVerified ? "verified" : "not verified",
+        isRestricted: !!p?.restriction?.isRestricted,
+        restriction: p?.restriction || null,
         raw: p,
       };
     });
@@ -295,6 +306,121 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
   }
 });
 
+router.patch("/admin/passengers/:id/restrict", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason, endAt, type } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, error: "invalid_id" });
+    }
+
+    const endParsed = parseEndAt(endAt);
+    if (endParsed === "INVALID") {
+      return res.status(400).json({ ok: false, error: "invalid_endAt" });
+    }
+
+    const t = String(type || "ban").toLowerCase();
+    const allowedType = ["ban", "suspend"];
+    if (!allowedType.includes(t)) {
+      return res.status(400).json({ ok: false, error: "invalid_type" });
+    }
+
+    const cleanReason = String(reason || "").trim();
+    if (!cleanReason) {
+      return res.status(400).json({ ok: false, error: "reason_required" });
+    }
+
+    const now = new Date();
+
+    const updated = await Passenger.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          "restriction.isRestricted": true,
+          "restriction.type": t,
+          "restriction.reason": cleanReason,
+          "restriction.startAt": now,
+          "restriction.endAt": endParsed, // null = indefinite
+          "restriction.createdByAdminId": req.admin?.id || null,
+          "restriction.updatedAt": now,
+        },
+      },
+      { new: true }
+    ).lean();
+
+    if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
+
+    // ✅ Log
+    await RestrictionLog.create({
+      userType: "passenger",
+      userId: updated._id,
+      action: "restrict",
+      restrictionType: t,
+      reason: cleanReason,
+      startAt: now,
+      endAt: endParsed,
+      createdByAdminId: req.admin?.id || null,
+      createdByAdminName: req.admin?.username || req.admin?.email || "Admin",
+    });
+
+    return res.json({ ok: true, passengerId: String(updated._id), restriction: updated.restriction });
+  } catch (err) {
+    console.error("❌ restrict passenger error:", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+router.patch("/admin/passengers/:id/unrestrict", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body || {}; // optional note for log
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, error: "invalid_id" });
+    }
+
+    const now = new Date();
+
+    const updated = await Passenger.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          "restriction.isRestricted": false,
+          "restriction.updatedAt": now,
+        },
+        $unset: {
+          "restriction.startAt": "",
+          "restriction.endAt": "",
+          "restriction.reason": "",
+          "restriction.createdByAdminId": "",
+        },
+      },
+      { new: true }
+    ).lean();
+
+    if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
+
+    await RestrictionLog.create({
+      userType: "passenger",
+      userId: updated._id,
+      action: "unrestrict",
+      restrictionType: updated?.restriction?.type || "ban",
+      reason: String(reason || "").trim(),
+      startAt: null,
+      endAt: null,
+      createdByAdminId: req.admin?.id || null,
+      createdByAdminName: req.admin?.username || req.admin?.email || "Admin",
+    });
+
+    return res.json({ ok: true, passengerId: String(updated._id) });
+  } catch (err) {
+    console.error("❌ unrestrict passenger error:", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+
 // ------------------------------
 // 🟩 GET ALL DRIVERS
 // ------------------------------
@@ -372,6 +498,9 @@ router.get("/admin/drivers", async (req, res) => {
           votingLocation: d.votingLocation || "",
         },
 
+        isRestricted: !!d?.restriction?.isRestricted,
+        restriction: d?.restriction || null,
+
         // keep raw if you still rely on it elsewhere
         raw: d,
       };
@@ -383,7 +512,6 @@ router.get("/admin/drivers", async (req, res) => {
     return res.status(500).json({ error: "server_error" });
   }
 });
-
 
 // ------------------------------
 // 🗑 DELETE DRIVER (ADMIN)
@@ -403,7 +531,6 @@ router.delete("/admin/drivers/:id", async (req, res) => {
     return res.status(500).json({ error: "server_error" });
   }
 });
-
 
 router.patch("/admin/drivers/:id/verify", async (req, res) => {
   try {
@@ -501,7 +628,6 @@ router.patch("/admin/drivers/:id/verify", async (req, res) => {
   }
 });
 
-
 // ------------------------------
 // ✉️ ADMIN → DRIVER: SEND INTERNAL MESSAGE (Notify)
 // POST /api/admin/drivers/:id/notify
@@ -570,6 +696,120 @@ router.post("/admin/drivers/:id/notify", async (req, res) => {
     });
   } catch (err) {
     console.error("❌ notify driver error:", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+
+router.patch("/admin/drivers/:id/restrict", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason, endAt, type } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, error: "invalid_id" });
+    }
+
+    const endParsed = parseEndAt(endAt);
+    if (endParsed === "INVALID") {
+      return res.status(400).json({ ok: false, error: "invalid_endAt" });
+    }
+
+    const t = String(type || "ban").toLowerCase();
+    const allowedType = ["ban", "suspend"];
+    if (!allowedType.includes(t)) {
+      return res.status(400).json({ ok: false, error: "invalid_type" });
+    }
+
+    const cleanReason = String(reason || "").trim();
+    if (!cleanReason) {
+      return res.status(400).json({ ok: false, error: "reason_required" });
+    }
+
+    const now = new Date();
+
+    const updated = await Driver.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          "restriction.isRestricted": true,
+          "restriction.type": t,
+          "restriction.reason": cleanReason,
+          "restriction.startAt": now,
+          "restriction.endAt": endParsed,
+          "restriction.createdByAdminId": req.admin?.id || null,
+          "restriction.updatedAt": now,
+        },
+      },
+      { new: true }
+    ).lean();
+
+    if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
+
+    await RestrictionLog.create({
+      userType: "driver",
+      userId: updated._id,
+      action: "restrict",
+      restrictionType: t,
+      reason: cleanReason,
+      startAt: now,
+      endAt: endParsed,
+      createdByAdminId: req.admin?.id || null,
+      createdByAdminName: req.admin?.username || req.admin?.email || "Admin",
+    });
+
+    return res.json({ ok: true, driverId: String(updated._id), restriction: updated.restriction });
+  } catch (err) {
+    console.error("❌ restrict driver error:", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+router.patch("/admin/drivers/:id/unrestrict", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, error: "invalid_id" });
+    }
+
+    const now = new Date();
+
+    const updated = await Driver.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          "restriction.isRestricted": false,
+          "restriction.updatedAt": now,
+        },
+        $unset: {
+          "restriction.startAt": "",
+          "restriction.endAt": "",
+          "restriction.reason": "",
+          "restriction.createdByAdminId": "",
+        },
+      },
+      { new: true }
+    ).lean();
+
+    if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
+
+    await RestrictionLog.create({
+      userType: "driver",
+      userId: updated._id,
+      action: "unrestrict",
+      restrictionType: updated?.restriction?.type || "ban",
+      reason: String(reason || "").trim(),
+      startAt: null,
+      endAt: null,
+      createdByAdminId: req.admin?.id || null,
+      createdByAdminName: req.admin?.username || req.admin?.email || "Admin",
+    });
+
+    return res.json({ ok: true, driverId: String(updated._id) });
+  } catch (err) {
+    console.error("❌ unrestrict driver error:", err);
     return res.status(500).json({ ok: false, error: "server_error" });
   }
 });

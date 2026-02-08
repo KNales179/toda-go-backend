@@ -73,6 +73,17 @@ const passengerSchema = new mongoose.Schema({
     rejectionReason: { type: String, default: null },
   },
 
+  restriction: {
+    isRestricted: { type: Boolean, default: false },
+    type: { type: String, enum: ["ban", "suspend"], default: "ban" },
+    reason: { type: String, default: "" },
+    startAt: { type: Date, default: null },
+    endAt: { type: Date, default: null },
+    createdByAdminId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    updatedAt: { type: Date, default: null },
+  },
+
+
   // From original app
   email: { type: String, unique: true, required: true },
   password: { type: String, required: true },
