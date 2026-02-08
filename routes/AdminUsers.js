@@ -501,6 +501,9 @@ router.get("/admin/drivers", async (req, res) => {
         isRestricted: !!d?.restriction?.isRestricted,
         restriction: d?.restriction || null,
 
+        isPresident: !!d.isPresident,
+        todaPresName: d.todaPresName || "",
+
         // keep raw if you still rely on it elsewhere
         raw: d,
       };
@@ -627,6 +630,61 @@ router.patch("/admin/drivers/:id/verify", async (req, res) => {
     return res.status(500).json({ ok: false, error: "server_error" });
   }
 });
+
+router.patch("/admin/drivers/:id/president", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { todaPresName } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, error: "invalid_id" });
+    }
+
+    const cleanToda = String(todaPresName || "").trim();
+
+    // remove president
+    if (!cleanToda) {
+      const updated = await Driver.findByIdAndUpdate(
+        id,
+        { $set: { isPresident: false, todaPresName: "" } },
+        { new: true }
+      ).lean();
+
+      if (!updated) return res.status(404).json({ ok: false, error: "driver_not_found" });
+
+      return res.json({
+        ok: true,
+        message: "President role removed",
+        driver: { id: String(updated._id), isPresident: !!updated.isPresident, todaPresName: updated.todaPresName || "" },
+      });
+    }
+
+    // OPTIONAL: enforce 1 president per TODA (recommended)
+    await Driver.updateMany(
+      { isPresident: true, todaPresName: cleanToda, _id: { $ne: id } },
+      { $set: { isPresident: false, todaPresName: "" } }
+    );
+
+    // set president
+    const updated = await Driver.findByIdAndUpdate(
+      id,
+      { $set: { isPresident: true, todaPresName: cleanToda } },
+      { new: true }
+    ).lean();
+
+    if (!updated) return res.status(404).json({ ok: false, error: "driver_not_found" });
+
+    return res.json({
+      ok: true,
+      message: "Driver set as president",
+      driver: { id: String(updated._id), isPresident: !!updated.isPresident, todaPresName: updated.todaPresName || "" },
+    });
+  } catch (err) {
+    console.error("❌ set president error:", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
 
 // ------------------------------
 // ✉️ ADMIN → DRIVER: SEND INTERNAL MESSAGE (Notify)

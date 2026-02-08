@@ -73,6 +73,10 @@ const DriverSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: null },
   },
 
+  isPresident: { type: Boolean, default: false },
+  todaPresName: { type: String, default: "" }, // TODA they govern
+
+
 
 }, { timestamps: true });
 
