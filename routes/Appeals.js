@@ -81,6 +81,34 @@ router.post("/", async (req, res) => {
 // 🔒 ADMIN ROUTES
 // =============================================
 
+// GET /api/appeals/latest?userType=passenger|driver&userId=...
+router.get("/latest", async (req, res) => {
+  try {
+    const { userType, userId } = req.query;
+
+    if (!["passenger", "driver"].includes(String(userType || ""))) {
+      return res.status(400).json({ ok: false, error: "invalid_userType" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(String(userId || ""))) {
+      return res.status(400).json({ ok: false, error: "invalid_userId" });
+    }
+
+    const latest = await Appeal.findOne({
+      userType: String(userType),
+      userId: String(userId),
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.json({ ok: true, appeal: latest || null });
+  } catch (err) {
+    console.error("❌ latest appeal error:", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+
 // Protect all /admin routes
 router.use("/admin", requireAdminAuth);
 
