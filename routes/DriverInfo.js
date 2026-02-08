@@ -31,6 +31,8 @@ router.get("/driver/:id", async (req, res) => {
         "selfieImage",
         "licenseId",
         "restriction",
+        "isPresident",
+        "todaPresName",
       ].join(" ")
     );
 
