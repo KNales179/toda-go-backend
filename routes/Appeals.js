@@ -68,12 +68,13 @@ router.post("/", async (req, res) => {
         error: "You already have a pending appeal.",
       });
     }
-
+    
     const appeal = await Appeal.create({
       userType,
       userId,
       restrictionType: restriction?.type || "ban",
       restrictionReason: restriction?.reason || null,
+      restrictionStartAt: restriction?.startAt || null,
       appealMessage: cleanMessage,
     });
 
@@ -100,14 +101,26 @@ router.get("/latest", async (req, res) => {
     if (!["passenger", "driver"].includes(String(userType || ""))) {
       return res.status(400).json({ ok: false, error: "invalid_userType" });
     }
-
     if (!mongoose.Types.ObjectId.isValid(String(userId || ""))) {
       return res.status(400).json({ ok: false, error: "invalid_userId" });
+    }
+
+    const Model = String(userType) === "passenger" ? Passenger : Driver;
+    const user = await Model.findById(String(userId)).select("restriction").lean();
+    if (!user) return res.status(404).json({ ok: false, error: "user_not_found" });
+
+    const r = user.restriction || null;
+    const currentStartAt = r?.startAt ? new Date(r.startAt).toISOString() : null;
+
+    // ✅ if not currently restricted, latest appeal is irrelevant (optional behavior)
+    if (!r?.isRestricted) {
+      return res.json({ ok: true, appeal: null });
     }
 
     const latest = await Appeal.findOne({
       userType: String(userType),
       userId: String(userId),
+      restrictionStartAt: currentStartAt ? new Date(currentStartAt) : null,
     })
       .sort({ createdAt: -1 })
       .lean();
