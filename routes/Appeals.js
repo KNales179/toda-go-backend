@@ -245,70 +245,32 @@ router.patch("/admin/:id/approve", async (req, res) => {
       return res.status(400).json({ error: "Invalid appeal id" });
     }
 
-    const appeal = await Appeal.findById(id).lean();
+    const appeal = await Appeal.findById(id);
     if (!appeal) return res.status(404).json({ error: "Appeal not found" });
 
-    // prevent changing resolved ones
-    if ((appeal.status || "").toLowerCase() === "resolved") {
-      return res.status(400).json({ error: "Appeal already resolved" });
-    }
+    // Update appeal
+    appeal.status = "approved";
+    appeal.adminNotes = adminNotes || null;
+    appeal.handledByAdminId = req.admin?.id || null;
+    appeal.handledAt = new Date();
+    await appeal.save();
 
-    // ✅ pick model + validate user
-    const Model = appeal.userType === "passenger" ? Passenger : Driver;
+    // 🔥 ALSO LIFT RESTRICTION
+    const Model =
+      appeal.userType === "passenger" ? Passenger : Driver;
 
-    if (!mongoose.Types.ObjectId.isValid(String(appeal.userId || ""))) {
-      return res.status(400).json({ error: "Invalid userId in appeal" });
-    }
-
-    // ✅ Unrestrict user (lift ban/suspend)
-    const now = new Date();
-    const updatedUser = await Model.findByIdAndUpdate(
-      appeal.userId,
-      {
-        $set: {
-          "restriction.isRestricted": false,
-          "restriction.updatedAt": now,
-        },
-        $unset: {
-          "restriction.startAt": "",
-          "restriction.endAt": "",
-          "restriction.reason": "",
-          "restriction.createdByAdminId": "",
-        },
-      },
-      { new: true }
-    ).lean();
-
-    // If user was deleted, still allow approving the appeal
-    // but tell frontend
-    const userUnrestricted = !!updatedUser;
-
-    // ✅ Update appeal decision
-    const updatedAppeal = await Appeal.findByIdAndUpdate(
-      id,
-      {
-        $set: {
-          status: "approved",
-          adminNotes: adminNotes || null,
-          handledByAdminId: req.admin?.id || null,
-          handledAt: now,
-        },
-      },
-      { new: true }
-    ).lean();
-
-    return res.json({
-      ok: true,
-      appeal: updatedAppeal,
-      userUnrestricted,
-      userType: appeal.userType,
-      userId: String(appeal.userId),
+    await Model.findByIdAndUpdate(appeal.userId, {
+      "restriction.isRestricted": false,
+      "restriction.endAt": new Date(),
     });
+
+    return res.json({ ok: true });
   } catch (err) {
     console.error("❌ Approve appeal error:", err);
     return res.status(500).json({ error: "Server error" });
   }
 });
+
 
 
 // PATCH /api/appeals/admin/:id/reject
