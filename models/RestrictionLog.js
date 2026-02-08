@@ -1,3 +1,4 @@
+// models/RestrictionLog.js
 const mongoose = require("mongoose");
 
 const RestrictionLogSchema = new mongoose.Schema(
