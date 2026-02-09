@@ -50,10 +50,6 @@ function validateQuery(req, res) {
 // ------------------------------
 router.get("/notifications", requireUserAuth, async (req, res) => {
   try {
-    console.log("\n🧪 [NOTIF API] HIT GET /notifications");
-    console.log("🧪 [NOTIF API] req.originalUrl:", req.originalUrl);
-    console.log("🧪 [NOTIF API] query:", req.query);
-    console.log("🧪 [NOTIF API] req.user:", req.user);
 
     const v = validateQuery(req, res);
     if (!v) return;
@@ -64,9 +60,7 @@ router.get("/notifications", requireUserAuth, async (req, res) => {
     })
       .sort({ createdAt: -1 })
       .lean();
-
-    console.log("✅ [NOTIF API] matched rows:", rows.length);
-    if (rows[0]) console.log("✅ [NOTIF API] first row:", rows[0]?._id);
+    if (rows[0])
 
     return res.json({ ok: true, items: rows });
   } catch (e) {
@@ -81,7 +75,6 @@ router.get("/notifications", requireUserAuth, async (req, res) => {
 // ------------------------------
 router.get("/notifications/unseen-count", requireUserAuth, async (req, res) => {
   try {
-    console.log("\n🧪 [NOTIF API] HIT GET /notifications/unseen-count");
     const v = validateQuery(req, res);
     if (!v) return;
 
@@ -104,7 +97,6 @@ router.get("/notifications/unseen-count", requireUserAuth, async (req, res) => {
 // ------------------------------
 router.patch("/notifications/mark-all-seen", requireUserAuth, async (req, res) => {
   try {
-    console.log("\n🧪 [NOTIF API] HIT PATCH /notifications/mark-all-seen");
     const v = validateQuery(req, res);
     if (!v) return;
 
@@ -133,9 +125,6 @@ router.patch("/notifications/mark-all-seen", requireUserAuth, async (req, res) =
 // ------------------------------
 router.patch("/notifications/:id/seen", requireUserAuth, async (req, res) => {
   try {
-    console.log("\n🧪 [NOTIF API] HIT PATCH /notifications/:id/seen");
-    console.log("🧪 [NOTIF API] id:", req.params.id);
-    console.log("🧪 [NOTIF API] req.user:", req.user);
 
     const { id } = req.params;
 
@@ -183,10 +172,6 @@ router.patch("/notifications/:id/seen", requireUserAuth, async (req, res) => {
 // ------------------------------
 router.patch("/notifications/:id/read", requireUserAuth, async (req, res) => {
   try {
-    console.log("\n🧪 [NOTIF API] HIT PATCH /notifications/:id/read");
-    console.log("🧪 [NOTIF API] id:", req.params.id);
-    console.log("🧪 [NOTIF API] req.user:", req.user);
-
     const { id } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {

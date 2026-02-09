@@ -33,12 +33,6 @@ async function sendPush(to, title, body, extra = {}) {
     });
 
     const json = await resp.json().catch(() => null);
-
-    console.log("📨 Expo push response:", {
-      status: resp.status,
-      ok: resp.ok,
-      body: json,
-    });
   } catch (err) {
     console.error("❌ Push send failed:", err);
   }
@@ -1412,12 +1406,7 @@ router.post("/accept-booking", async (req, res) => {
               driverId: String(driverId),
             }
           );
-        } else {
-          console.log(
-            "ℹ️ No pushToken for passenger",
-            String(fresh.passengerId)
-          );
-        }
+        } else {}
       }
     } catch (err) {
       console.error("❌ Error sending accept-booking push:", err);
@@ -1479,9 +1468,7 @@ router.post("/cancel-booking", async (req, res) => {
               passengerId: String(b.passengerId || ""),
             }
           );
-        } else {
-          console.log("ℹ️ No pushToken for driver", String(b.driverId));
-        }
+        } else {}
       }
     } catch (err) {
       console.error("❌ Error sending cancel notification to driver:", err);
@@ -1585,12 +1572,7 @@ router.post("/complete-booking", async (req, res) => {
               driverId: String(updated.driverId || ""),
             }
           );
-        } else {
-          console.log(
-            "ℹ️ No pushToken for passenger",
-            String(updated.passengerId)
-          );
-        }
+        } else {}
       }
     } catch (err) {
       console.error("❌ Error sending complete-booking push:", err);
@@ -1641,7 +1623,6 @@ router.post("/driver/push-token", async (req, res) => {
       { pushToken },
       { new: true }
     );
-    console.log(pushToken)
 
     res.json({ ok: true });
   } catch (e) {

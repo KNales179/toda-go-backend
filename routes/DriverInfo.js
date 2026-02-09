@@ -419,9 +419,10 @@ router.get("/president/members", requirePresidentAuth, async (req, res) => {
     const myToda = req.president.todaPresName;
 
     const filter = {
-      todaName: myToda,
+      todaName: { $ne: myToda },
       isPresident: { $ne: true },
     };
+
 
     if (q) {
       const rx = new RegExp(escapeRegex(q), "i");
