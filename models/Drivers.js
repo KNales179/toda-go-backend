@@ -12,7 +12,7 @@ const DriverSchema = new mongoose.Schema({
   driverVerified: { type: Boolean, default: false },
 
   franchiseNumber: { type: String, required: true },
-  todaName: { type: String, required: true },
+  todaName: { type: String, required: true, default: "Unassigned" },
   sector: { type: String, enum: ["East", "West", "North", "South", "Other"], required: true },
   plateNumber: { type: String, default: "" },
 

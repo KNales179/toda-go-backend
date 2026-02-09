@@ -364,9 +364,10 @@ router.get("/president/drivers", requirePresidentAuth, async (req, res) => {
     const myToda = req.president.todaPresName;
 
     const filter = {
-      todaName: { $ne: myToda },
+      todaName: myToda,
       isPresident: { $ne: true },
     };
+
 
     if (includeUnassigned) {
       // optional future behavior
@@ -559,9 +560,10 @@ router.patch("/president/members/:id/kick", requirePresidentAuth, async (req, re
 
     const updated = await Driver.findByIdAndUpdate(
       targetId,
-      { $unset: { todaName: 1 } },
+      { $set: { todaName: "Unassigned" } }, // or "" if you prefer
       { new: true, runValidators: true }
     ).select(DRIVER_LIST_SELECT).lean();
+
 
     console.log("✅ [KICK] updated:", updated);
 
