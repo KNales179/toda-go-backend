@@ -8,42 +8,42 @@ const upload = require("../middleware/upload"); // uses uploads/ and filters jpg
 
 // GET /api/driver/:id ➜ fetch driver's profile (now includes licenseId)
 router.get("/driver/:id", async (req, res) => {
-  try {
-    const driver = await Driver.findById(req.params.id).select(
-      [
-        "profileID",
-        "isLucenaVoter",
-        "votingLocation",
-        "createdAt",
-        "driverFirstName",
-        "driverMiddleName",
-        "driverLastName",
-        "driverName",
-        "driverSuffix",
-        "email",
-        "driverPhone",
-        "todaName",
-        "franchiseNumber",
-        "sector",
-        "experienceYears",
-        "gender",
-        "driverBirthdate",
-        "homeAddress",
-        "selfieImage",
-        "licenseId",
-        "restriction",
-        "todaName",
-        "isPresident",
-        "todaPresName",
-      ].join(" ")
-    );
+try {
+  const driver = await Driver.findById(req.params.id).select(
+    [
+      "profileID",
+      "isLucenaVoter",
+      "votingLocation",
+      "createdAt",
+      "driverFirstName",
+      "driverMiddleName",
+      "driverLastName",
+      "driverName",
+      "driverSuffix",
+      "email",
+      "driverPhone",
+      "todaName",
+      "franchiseNumber",
+      "sector",
+      "experienceYears",
+      "gender",
+      "driverBirthdate",
+      "homeAddress",
+      "selfieImage",
+      "licenseId",
+      "restriction",
+      "todaName",
+      "isPresident",
+      "todaPresName",
+    ].join(" ")
+  );
 
-    if (!driver) return res.status(404).json({ message: "Driver not found" });
-    res.status(200).json({ driver });
-  } catch (err) {
-    console.error("❌ Failed to fetch driver info:", err);
-    res.status(500).json({ message: "Server error" });
-  }
+  if (!driver) return res.status(404).json({ message: "Driver not found" });
+  res.status(200).json({ driver });
+} catch (err) {
+  console.error("❌ Failed to fetch driver info:", err);
+  res.status(500).json({ message: "Server error" });
+}
 });
 
 // GET /api/drivers ➜ list (kept)
@@ -492,7 +492,7 @@ router.patch("/president/members/:id/kick", requirePresidentAuth, async (req, re
 
     const updated = await Driver.findByIdAndUpdate(
       targetId,
-      { $set: { todaName: "" } }, // ✅ unassigned; change to null if you prefer
+      { $unset: { todaName: 1 } },
       { new: true, runValidators: true }
     ).select(DRIVER_LIST_SELECT).lean();
 
