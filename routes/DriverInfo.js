@@ -364,7 +364,7 @@ router.get("/president/drivers", requirePresidentAuth, async (req, res) => {
     const myToda = req.president.todaPresName;
 
     const filter = {
-      todaName: myToda,
+      todaName: { $ne: myToda },
       isPresident: { $ne: true },
     };
 
@@ -419,10 +419,9 @@ router.get("/president/members", requirePresidentAuth, async (req, res) => {
     const myToda = req.president.todaPresName;
 
     const filter = {
-      todaName: { $ne: myToda },
+      todaName: myToda,
       isPresident: { $ne: true },
     };
-
 
     if (q) {
       const rx = new RegExp(escapeRegex(q), "i");
