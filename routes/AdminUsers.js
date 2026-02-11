@@ -76,11 +76,78 @@ async function sendExpoPush(pushToken, title, body, data = {}) {
 }
 
 // ------------------------------
-// 🟩 GET ALL PASSENGERS (ADMIN)
+// 🟩 GET PASSENGERS (ADMIN) — PAGINATED
+// supports: ?page=1&limit=10&q=...&status=verified|not verified&discountStatus=pending|approved|rejected|none
 // ------------------------------
 router.get("/admin/passengers", async (req, res) => {
   try {
-    const rows = await Passenger.find({}).sort({ createdAt: -1 }).lean();
+    const pageRaw = parseInt(req.query.page, 10);
+    const limitRaw = parseInt(req.query.limit, 10);
+
+    const page = Number.isFinite(pageRaw) ? Math.max(1, pageRaw) : 1;
+    const limit = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 10;
+
+    const q = String(req.query.q || "").trim();
+    const status = String(req.query.status || "").trim().toLowerCase(); // "verified" | "not verified"
+    const discountStatus = String(req.query.discountStatus || "").trim().toLowerCase(); // pending|approved|rejected|none
+
+    const filter = {};
+
+    // ✅ Account verification filter
+    if (status === "verified") filter.isVerified = true;
+    if (status === "not verified") filter.isVerified = false;
+
+    // ✅ Discount verification filter
+    // stored like: discountVerification.status
+    if (discountStatus) {
+      if (discountStatus === "none") {
+        filter.$or = [
+          { "discountVerification.status": { $exists: false } },
+          { "discountVerification.status": null },
+          { "discountVerification.status": "" },
+          { "discountVerification.status": "none" },
+        ];
+      } else {
+        filter["discountVerification.status"] = discountStatus;
+      }
+    }
+
+    // ✅ Search (server-side)
+    if (q) {
+      const or = [];
+
+      // if ObjectId-like search
+      if (mongoose.Types.ObjectId.isValid(q)) {
+        or.push({ _id: new mongoose.Types.ObjectId(q) });
+      }
+
+      const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+
+      or.push(
+        { firstName: rx },
+        { middleName: rx },
+        { lastName: rx },
+        { email: rx },
+        { phone: rx },
+        { contact: rx }
+      );
+
+      // merge with existing $or if discountStatus used it
+      if (filter.$or) {
+        filter.$and = filter.$and || [];
+        filter.$and.push({ $or: or });
+      } else {
+        filter.$or = or;
+      }
+    }
+
+    const total = await Passenger.countDocuments(filter);
+
+    const rows = await Passenger.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
 
     const items = rows.map((p) => {
       const isVerified = !!p.isVerified;
@@ -98,12 +165,21 @@ router.get("/admin/passengers", async (req, res) => {
       };
     });
 
-    return res.json({ items, total: items.length });
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+
+    return res.json({
+      items,
+      total,
+      page,
+      limit,
+      totalPages,
+    });
   } catch (err) {
     console.error("❌ FAILED TO LOAD PASSENGERS:", err);
     return res.status(500).json({ error: "server_error" });
   }
 });
+
 
 // ------------------------------
 // ✅ APPROVE discount verification (ADMIN)
