@@ -72,7 +72,6 @@ router.post("/warmup", async (req, res) => {
   try {
     await withTimeout(doWarmup(), 10_000, "doWarmup");
     warmUntil = Date.now() + WARM_TTL_MS;
-    console.log("[warmup] done; warm until", new Date(warmUntil).toISOString());
   } catch (e) {
     console.error("[warmup] failed:", e?.message || e);
   } finally {

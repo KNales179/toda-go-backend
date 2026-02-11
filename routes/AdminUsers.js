@@ -204,10 +204,6 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
     const frontPublicId = existing.idFrontPublicId || null;
     const backPublicId = existing.idBackPublicId || null;
 
-    console.log("\n🧹 [DISCOUNT REJECT] passenger:", String(existing._id));
-    console.log("🧹 [DISCOUNT REJECT] frontPublicId:", frontPublicId);
-    console.log("🧹 [DISCOUNT REJECT] backPublicId:", backPublicId);
-
     let delFront = { result: "skipped" };
     let delBack = { result: "skipped" };
 
@@ -224,9 +220,6 @@ router.patch("/admin/passengers/:id/discount/reject", async (req, res) => {
       console.error("❌ [DISCOUNT REJECT] delBack failed:", e?.message);
       delBack = { result: "error", error: e?.message };
     }
-
-    console.log("🧹 [DISCOUNT REJECT] cloudinary delFront:", delFront);
-    console.log("🧹 [DISCOUNT REJECT] cloudinary delBack:", delBack);
 
     const updated = await Passenger.findByIdAndUpdate(
       id,
@@ -422,54 +415,121 @@ router.patch("/admin/passengers/:id/unrestrict", async (req, res) => {
 
 
 // ------------------------------
-// 🟩 GET ALL DRIVERS
+// 🟩 GET DRIVERS (PAGINATED + SEARCH + STATUS FILTER)
+// GET /api/admin/drivers?page=1&limit=10&q=...&status=pending|verified|rejected|unverified
 // ------------------------------
 router.get("/admin/drivers", async (req, res) => {
   try {
-    const rows = await Driver.find({}).sort({ createdAt: -1 }).lean();
+    // ---- pagination params ----
+    const pageRaw = parseInt(req.query.page, 10);
+    const limitRaw = parseInt(req.query.limit, 10);
+
+    const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
+    const limit = Number.isFinite(limitRaw)
+      ? Math.min(100, Math.max(1, limitRaw))
+      : 10;
+
+    const skip = (page - 1) * limit;
+
+    // ---- search + status ----
+    const q = String(req.query.q || "").trim();
+    const status = String(req.query.status || "").trim().toLowerCase();
+
+    const filter = {};
+
+    // status mapping:
+    // pending => missing/empty driverVerification.status
+    // verified => "verify"
+    // rejected => "reject"
+    // unverified => "unverify"
+    if (status) {
+      if (status === "pending") {
+        filter.$or = [
+          { "driverVerification.status": { $exists: false } },
+          { "driverVerification.status": null },
+          { "driverVerification.status": "" },
+        ];
+      } else if (status === "verified") {
+        filter["driverVerification.status"] = "verify";
+      } else if (status === "rejected") {
+        filter["driverVerification.status"] = "reject";
+      } else if (status === "unverified") {
+        filter["driverVerification.status"] = "unverify";
+      }
+    }
+
+    // escape regex safely
+    function escapeRegex(s) {
+      return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
+    // Search fields:
+    // driverName, email, franchiseNumber, todaName, plateNumber, profileID
+    if (q) {
+      const rx = new RegExp(escapeRegex(q), "i");
+
+      const searchOr = [
+        { driverName: rx },
+        { email: rx },
+        { franchiseNumber: rx },
+        { todaName: rx },
+        { plateNumber: rx },
+        { profileID: rx },
+      ];
+
+      // combine with existing filter (status pending uses $or)
+      if (filter.$or) {
+        filter.$and = [
+          { $or: filter.$or },
+          { $or: searchOr },
+        ];
+        delete filter.$or;
+      } else {
+        filter.$or = searchOr;
+      }
+    }
+
+    // total count (matching)
+    const total = await Driver.countDocuments(filter);
+
+    // fetch page
+    const rows = await Driver.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
 
     const items = rows.map((d) => {
       const name =
         d.driverName ||
-        fullName(
-          d.driverFirstName,
-          d.driverMiddleName,
-          d.driverLastName,
-          d.driverSuffix
-        ) ||
+        fullName(d.driverFirstName, d.driverMiddleName, d.driverLastName, d.driverSuffix) ||
         "Driver";
 
       return {
-        // A
         id: String(d._id),
         name,
         email: d.email || "",
         contact: d.driverPhone || "",
 
-        // B
         franchiseNumber: d.franchiseNumber || "",
         plateNumber: d.plateNumber || "",
         todaName: d.todaName || "",
         sector: d.sector || "",
 
-        // E
         experience: d.experienceYears || "",
         rating: d.rating ?? 0,
         ratingCount: d.ratingCount ?? 0,
 
-        // D (✅ make it explicit for table)
         driverVerification: {
-          status: d?.driverVerification?.status || "", // verify|reject|unverify|""(pending)
+          status: d?.driverVerification?.status || "",
           reviewedAt: d?.driverVerification?.reviewedAt || null,
           rejectionReason: d?.driverVerification?.rejectionReason || null,
           reviewedByAdminId: d?.driverVerification?.reviewedByAdminId || null,
         },
 
-        // keep old flags if other parts still use them
         driverVerified: !!d.driverVerified,
         isVerified: !!d.isVerified,
 
-        // docs (table shows check only)
         documents: {
           votersIDImage: d.votersIDImage || "",
           driversLicenseImage: d.driversLicenseImage || "",
@@ -480,13 +540,11 @@ router.get("/admin/drivers", async (req, res) => {
         hasLicense: !!d.driversLicenseImage,
         hasOrcr: !!d.orcrImage,
 
-        // payment (for modals)
         payment: {
           gcashNumber: d.gcashNumber || "",
           gcashQRUrl: d.gcashQRUrl || "",
         },
 
-        // extra info for modals
         gender: d.gender || "",
         birthday: d.driverBirthdate || "",
         address: d.homeAddress || "",
@@ -504,12 +562,19 @@ router.get("/admin/drivers", async (req, res) => {
         isPresident: !!d.isPresident,
         todaPresName: d.todaPresName || "",
 
-        // keep raw if you still rely on it elsewhere
         raw: d,
       };
     });
 
-    return res.json({ items, total: items.length });
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+
+    return res.json({
+      items,
+      total,
+      page,
+      limit,
+      totalPages,
+    });
   } catch (err) {
     console.error("Error loading drivers:", err);
     return res.status(500).json({ error: "server_error" });
