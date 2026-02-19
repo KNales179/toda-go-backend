@@ -4,8 +4,8 @@ const ReportSchema = new mongoose.Schema({
   bookingId: String,
   passengerId: String,
   driverId: String,
-  reportType: String,     // e.g. "Overcharging", "Rude", etc.
-  otherReport: String,    // free text
+  reportType: String,     
+  otherReport: String,    
   status: {
     type: String,
     enum: ["open", "in progress", "resolved", "dismissed"],

@@ -588,4 +588,47 @@ router.post("/admin/dev/driver-trim", async (req, res) => {
   }
 });
 
+// ========== DEV: CLEAR ALL GHOST PASSENGERS ==========
+router.delete("/admin/dev/clear-passengers", async (req, res) => {
+  try {
+    // Adjust condition depending on how you define ghost users
+    // Example: ghost = no email OR email contains "ghost"
+    const result = await Passenger.deleteMany({
+      $or: [
+        { email: { $exists: false } },
+        { email: null },
+        { email: { $regex: /ghost/i } }
+      ]
+    });
+
+    return res.json({
+      deletedCount: result.deletedCount || 0,
+    });
+  } catch (err) {
+    console.error("[DEV CLEAR] Error clearing passengers:", err);
+    return res.status(500).json({ error: "Failed to clear ghost passengers" });
+  }
+});
+
+// ========== DEV: CLEAR ALL GHOST DRIVERS ==========
+router.delete("/admin/dev/clear-drivers", async (req, res) => {
+  try {
+    const result = await Driver.deleteMany({
+      $or: [
+        { email: { $exists: false } },
+        { email: null },
+        { email: { $regex: /ghost/i } }
+      ]
+    });
+
+    return res.json({
+      deletedCount: result.deletedCount || 0,
+    });
+  } catch (err) {
+    console.error("[DEV CLEAR] Error clearing drivers:", err);
+    return res.status(500).json({ error: "Failed to clear ghost drivers" });
+  }
+});
+
+
 module.exports = router;
