@@ -1,6 +1,7 @@
 // routes/pwAppRoute.js
 const express = require("express");
 const router = express.Router();
+const mongoose = require("mongoose");
 
 const DriverStatus = require("../models/DriverStatus");
 const DriverMeter = require("../models/DriverMeter");
@@ -33,8 +34,28 @@ router.post("/pwapp/add", async (req, res) => {
     const { driverId, passengerType = "REGULAR", note = "" } = req.body;
     if (!driverId) return res.status(400).json({ ok: false, error: "driverId required" });
 
-    const ds = await DriverStatus.findOne({ driverId }).lean();
+    // Make sure driver is online + has location
+    const ds = await DriverStatus.findOne({ driverId: String(driverId) }).lean();
     if (!ds?.location) return res.status(400).json({ ok: false, error: "Driver location not found" });
+
+    // ✅ ATOMIC capacity check + reserve 1 seat
+    const seats = 1;
+    const match = {
+      driverId: new mongoose.Types.ObjectId(driverId),
+      isOnline: true,
+      lockedSolo: false,
+      $expr: { $lte: ["$capacityUsed", { $subtract: ["$capacityTotal", seats] }] },
+    };
+
+    const reserved = await DriverStatus.findOneAndUpdate(
+      match,
+      { $inc: { capacityUsed: seats }, $set: { updatedAt: new Date() } },
+      { new: true }
+    ).lean();
+
+    if (!reserved) {
+      return res.status(409).json({ ok: false, error: "Capacity full (pwApp)" });
+    }
 
     const meter = await DriverMeter.findOne({ driverId: String(driverId) }).lean();
     const startMeter = meter?.totalMeters ?? 0;
@@ -91,6 +112,27 @@ router.post("/pwapp/:id/dropoff", async (req, res) => {
     p.status = "COMPLETED";
     p.completedAt = new Date();
     await p.save();
+
+    // ✅ release seat
+    try {
+      await DriverStatus.updateOne(
+        { driverId: new mongoose.Types.ObjectId(p.driverId) },
+        { $inc: { capacityUsed: -1 }, $set: { updatedAt: new Date() } }
+      );
+    } catch (err) {
+      console.error("pwapp dropoff seat release failed:", err);
+    }
+
+    return res.json({ ok: true, passenger: p });
+
+    try {
+      await DriverStatus.updateOne(
+        { driverId: new mongoose.Types.ObjectId(p.driverId) },
+        { $inc: { capacityUsed: -1 }, $set: { updatedAt: new Date() } }
+      );
+    } catch (err) {
+      console.error("pwapp dropoff seat release failed:", err);
+    }
 
     return res.json({ ok: true, passenger: p });
   } catch (e) {
