@@ -7,11 +7,11 @@ const DriverStatus = require("../models/DriverStatus");
 const DriverMeter = require("../models/DriverMeter");
 const PwAppPassenger = require("../models/PwAppPassenger");
 
-// Fare computation (adjust discount rates according to ordinance)
+// Fare computation breakdown
 function computeFareBreakdown(distanceMeters, passengerType) {
   const km = distanceMeters / 1000;
 
-  const baseFare = 20;      // first 2km
+  const baseFare = 20; // first 2km
   const baseKm = 2;
   const perKm = 5;
 
@@ -22,7 +22,7 @@ function computeFareBreakdown(distanceMeters, passengerType) {
   const subtotal = baseFare + extraFare;
 
   const discountMap = { REGULAR: 0, STUDENT: 0.2, PWD: 0.2, SENIOR: 0.2 };
-  const discountRate = discountMap[passengerType] ?? 0;
+  const discountRate = discountMap[String(passengerType || "").toUpperCase()] ?? 0;
 
   const discountAmount = subtotal * discountRate;
   const total = Math.round(subtotal - discountAmount);
@@ -76,7 +76,7 @@ router.post("/pwapp/add", async (req, res) => {
 
     const p = await PwAppPassenger.create({
       driverId: String(driverId),
-      passengerType,
+      passengerType: String(passengerType).toUpperCase(),
       note,
       pickupLat: Number(ds.location.latitude),
       pickupLng: Number(ds.location.longitude),
@@ -117,20 +117,18 @@ router.post("/pwapp/:id/dropoff", async (req, res) => {
     const meter = await DriverMeter.findOne({ driverId: String(p.driverId) }).lean();
     const endMeter = meter?.totalMeters ?? p.startMeterMeters;
 
-    const dist = Math.max(0, endMeter - p.startMeterMeters);
-    const fare = computeFare(dist, p.passengerType);
-
+    const dist = Math.max(0, endMeter - (p.startMeterMeters || 0));
     const breakdown = computeFareBreakdown(dist, p.passengerType);
 
-    p.computedFare = breakdown.total;
-    p.fareBreakdown = breakdown;  
     p.endMeterMeters = endMeter;
     p.distanceMeters = dist;
+    p.computedFare = breakdown.total;
+    p.fareBreakdown = breakdown;
     p.status = "COMPLETED";
     p.completedAt = new Date();
     await p.save();
 
-    // ✅ release seat
+    // ✅ release exactly 1 seat (only once)
     try {
       await DriverStatus.updateOne(
         { driverId: new mongoose.Types.ObjectId(p.driverId) },
@@ -140,14 +138,6 @@ router.post("/pwapp/:id/dropoff", async (req, res) => {
       console.error("pwapp dropoff seat release failed:", err);
     }
 
-    try {
-      await DriverStatus.updateOne(
-        { driverId: new mongoose.Types.ObjectId(p.driverId) },
-        { $inc: { capacityUsed: -1 }, $set: { updatedAt: new Date() } }
-      );
-    } catch (err) {
-      console.error("pwapp dropoff seat release failed:", err);
-    }
     return res.json({ ok: true, passenger: p });
   } catch (e) {
     console.error("pwapp dropoff error:", e);
@@ -155,7 +145,7 @@ router.post("/pwapp/:id/dropoff", async (req, res) => {
   }
 });
 
-// POST /api/driver-meter/reset -> reset when vehicle becomes empty (optional call)
+// POST /api/driver-meter/reset (optional)
 router.post("/driver-meter/reset", async (req, res) => {
   try {
     const { driverId } = req.body;
