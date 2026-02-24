@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const Driver = require('../models/Drivers');
 const DriverStatus = require('../models/DriverStatus');
 const DriverPresence = require('../models/DriverPresence');
+const DriverMeter = require('../models/DriverMeter');
 
 // --- helpers ---
 const isObjectId = (s) => mongoose.Types.ObjectId.isValid(String(s || ''));
@@ -20,6 +21,17 @@ function normalizeLocation(loc) {
   const lat = Number(loc.lat ?? loc.latitude ?? 0);
   const lng = Number(loc.lng ?? loc.longitude ?? 0);
   return { latitude: lat, longitude: lng };
+}
+
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const R = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
 }
 
 // 🔹 presence writer: extend last 10-min window or create a new one
@@ -80,7 +92,25 @@ router.post('/driver-status', async (req, res) => {
       ).lean();
 
       await touchPresence(driverId, new Date());
-      return res.status(200).json({ message: 'Driver is online (capacity synced)', status });
+      // init/reset driver meter baseline when going online
+try {
+  await DriverMeter.updateOne(
+    { driverId: String(driverId) },
+    {
+      $setOnInsert: { totalMeters: 0 },
+      $set: {
+        lastLat: normLoc.latitude,
+        lastLng: normLoc.longitude,
+        lastUpdatedAt: new Date(),
+      },
+    },
+    { upsert: true }
+  );
+} catch (e) {
+  console.warn("DriverMeter init failed:", e?.message || e);
+}
+
+return res.status(200).json({ message: 'Driver is online (capacity synced)', status });
     } else {
       const status = await DriverStatus.findOneAndUpdate(
         { driverId: new mongoose.Types.ObjectId(driverId) },
@@ -154,7 +184,39 @@ router.post('/driver-heartbeat', async (req, res) => {
     ).lean();
 
     await touchPresence(driverId, new Date());
-    return res.status(200).json({ ok: true, updatedAt: status.updatedAt, status });
+    // --- update driver meter (virtual odometer) ---
+try {
+  const m = await DriverMeter.findOne({ driverId: String(driverId) });
+  if (!m) {
+    await DriverMeter.create({
+      driverId: String(driverId),
+      totalMeters: 0,
+      lastLat: normLoc.latitude,
+      lastLng: normLoc.longitude,
+      lastUpdatedAt: new Date(),
+    });
+  } else {
+    if (typeof m.lastLat === "number" && typeof m.lastLng === "number") {
+      const delta = haversineMeters(
+        m.lastLat,
+        m.lastLng,
+        normLoc.latitude,
+        normLoc.longitude
+      );
+      // ignore GPS jumps between heartbeats
+      const safeDelta = delta > 250 ? 0 : delta;
+      m.totalMeters = (m.totalMeters || 0) + safeDelta;
+    }
+    m.lastLat = normLoc.latitude;
+    m.lastLng = normLoc.longitude;
+    m.lastUpdatedAt = new Date();
+    await m.save();
+  }
+} catch (e) {
+  console.warn("DriverMeter update failed:", e?.message || e);
+}
+
+return res.status(200).json({ ok: true, updatedAt: status.updatedAt, status });
   } catch (err) {
     console.error('❌ Heartbeat error:', err);
     res.status(500).json({ error: 'Server error' });

@@ -10,6 +10,7 @@ const RideHistory = require("../models/RideHistory");
 const Booking = require("../models/Bookings");
 const Driver = require("../models/Drivers");
 const Toda = require("../models/Toda");
+const Task = require("../models/Task");
 const DEBUG_WAITING = true; 
 
 
@@ -1389,6 +1390,46 @@ router.post("/accept-booking", async (req, res) => {
 
     // 🔄 Return fresh booking
     const fresh = await Booking.findOne({ bookingId }).lean();
+
+
+// ✅ Create driver tasks (Pickup + Dropoff) for task-based routing UI
+// Idempotent: only create if tasks do not already exist for this booking
+try {
+  if (fresh) {
+    const existingCount = await Task.countDocuments({
+      sourceType: "BOOKING",
+      sourceId: fresh.bookingId,
+    });
+    if (existingCount === 0) {
+      const pickupTask = await Task.create({
+        driverId: String(driverId),
+        sourceType: "BOOKING",
+        sourceId: fresh.bookingId,
+        taskType: "PICKUP",
+        lat: Number(fresh.pickupLat),
+        lng: Number(fresh.pickupLng),
+        place: fresh.pickupPlace || "",
+        status: "ACTIVE",
+        meta: { passengerId: String(fresh.passengerId || "") },
+      });
+
+      await Task.create({
+        driverId: String(driverId),
+        sourceType: "BOOKING",
+        sourceId: fresh.bookingId,
+        taskType: "DROPOFF",
+        lat: Number(fresh.destinationLat),
+        lng: Number(fresh.destinationLng),
+        place: fresh.destinationPlace || "",
+        dependsOnTaskId: pickupTask._id,
+        status: "PENDING",
+        meta: { passengerId: String(fresh.passengerId || "") },
+      });
+    }
+  }
+} catch (e) {
+  console.warn("Task creation failed:", e?.message || e);
+}
 
     // 🔔 NEW: send push notification to passenger  
     try {
