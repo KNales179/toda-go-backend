@@ -8,24 +8,38 @@ const DriverMeter = require("../models/DriverMeter");
 const PwAppPassenger = require("../models/PwAppPassenger");
 
 // Fare computation (adjust discount rates according to ordinance)
-function computeFare(distanceMeters, passengerType) {
+function computeFareBreakdown(distanceMeters, passengerType) {
   const km = distanceMeters / 1000;
-  let fare = 20; // first 2km
 
-  if (km > 2) {
-    fare += Math.ceil(km - 2) * 5;
-  }
+  const baseFare = 20;      // first 2km
+  const baseKm = 2;
+  const perKm = 5;
 
-  const discountMap = {
-    REGULAR: 0,
-    STUDENT: 0.2,
-    PWD: 0.2,
-    SENIOR: 0.2,
+  const extraKmRaw = Math.max(0, km - baseKm);
+  const extraKmCharged = Math.ceil(extraKmRaw);
+  const extraFare = extraKmCharged * perKm;
+
+  const subtotal = baseFare + extraFare;
+
+  const discountMap = { REGULAR: 0, STUDENT: 0.2, PWD: 0.2, SENIOR: 0.2 };
+  const discountRate = discountMap[passengerType] ?? 0;
+
+  const discountAmount = subtotal * discountRate;
+  const total = Math.round(subtotal - discountAmount);
+
+  return {
+    distanceMeters,
+    distanceKm: Number(km.toFixed(3)),
+    baseFare,
+    baseKm,
+    perKm,
+    extraKmCharged,
+    extraFare,
+    subtotal,
+    discountRate,
+    discountAmount: Math.round(discountAmount),
+    total,
   };
-  const disc = discountMap[passengerType] ?? 0;
-
-  fare = fare - fare * disc;
-  return Math.round(fare);
 }
 
 // POST /api/pwapp/add
@@ -106,9 +120,12 @@ router.post("/pwapp/:id/dropoff", async (req, res) => {
     const dist = Math.max(0, endMeter - p.startMeterMeters);
     const fare = computeFare(dist, p.passengerType);
 
+    const breakdown = computeFareBreakdown(dist, p.passengerType);
+
+    p.computedFare = breakdown.total;
+    p.fareBreakdown = breakdown;  
     p.endMeterMeters = endMeter;
     p.distanceMeters = dist;
-    p.computedFare = fare;
     p.status = "COMPLETED";
     p.completedAt = new Date();
     await p.save();
@@ -123,8 +140,6 @@ router.post("/pwapp/:id/dropoff", async (req, res) => {
       console.error("pwapp dropoff seat release failed:", err);
     }
 
-    return res.json({ ok: true, passenger: p });
-
     try {
       await DriverStatus.updateOne(
         { driverId: new mongoose.Types.ObjectId(p.driverId) },
@@ -133,7 +148,6 @@ router.post("/pwapp/:id/dropoff", async (req, res) => {
     } catch (err) {
       console.error("pwapp dropoff seat release failed:", err);
     }
-
     return res.json({ ok: true, passenger: p });
   } catch (e) {
     console.error("pwapp dropoff error:", e);
