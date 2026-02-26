@@ -1013,5 +1013,60 @@ router.patch("/admin/drivers/:id/unrestrict", async (req, res) => {
   }
 });
 
+router.get("/admin/passengers/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "invalid_id" });
+    }
+
+    const p = await Passenger.findById(id).lean();
+    if (!p) return res.status(404).json({ error: "not_found" });
+
+    return res.json({
+      _id: p._id,
+      firstName: p.firstName || "",
+      middleName: p.middleName || "",
+      lastName: p.lastName || "",
+      suffix: p.suffix || "",
+      email: p.email || "",
+      profileImage: p.profileImage || p.selfieImage || null,
+      role: "passenger",
+    });
+  } catch (err) {
+    console.error("❌ get passenger error:", err);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+
+router.get("/admin/drivers/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "invalid_id" });
+    }
+
+    const d = await Driver.findById(id).lean();
+    if (!d) return res.status(404).json({ error: "not_found" });
+
+    return res.json({
+      _id: d._id,
+      firstName: d.driverFirstName || "",
+      middleName: d.driverMiddleName || "",
+      lastName: d.driverLastName || "",
+      suffix: d.driverSuffix || "",
+      email: d.email || "",
+      profileImage: d.selfieImage || null,
+      role: "driver",
+    });
+  } catch (err) {
+    console.error("❌ get driver error:", err);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
 
 module.exports = router;

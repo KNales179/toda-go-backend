@@ -86,7 +86,7 @@ router.post("/pwapp/add", async (req, res) => {
 
     return res.json({ ok: true, passenger: p });
   } catch (e) {
-    console.error("pwapp add error:", e);
+    console.error("Passenger add error:", e);
     return res.status(500).json({ ok: false, error: "Server error" });
   }
 });
@@ -111,8 +111,8 @@ router.post("/pwapp/:id/dropoff", async (req, res) => {
     const { id } = req.params;
 
     const p = await PwAppPassenger.findById(id);
-    if (!p) return res.status(404).json({ ok: false, error: "pwApp passenger not found" });
-    if (p.status !== "ACTIVE") return res.status(409).json({ ok: false, error: "pwApp already closed" });
+    if (!p) return res.status(404).json({ ok: false, error: "passenger not found" });
+    if (p.status !== "ACTIVE") return res.status(409).json({ ok: false, error: "already closed" });
 
     const meter = await DriverMeter.findOne({ driverId: String(p.driverId) }).lean();
     const endMeter = meter?.totalMeters ?? p.startMeterMeters;
@@ -135,12 +135,12 @@ router.post("/pwapp/:id/dropoff", async (req, res) => {
         { $inc: { capacityUsed: -1 }, $set: { updatedAt: new Date() } }
       );
     } catch (err) {
-      console.error("pwapp dropoff seat release failed:", err);
+      console.error("Passenger dropoff seat release failed:", err);
     }
 
     return res.json({ ok: true, passenger: p });
   } catch (e) {
-    console.error("pwapp dropoff error:", e);
+    console.error("Passenger dropoff error:", e);
     return res.status(500).json({ ok: false, error: "Server error" });
   }
 });
