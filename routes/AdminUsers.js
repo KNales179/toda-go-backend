@@ -899,6 +899,71 @@ router.post("/admin/drivers/:id/notify", async (req, res) => {
   }
 });
 
+router.post("/admin/passengers/:id/notify", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { subject, content, category, priority } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, error: "invalid_id" });
+    }
+
+    const cleanSubject = String(subject || "").trim();
+    const cleanContent = String(content || "").trim();
+
+    if (!cleanSubject) {
+      return res.status(400).json({ ok: false, error: "subject_required" });
+    }
+    if (!cleanContent) {
+      return res.status(400).json({ ok: false, error: "content_required" });
+    }
+
+    // Category must match Notification enum:
+    // ["verification", "report", "feedback", "notice"]
+    const cat = String(category || "notice").toLowerCase();
+    const allowedCat = ["verification", "report", "feedback", "notice"];
+    if (!allowedCat.includes(cat)) {
+      return res.status(400).json({ ok: false, error: "invalid_category" });
+    }
+
+    const pr = String(priority || "normal").toLowerCase();
+    const allowedPr = ["normal", "urgent"];
+    const prFinal = allowedPr.includes(pr) ? pr : "normal";
+
+    const passenger = await Passenger.findById(id).lean();
+    if (!passenger) return res.status(404).json({ ok: false, error: "not_found" });
+
+    const adminName = req.admin?.username || req.admin?.email || "Admin";
+    const toName = fullName(passenger.firstName, passenger.middleName, passenger.lastName, passenger.suffix) || "Passenger";
+
+    const created = await Notification.create({
+      userId: passenger._id,
+      userType: "passenger",
+      category: cat,
+      title: cleanSubject,
+      message: cleanContent,
+      createdByAdminId: req.admin?.id || null,
+      createdByAdminName: adminName,
+      seenAt: null,
+      readAt: null,
+      meta: {
+        type: "admin_message",
+        fromLabel: `TFRO Admin - ${adminName}`,
+        toLabel: toName,
+        priority: prFinal,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      notificationId: String(created._id),
+    });
+  } catch (err) {
+    console.error("❌ notify passenger error:", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
 
 router.patch("/admin/drivers/:id/restrict", async (req, res) => {
   try {
