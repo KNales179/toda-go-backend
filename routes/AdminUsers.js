@@ -1091,12 +1091,65 @@ router.get("/admin/passengers/:id", async (req, res) => {
 
     return res.json({
       _id: p._id,
+
+      citizen_id: p.citizen_id || "",
       firstName: p.firstName || "",
       middleName: p.middleName || "",
       lastName: p.lastName || "",
       suffix: p.suffix || "",
+
+      gender: p.gender || "",
+      birthday: p.birthday || null,
+      birth_place: p.birth_place || "",
+      age: p.age ?? null,
+
+      address: p.address || "",
+      homeAddress: p.homeAddress || "",
+      brgy_Id: p.brgy_Id ?? null,
+
+      contact: p.contact || "",
+      phone: p.phone || "",
+
+      eContactName: p.eContactName || "",
+      eContactPhone: p.eContactPhone || "",
+
+      civil_status: p.civil_status || "",
+
+      profileImage: p.profileImage || null,
+      profileImagePublicId: p.profileImagePublicId || null,
+
+      pushToken: p.pushToken || null,
+
+      // discount
+      discount: !!p.discount,
+      discountType: p.discountType ?? null,
+      discountVerification: p.discountVerification || {
+        type: null,
+        schoolYear: null,
+        validUntil: null,
+        status: "none",
+        idFrontUrl: null,
+        idBackUrl: null,
+        submittedAt: null,
+        reviewedAt: null,
+        reviewedByAdminId: null,
+        rejectionReason: null,
+      },
+
+      // restriction
+      restriction: p.restriction || {
+        isRestricted: false,
+        type: "ban",
+        reason: "",
+        startAt: null,
+        endAt: null,
+        createdByAdminId: null,
+        updatedAt: null,
+      },
+
       email: p.email || "",
-      profileImage: p.profileImage || p.selfieImage || null,
+      isVerified: !!p.isVerified,
+
       role: "passenger",
     });
   } catch (err) {
@@ -1119,12 +1172,76 @@ router.get("/admin/drivers/:id", async (req, res) => {
 
     return res.json({
       _id: d._id,
-      firstName: d.driverFirstName || "",
-      middleName: d.driverMiddleName || "",
-      lastName: d.driverLastName || "",
-      suffix: d.driverSuffix || "",
+
+      profileID: d.profileID || "",
       email: d.email || "",
-      profileImage: d.selfieImage || null,
+      pushToken: d.pushToken || null,
+
+      isVerified: !!d.isVerified,
+      driverVerified: !!d.driverVerified,
+
+      franchiseNumber: d.franchiseNumber || "",
+      todaName: d.todaName || "Unassigned",
+      sector: d.sector || "",
+      plateNumber: d.plateNumber || "",
+
+      driverFirstName: d.driverFirstName || "",
+      driverMiddleName: d.driverMiddleName || "",
+      driverLastName: d.driverLastName || "",
+      driverSuffix: d.driverSuffix || "",
+      driverName: d.driverName || "",
+
+      gender: d.gender || "",
+      driverBirthdate: d.driverBirthdate || "",
+      driverPhone: d.driverPhone || "",
+      homeAddress: d.homeAddress || "",
+      licenseId: d.licenseId || "",
+
+      gcashNumber: d.gcashNumber || "",
+      gcashQRUrl: d.gcashQRUrl || null,
+      gcashQRPublicId: d.gcashQRPublicId || null,
+
+      experienceYears: d.experienceYears || "",
+
+      rating: d.rating ?? 0,
+      ratingCount: d.ratingCount ?? 0,
+
+      isLucenaVoter: d.isLucenaVoter || "",
+      votingLocation: d.votingLocation || "",
+
+      // images
+      votersIDImage: d.votersIDImage || "",
+      driversLicenseImage: d.driversLicenseImage || "",
+      orcrImage: d.orcrImage || "",
+      selfieImage: d.selfieImage || "",
+
+      votersIDImagePublicId: d.votersIDImagePublicId || "",
+      driversLicenseImagePublicId: d.driversLicenseImagePublicId || "",
+      orcrImagePublicId: d.orcrImagePublicId || "",
+      selfieImagePublicId: d.selfieImagePublicId || "",
+
+      capacity: d.capacity ?? 4,
+
+      driverVerification: d.driverVerification || {
+        status: null,
+        reviewedAt: null,
+        rejectionReason: null,
+        reviewedByAdminId: null,
+      },
+
+      restriction: d.restriction || {
+        isRestricted: false,
+        type: "ban",
+        reason: "",
+        startAt: null,
+        endAt: null,
+        createdByAdminId: null,
+        updatedAt: null,
+      },
+
+      isPresident: !!d.isPresident,
+      todaPresName: d.todaPresName || "",
+
       role: "driver",
     });
   } catch (err) {
@@ -1132,6 +1249,5 @@ router.get("/admin/drivers/:id", async (req, res) => {
     return res.status(500).json({ error: "server_error" });
   }
 });
-
 
 module.exports = router;
