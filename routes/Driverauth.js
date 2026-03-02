@@ -647,27 +647,31 @@ function scoreFields(fields) {
 
 // OCR one buffer; returns { text, fields, score }
 async function ocrBuffer(buffer) {
+  console.log("⚙️ OCR processing started...");
+
   let img = buffer;
 
-  // optional preprocess
   if (sharp) {
     try {
-      // make it easier for OCR: resize + grayscale + increase contrast-ish
+      console.log("🛠 Preprocessing image with sharp...");
       img = await sharp(buffer)
-        .rotate() // respect EXIF orientation
+        .rotate()
         .resize({ width: 1400, withoutEnlargement: true })
         .grayscale()
         .normalize()
         .toBuffer();
+      console.log("✅ Image preprocessing done");
     } catch (_) {
-      img = buffer; // fallback
+      console.log("⚠️ Sharp preprocessing failed, using original buffer");
+      img = buffer;
     }
   }
 
   const worker = await getOcrWorker();
+  console.log("🤖 Tesseract worker ready");
 
-  // Note: tesseract can sometimes take long; keep route best-effort
   const result = await worker.recognize(img);
+  console.log("📝 Raw OCR text length:", result?.data?.text?.length);
 
   const text = cleanText(result?.data?.text || "");
   const birthdate = extractBirthdate(text);
@@ -678,60 +682,75 @@ async function ocrBuffer(buffer) {
     ...(birthdate ? { birthdate } : {}),
   };
 
+  console.log("📌 OCR extracted fields:", fields);
+
   return { text, fields, score: scoreFields(fields) };
 }
 
 // ✅ NEW: scan route (does NOT save anything to cloudinary or DB)
-router.post(
-  "/scan-id",
+router.post("/scan-id",
   upload.fields([
     { name: "votersIDImage", maxCount: 1 },
     { name: "driversLicenseImage", maxCount: 1 },
   ]),
   async (req, res) => {
     try {
+      console.log("📥 /scan-id route triggered");
+
       const voterBuf = req.files?.votersIDImage?.[0]?.buffer || null;
       const licBuf = req.files?.driversLicenseImage?.[0]?.buffer || null;
 
+      console.log("🖼 Voter ID received:", !!voterBuf);
+      console.log("🪪 License received:", !!licBuf);
+
       if (!voterBuf && !licBuf) {
+        console.log("❌ No images uploaded");
         return res.status(400).json({ ok: false, error: "No ID images uploaded" });
       }
 
       const results = [];
 
       if (voterBuf) {
+        console.log("🔍 Scanning Voter ID...");
         try {
           const r = await ocrBuffer(voterBuf);
+          console.log("✅ Voter ID OCR result:", r.fields);
           results.push({ source: "votersIDImage", ...r });
         } catch (e) {
+          console.log("❌ Voter ID OCR failed:", e?.message);
           results.push({ source: "votersIDImage", text: "", fields: {}, score: 0, error: e?.message });
         }
       }
 
       if (licBuf) {
+        console.log("🔍 Scanning Driver License...");
         try {
           const r = await ocrBuffer(licBuf);
+          console.log("✅ License OCR result:", r.fields);
           results.push({ source: "driversLicenseImage", ...r });
         } catch (e) {
+          console.log("❌ License OCR failed:", e?.message);
           results.push({ source: "driversLicenseImage", text: "", fields: {}, score: 0, error: e?.message });
         }
       }
 
-      // pick best
       results.sort((a, b) => (b.score || 0) - (a.score || 0));
       const best = results[0] || { source: null, fields: {}, score: 0 };
+
+      console.log("🏆 Best OCR source:", best.source);
+      console.log("📊 Confidence score:", best.score);
+      console.log("📌 Extracted fields:", best.fields);
 
       return res.json({
         ok: true,
         source: best.source,
-        confidence: best.score / 5, // rough 0..1
+        confidence: best.score / 5,
         fields: best.fields || {},
       });
     } catch (e) {
-      console.error("scan-id error:", e);
+      console.error("❌ scan-id error:", e);
       return res.status(500).json({ ok: false, error: "Server error" });
     }
   }
 );
-
 module.exports = router;
