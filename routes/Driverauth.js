@@ -14,11 +14,19 @@ const { sendMail } = require("../utils/mailer");
 const multer = require("multer");
 const streamifier = require("streamifier");
 const cloudinary = require("../utils/cloudinaryConfig");
-
+const Tesseract = require("tesseract.js");
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
 });
+
+let sharp = null;
+try {
+  sharp = require("sharp"); // optional
+} catch (_) {
+  // ok if not installed
+}
+
 
 // ---------- helpers ----------
 function getBaseUrl(req) {
@@ -167,8 +175,7 @@ router.post("/:id/gcash-qr", upload.single("qr"), async (req, res) => {
 // ==================== R E G I S T R A T I O N ======================
 // ===================================================================
 
-router.post(
-  "/register-driver",
+router.post( "/register-driver",
   upload.fields([
     { name: "selfie", maxCount: 1 },
     { name: "votersIDImage", maxCount: 1 },
@@ -368,9 +375,7 @@ router.post(
   }
 );
 
-// ✅ FIXED verify-email: supports BOTH payload styles:
-// - old: { id }
-// - new: { kind, id }
+
 router.get("/verify-email", async (req, res) => {
   try {
     const { token } = req.query;
@@ -482,5 +487,251 @@ router.post("/resend-verification", async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
+
+
+
+// Reuse a single worker (faster on repeated calls)
+let _workerPromise = null;
+async function getOcrWorker() {
+  if (_workerPromise) return _workerPromise;
+
+  _workerPromise = (async () => {
+    const worker = await Tesseract.createWorker("eng");
+    return worker;
+  })();
+
+  return _workerPromise;
+}
+
+// basic text cleanup
+function cleanText(s) {
+  return String(s || "")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// Try to find a date in many common formats and return YYYY-MM-DD if possible
+function extractBirthdate(text) {
+  const t = text;
+
+  // Examples:
+  // 1994-03-21
+  // 03/21/1994
+  // 21/03/1994
+  // Mar 21 1994
+  const iso = t.match(/\b(19|20)\d{2}[-/.](0?\d|1[0-2])[-/.]([0-2]?\d|3[01])\b/);
+  if (iso) {
+    const yyyy = iso[0].slice(0, 4);
+    const parts = iso[0].slice(5).split(/[-/.]/);
+    const mm = String(parts[0]).padStart(2, "0");
+    const dd = String(parts[1]).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  const mdy = t.match(/\b(0?\d|1[0-2])[-/.]([0-2]?\d|3[01])[-/.]((19|20)\d{2})\b/);
+  if (mdy) {
+    const mm = String(mdy[1]).padStart(2, "0");
+    const dd = String(mdy[2]).padStart(2, "0");
+    const yyyy = mdy[3];
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  const dmy = t.match(/\b([0-2]?\d|3[01])[-/.](0?\d|1[0-2])[-/.]((19|20)\d{2})\b/);
+  if (dmy) {
+    const dd = String(dmy[1]).padStart(2, "0");
+    const mm = String(dmy[2]).padStart(2, "0");
+    const yyyy = dmy[3];
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  const monthNames =
+    "(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)";
+  const mon = t.toLowerCase().match(new RegExp(`\\b${monthNames}\\s+([0-2]?\\d|3[01])[,\\s]+((19|20)\\d{2})\\b`, "i"));
+  if (mon) {
+    const map = {
+      jan: "01", january: "01",
+      feb: "02", february: "02",
+      mar: "03", march: "03",
+      apr: "04", april: "04",
+      may: "05",
+      jun: "06", june: "06",
+      jul: "07", july: "07",
+      aug: "08", august: "08",
+      sep: "09", sept: "09", september: "09",
+      oct: "10", october: "10",
+      nov: "11", november: "11",
+      dec: "12", december: "12",
+    };
+    const m = map[mon[1].toLowerCase()] || null;
+    const dd = String(mon[2]).padStart(2, "0");
+    const yyyy = mon[3];
+    if (m) return `${yyyy}-${m}-${dd}`;
+  }
+
+  return null;
+}
+
+// VERY simple name guesser:
+// - looks for lines with 2-4 words that look like a name
+// - avoids lines with common ID keywords
+function extractName(text) {
+  const bad = [
+    "republic", "philippines", "license", "driver", "voter", "id", "address",
+    "date", "birth", "sex", "height", "weight", "nationality", "signature",
+    "expiry", "expires", "issued", "authority", "city", "province",
+  ];
+
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .slice(0, 60);
+
+  const looksBad = (l) => bad.some((b) => l.toLowerCase().includes(b));
+
+  // candidate lines: mostly letters/spaces/dots/commas
+  const candidates = lines
+    .filter((l) => !looksBad(l))
+    .filter((l) => /^[A-Z ,.'-]+$/i.test(l))
+    .map((l) => l.replace(/\s+/g, " ").trim());
+
+  // prefer lines like "LAST, FIRST MIDDLE"
+  const comma = candidates.find((l) => /,/.test(l) && l.split(" ").length >= 2);
+  if (comma) {
+    const parts = comma.split(",");
+    const last = parts[0].trim();
+    const rest = (parts[1] || "").trim().split(" ").filter(Boolean);
+    const first = rest[0] || "";
+    const middle = rest.slice(1).join(" ");
+    return { firstName: capName(first), middleName: capName(middle), lastName: capName(last) };
+  }
+
+  // else pick the best-looking 2-4 word line
+  const best = candidates
+    .map((l) => ({ l, words: l.split(" ").filter(Boolean) }))
+    .filter((x) => x.words.length >= 2 && x.words.length <= 4)
+    .sort((a, b) => b.words.join(" ").length - a.words.join(" ").length)[0];
+
+  if (!best) return null;
+
+  const w = best.words;
+  const first = w[0];
+  const last = w[w.length - 1];
+  const middle = w.slice(1, -1).join(" ");
+  return { firstName: capName(first), middleName: capName(middle), lastName: capName(last) };
+}
+
+function capName(s) {
+  const x = String(s || "").trim();
+  if (!x) return "";
+  // Keep ALL CAPS acronyms but title-case normal
+  if (x === x.toUpperCase()) {
+    return x
+      .split(" ")
+      .map((p) => (p.length <= 2 ? p : p[0] + p.slice(1).toLowerCase()))
+      .join(" ");
+  }
+  return x;
+}
+
+function scoreFields(fields) {
+  let score = 0;
+  if (fields?.birthdate) score += 2;
+  const nameParts = [fields?.firstName, fields?.lastName].filter(Boolean).length;
+  if (nameParts >= 2) score += 2;
+  if (fields?.middleName) score += 1;
+  return score;
+}
+
+// OCR one buffer; returns { text, fields, score }
+async function ocrBuffer(buffer) {
+  let img = buffer;
+
+  // optional preprocess
+  if (sharp) {
+    try {
+      // make it easier for OCR: resize + grayscale + increase contrast-ish
+      img = await sharp(buffer)
+        .rotate() // respect EXIF orientation
+        .resize({ width: 1400, withoutEnlargement: true })
+        .grayscale()
+        .normalize()
+        .toBuffer();
+    } catch (_) {
+      img = buffer; // fallback
+    }
+  }
+
+  const worker = await getOcrWorker();
+
+  // Note: tesseract can sometimes take long; keep route best-effort
+  const result = await worker.recognize(img);
+
+  const text = cleanText(result?.data?.text || "");
+  const birthdate = extractBirthdate(text);
+  const name = extractName(text);
+
+  const fields = {
+    ...(name || {}),
+    ...(birthdate ? { birthdate } : {}),
+  };
+
+  return { text, fields, score: scoreFields(fields) };
+}
+
+// ✅ NEW: scan route (does NOT save anything to cloudinary or DB)
+router.post(
+  "/scan-id",
+  upload.fields([
+    { name: "votersIDImage", maxCount: 1 },
+    { name: "driversLicenseImage", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      const voterBuf = req.files?.votersIDImage?.[0]?.buffer || null;
+      const licBuf = req.files?.driversLicenseImage?.[0]?.buffer || null;
+
+      if (!voterBuf && !licBuf) {
+        return res.status(400).json({ ok: false, error: "No ID images uploaded" });
+      }
+
+      const results = [];
+
+      if (voterBuf) {
+        try {
+          const r = await ocrBuffer(voterBuf);
+          results.push({ source: "votersIDImage", ...r });
+        } catch (e) {
+          results.push({ source: "votersIDImage", text: "", fields: {}, score: 0, error: e?.message });
+        }
+      }
+
+      if (licBuf) {
+        try {
+          const r = await ocrBuffer(licBuf);
+          results.push({ source: "driversLicenseImage", ...r });
+        } catch (e) {
+          results.push({ source: "driversLicenseImage", text: "", fields: {}, score: 0, error: e?.message });
+        }
+      }
+
+      // pick best
+      results.sort((a, b) => (b.score || 0) - (a.score || 0));
+      const best = results[0] || { source: null, fields: {}, score: 0 };
+
+      return res.json({
+        ok: true,
+        source: best.source,
+        confidence: best.score / 5, // rough 0..1
+        fields: best.fields || {},
+      });
+    } catch (e) {
+      console.error("scan-id error:", e);
+      return res.status(500).json({ ok: false, error: "Server error" });
+    }
+  }
+);
 
 module.exports = router;
