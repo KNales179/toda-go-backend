@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 const jwt = require("jsonwebtoken");
 const Admin = require("../models/Admin");
+const requireAdminAuth = require("../middleware/requireAdminAuth");
 
 function signToken(admin) {
   return jwt.sign(
@@ -120,10 +121,17 @@ router.post("/login", async (req, res) => {
  */
 router.get("/me", requireAdminAuth, async (req, res) => {
   try {
-    const admin = await Admin.findById(req.admin.id);
-    if (!admin) return res.status(404).json({ message: "Admin not found" });
-
-    return res.json({ admin: admin.toSafeObject() });
+    // since middleware already loaded admin and put it on req.admin
+    // you can return req.admin or still return safe object from DB
+    return res.json({
+      admin: {
+        id: req.admin.id,
+        role: req.admin.role,
+        username: req.admin.username,
+        email: req.admin.email,
+        name: req.admin.name,
+      },
+    });
   } catch (err) {
     return res.status(500).json({ message: "Failed to load admin" });
   }
