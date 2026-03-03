@@ -145,6 +145,68 @@ router.post("/pwapp/:id/dropoff", async (req, res) => {
   }
 });
 
+// GET /api/pwapp/:id/quote-dropoff  (preview only; no status change)
+router.get("/pwapp/:id/quote-dropoff", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const p = await PwAppPassenger.findById(id).lean();
+    if (!p) return res.status(404).json({ ok: false, error: "passenger not found" });
+    if (p.status !== "ACTIVE") return res.status(409).json({ ok: false, error: "already closed" });
+
+    const meter = await DriverMeter.findOne({ driverId: String(p.driverId) }).lean();
+    const endMeter = meter?.totalMeters ?? p.startMeterMeters;
+
+    const dist = Math.max(0, endMeter - (p.startMeterMeters || 0));
+    const breakdown = computeFareBreakdown(dist, p.passengerType);
+
+    return res.json({
+      ok: true,
+      quote: {
+        passengerId: String(p._id),
+        passengerType: p.passengerType,
+        note: p.note || "",
+        distanceMeters: dist,
+        computedFare: breakdown.total,
+        fareBreakdown: breakdown,
+      },
+    });
+  } catch (e) {
+    console.error("pwapp quote-dropoff error:", e);
+    return res.status(500).json({ ok: false, error: "Server error" });
+  }
+});
+
+// POST /api/pwapp/:id/cancel  (mistake removal; no fare)
+router.post("/pwapp/:id/cancel", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const p = await PwAppPassenger.findById(id);
+    if (!p) return res.status(404).json({ ok: false, error: "passenger not found" });
+    if (p.status !== "ACTIVE") return res.status(409).json({ ok: false, error: "already closed" });
+
+    p.status = "CANCELED";
+    p.canceledAt = new Date();
+    await p.save();
+
+    // ✅ release exactly 1 seat (because /pwapp/add reserved 1)
+    try {
+      await DriverStatus.updateOne(
+        { driverId: new mongoose.Types.ObjectId(p.driverId) },
+        { $inc: { capacityUsed: -1 }, $set: { updatedAt: new Date() } }
+      );
+    } catch (err) {
+      console.error("Passenger cancel seat release failed:", err);
+    }
+
+    return res.json({ ok: true, passenger: p });
+  } catch (e) {
+    console.error("Passenger cancel error:", e);
+    return res.status(500).json({ ok: false, error: "Server error" });
+  }
+});
+
 // POST /api/driver-meter/reset (optional)
 router.post("/driver-meter/reset", async (req, res) => {
   try {
