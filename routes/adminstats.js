@@ -6,6 +6,9 @@ const RideHistory = require("../models/RideHistory");
 const Passenger = require("../models/Passenger");
 const Driver = require("../models/Drivers");
 
+// ✅ add admin auth middleware
+const requireAdminAuth = require("../middleware/requireAdminAuth");
+
 // --- Helper: Build monthly aggregation pipeline ---
 function monthlyAggPipeline() {
   const now = new Date();
@@ -20,12 +23,9 @@ function monthlyAggPipeline() {
       // fall back to ObjectId timestamp if createdAt is missing.
       $addFields: {
         eventDate: {
-          $ifNull: [
-            { $toDate: "$createdAt" },
-            { $toDate: "$_id" }
-          ]
-        }
-      }
+          $ifNull: [{ $toDate: "$createdAt" }, { $toDate: "$_id" }],
+        },
+      },
     },
     {
       $match: {
@@ -50,32 +50,13 @@ function monthlyAggPipeline() {
   ];
 }
 
-
 // ---------- MONTHLY STATS ----------
-router.get("/admin/stats/monthly", async (req, res) => {
+// ✅ protected with admin auth
+router.get("/admin/stats/monthly", requireAdminAuth, async (req, res) => {
   try {
-    const now = new Date();
-    const year = now.getFullYear();
-    const janStart = new Date(year, 0, 1);  // Jan 1
-    const febStart = new Date(year, 1, 1);  // Feb 1
-
-    // 🔍 1) How many RideHistory docs exist in total?
-    const totalTripsAll = await RideHistory.countDocuments({});
-
-    // 🔍 2) How many of those are in January (by createdAt)?
-    const janTripsCount = await RideHistory.countDocuments({
-      createdAt: { $gte: janStart, $lt: febStart },
-    });
-    // 👉 3) Run the existing aggregation (what the dashboard uses)
     const tripsAgg = await RideHistory.aggregate(monthlyAggPipeline());
     const usersAgg = await Passenger.aggregate(monthlyAggPipeline());
     const driversAgg = await Driver.aggregate(monthlyAggPipeline());
-
-    // 🔍 4) Sum what the aggregation sees (all months combined)
-    const totalTripsAgg = tripsAgg.reduce(
-      (sum, row) => sum + (row.count || 0),
-      0
-    );
 
     const map = new Map();
 
@@ -121,9 +102,7 @@ router.get("/admin/stats/monthly", async (req, res) => {
 
     const result = Array.from(map.values())
       .sort((a, b) =>
-        a.year === b.year
-          ? a.monthIndex - b.monthIndex
-          : a.year - b.year
+        a.year === b.year ? a.monthIndex - b.monthIndex : a.year - b.year
       )
       .map((row) => ({
         month: monthNames[row.monthIndex],
@@ -140,11 +119,12 @@ router.get("/admin/stats/monthly", async (req, res) => {
 });
 
 // ---------- WEEKLY STATS (current month, per week) ----------
-router.get("/admin/stats/weekly", async (req, res) => {
+// ✅ protected with admin auth
+router.get("/admin/stats/weekly", requireAdminAuth, async (req, res) => {
   try {
     const now = new Date();
     const year = now.getFullYear();
-    const monthIndex = now.getMonth(); // 0-based 
+    const monthIndex = now.getMonth(); // 0-based
 
     const startOfMonth = new Date(year, monthIndex, 1);
     const endOfMonth = new Date(year, monthIndex + 1, 0, 23, 59, 59, 999);
@@ -153,11 +133,8 @@ router.get("/admin/stats/weekly", async (req, res) => {
       {
         $addFields: {
           eventDate: {
-            $ifNull: [
-              { $toDate: "$createdAt" },
-              { $toDate: "$_id" }
-            ]
-          }
+            $ifNull: [{ $toDate: "$createdAt" }, { $toDate: "$_id" }],
+          },
         },
       },
       {
@@ -184,7 +161,6 @@ router.get("/admin/stats/weekly", async (req, res) => {
         $sort: { "_id.week": 1 },
       },
     ];
-
 
     const tripsAgg = await RideHistory.aggregate(weeklyPipeline);
     const usersAgg = await Passenger.aggregate(weeklyPipeline);
@@ -232,6 +208,7 @@ router.get("/admin/stats/weekly", async (req, res) => {
   }
 });
 
+// ------------------- DEV ROUTES (left unchanged) -------------------
 router.post("/admin/dev/seed-ridehistory", async (req, res) => {
   try {
     const { raw } = req.body;
@@ -271,13 +248,16 @@ router.post("/admin/dev/ridehistory-trim", async (req, res) => {
   try {
     const { month, count } = req.body;
 
-    // month: "2025-09", count: number
     if (!month || typeof month !== "string") {
-      return res.status(400).json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
+      return res
+        .status(400)
+        .json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
     }
     const n = Number(count);
     if (!n || n <= 0) {
-      return res.status(400).json({ error: "Missing or invalid count (must be > 0)." });
+      return res
+        .status(400)
+        .json({ error: "Missing or invalid count (must be > 0)." });
     }
 
     const [yearStr, monthStr] = month.split("-");
@@ -296,7 +276,6 @@ router.post("/admin/dev/ridehistory-trim", async (req, res) => {
     const start = new Date(year, monthIndex, 1);
     const end = new Date(year, monthIndex + 1, 1);
 
-    // 1) Find up to N docs for that month (by createdAt OR _id timestamp)
     const idsToDelete = await RideHistory.aggregate([
       {
         $addFields: {
@@ -305,21 +284,10 @@ router.post("/admin/dev/ridehistory-trim", async (req, res) => {
           },
         },
       },
-      {
-        $match: {
-          eventDate: { $gte: start, $lt: end },
-        },
-      },
-      {
-        // delete the most recent ones first (you can flip to 1 for oldest first)
-        $sort: { eventDate: -1, _id: -1 },
-      },
-      {
-        $limit: n,
-      },
-      {
-        $project: { _id: 1 },
-      },
+      { $match: { eventDate: { $gte: start, $lt: end } } },
+      { $sort: { eventDate: -1, _id: -1 } },
+      { $limit: n },
+      { $project: { _id: 1 } },
     ]);
 
     if (!idsToDelete.length) {
@@ -330,8 +298,6 @@ router.post("/admin/dev/ridehistory-trim", async (req, res) => {
     }
 
     const idList = idsToDelete.map((d) => d._id);
-
-    // 2) Delete them
     const delResult = await RideHistory.deleteMany({ _id: { $in: idList } });
 
     return res.json({
@@ -373,7 +339,6 @@ router.post("/admin/dev/seed-passengers", async (req, res) => {
     }
 
     try {
-      // 🔥 BYPASS MONGOOSE insertMany, use raw Mongo driver
       const rawResult = await Passenger.collection.insertMany(cleaned, {
         ordered: false,
       });
@@ -416,17 +381,20 @@ router.post("/admin/dev/seed-passengers", async (req, res) => {
   }
 });
 
-// ========== DEV: TRIM PASSENGERS BY MONTH ==========
 router.post("/admin/dev/passenger-trim", async (req, res) => {
   try {
     const { month, count } = req.body;
 
     if (!month || typeof month !== "string") {
-      return res.status(400).json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
+      return res
+        .status(400)
+        .json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
     }
     const n = Number(count);
     if (!n || n <= 0) {
-      return res.status(400).json({ error: "Missing or invalid count (must be > 0)." });
+      return res
+        .status(400)
+        .json({ error: "Missing or invalid count (must be > 0)." });
     }
 
     const [yearStr, monthStr] = month.split("-");
@@ -453,12 +421,8 @@ router.post("/admin/dev/passenger-trim", async (req, res) => {
           },
         },
       },
-      {
-        $match: { eventDate: { $gte: start, $lt: end } },
-      },
-      {
-        $sort: { eventDate: -1, _id: -1 },
-      },
+      { $match: { eventDate: { $gte: start, $lt: end } } },
+      { $sort: { eventDate: -1, _id: -1 } },
       { $limit: n },
       { $project: { _id: 1 } },
     ]);
@@ -483,7 +447,6 @@ router.post("/admin/dev/passenger-trim", async (req, res) => {
   }
 });
 
-// ========== DEV: SEED DRIVERS ==========
 router.post("/admin/dev/seed-drivers", async (req, res) => {
   try {
     const { raw } = req.body;
@@ -520,17 +483,20 @@ router.post("/admin/dev/seed-drivers", async (req, res) => {
   }
 });
 
-// ========== DEV: TRIM DRIVERS BY MONTH ==========
 router.post("/admin/dev/driver-trim", async (req, res) => {
   try {
     const { month, count } = req.body;
 
     if (!month || typeof month !== "string") {
-      return res.status(400).json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
+      return res
+        .status(400)
+        .json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
     }
     const n = Number(count);
     if (!n || n <= 0) {
-      return res.status(400).json({ error: "Missing or invalid count (must be > 0)." });
+      return res
+        .status(400)
+        .json({ error: "Missing or invalid count (must be > 0)." });
     }
 
     const [yearStr, monthStr] = month.split("-");
@@ -557,12 +523,8 @@ router.post("/admin/dev/driver-trim", async (req, res) => {
           },
         },
       },
-      {
-        $match: { eventDate: { $gte: start, $lt: end } },
-      },
-      {
-        $sort: { eventDate: -1, _id: -1 },
-      },
+      { $match: { eventDate: { $gte: start, $lt: end } } },
+      { $sort: { eventDate: -1, _id: -1 } },
       { $limit: n },
       { $project: { _id: 1 } },
     ]);
@@ -577,7 +539,6 @@ router.post("/admin/dev/driver-trim", async (req, res) => {
     const idList = idsToDelete.map((d) => d._id);
     const delResult = await Driver.deleteMany({ _id: { $in: idList } });
 
-
     return res.json({
       deletedCount: delResult.deletedCount,
       month,
@@ -588,17 +549,14 @@ router.post("/admin/dev/driver-trim", async (req, res) => {
   }
 });
 
-// ========== DEV: CLEAR ALL GHOST PASSENGERS ==========
 router.delete("/admin/dev/clear-passengers", async (req, res) => {
   try {
-    // Adjust condition depending on how you define ghost users
-    // Example: ghost = no email OR email contains "ghost"
     const result = await Passenger.deleteMany({
       $or: [
         { email: { $exists: false } },
         { email: null },
-        { email: { $regex: /ghost/i } }
-      ]
+        { email: { $regex: /ghost/i } },
+      ],
     });
 
     return res.json({
@@ -610,15 +568,14 @@ router.delete("/admin/dev/clear-passengers", async (req, res) => {
   }
 });
 
-// ========== DEV: CLEAR ALL GHOST DRIVERS ==========
 router.delete("/admin/dev/clear-drivers", async (req, res) => {
   try {
     const result = await Driver.deleteMany({
       $or: [
         { email: { $exists: false } },
         { email: null },
-        { email: { $regex: /ghost/i } }
-      ]
+        { email: { $regex: /ghost/i } },
+      ],
     });
 
     return res.json({
@@ -629,6 +586,5 @@ router.delete("/admin/dev/clear-drivers", async (req, res) => {
     return res.status(500).json({ error: "Failed to clear ghost drivers" });
   }
 });
-
 
 module.exports = router;
