@@ -40,7 +40,74 @@ async function sendPush(to, title, body, extra = {}) {
 }
 
 
+async function computeEligibleTasks(driverId) {
+  const open = await Task.find({
+    driverId: String(driverId),
+    status: { $in: ["PENDING", "ACTIVE"] },
+  }).lean();
 
+  if (!open.length) return [];
+
+  const depIds = open
+    .map((t) => t.dependsOnTaskId)
+    .filter(Boolean)
+    .map((id) => String(id));
+
+  let completedDeps = new Set();
+  if (depIds.length) {
+    const deps = await Task.find({
+      _id: { $in: depIds.map((id) => new mongoose.Types.ObjectId(id)) },
+    })
+      .select("_id status")
+      .lean();
+
+    completedDeps = new Set(
+      deps.filter((d) => d.status === "COMPLETED").map((d) => String(d._id))
+    );
+  }
+
+  return open.filter((t) => {
+    if (!t.dependsOnTaskId) return true;
+    return completedDeps.has(String(t.dependsOnTaskId));
+  });
+}
+
+async function enforceSingleActiveAndPickNearest(driverId, curLat, curLng) {
+  const cur = { lat: Number(curLat), lng: Number(curLng) };
+  const ok = Number.isFinite(cur.lat) && Number.isFinite(cur.lng);
+
+  const eligible = await computeEligibleTasks(driverId);
+
+  let chosen = null;
+  let best = Infinity;
+
+  if (ok) {
+    for (const t of eligible) {
+      const d = haversineMeters(cur, { lat: Number(t.lat), lng: Number(t.lng) });
+      if (d < best) {
+        best = d;
+        chosen = t;
+      }
+    }
+  } else {
+    // if no driver loc, pick oldest eligible
+    chosen = eligible.sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")))[0] || null;
+  }
+
+  await Task.updateMany(
+    { driverId: String(driverId), status: "ACTIVE" },
+    { $set: { status: "PENDING" } }
+  );
+
+  if (chosen) {
+    await Task.updateOne({ _id: chosen._id }, { $set: { status: "ACTIVE" } });
+  }
+
+  return {
+    chosenTaskId: chosen ? String(chosen._id) : null,
+    chosenDistanceMeters: chosen && ok ? Math.round(best) : null,
+  };
+}
 
 // ---------- helpers ----------
 const toRad = (v) => (v * Math.PI) / 180;
@@ -1321,7 +1388,8 @@ router.post("/driver-confirmed", async (req, res) => {
 // ---------- POST /accept-booking ----------
 router.post("/accept-booking", async (req, res) => {
   try {
-    const { bookingId, driverId } = req.body;
+    const { bookingId, driverId, driverLat, driverLng } = req.body;
+
     if (!bookingId || !driverId) {
       return res.status(400).json({ message: "bookingId and driverId are required" });
     }
@@ -1391,67 +1459,80 @@ router.post("/accept-booking", async (req, res) => {
     // 🔄 Return fresh booking
     const fresh = await Booking.findOne({ bookingId }).lean();
 
+    // ✅ Create driver tasks (Pickup + Dropoff) for task-based routing UI
+    // Rule: BOTH tasks start as PENDING. Then we run replan to pick ONE ACTIVE.
+    // Idempotent: only create if tasks do not already exist for this booking
+    try {
+      if (fresh) {
+        const existingCount = await Task.countDocuments({
+          sourceType: "BOOKING",
+          sourceId: String(fresh.bookingId),
+        });
 
-// ✅ Create driver tasks (Pickup + Dropoff) for task-based routing UI
-// Idempotent: only create if tasks do not already exist for this booking
-try {
-  if (fresh) {
-    const existingCount = await Task.countDocuments({
-      sourceType: "BOOKING",
-      sourceId: fresh.bookingId,
-    });
-    if (existingCount === 0) {
-      const pickupTask = await Task.create({
-        driverId: String(driverId),
-        sourceType: "BOOKING",
-        sourceId: fresh.bookingId,
-        taskType: "PICKUP",
-        lat: Number(fresh.pickupLat),
-        lng: Number(fresh.pickupLng),
-        place: fresh.pickupPlace || "",
-        status: "ACTIVE",
-        meta: { passengerId: String(fresh.passengerId || "") },
-      });
+        if (existingCount === 0) {
+          const pickupTask = await Task.create({
+            driverId: String(driverId),
+            sourceType: "BOOKING",
+            sourceId: String(fresh.bookingId),
+            taskType: "PICKUP",
+            lat: Number(fresh.pickupLat),
+            lng: Number(fresh.pickupLng),
+            place: fresh.pickupPlace || "",
+            status: "PENDING",
+            meta: { passengerId: String(fresh.passengerId || "") },
+          });
 
-      await Task.create({
-        driverId: String(driverId),
-        sourceType: "BOOKING",
-        sourceId: fresh.bookingId,
-        taskType: "DROPOFF",
-        lat: Number(fresh.destinationLat),
-        lng: Number(fresh.destinationLng),
-        place: fresh.destinationPlace || "",
-        dependsOnTaskId: pickupTask._id,
-        status: "PENDING",
-        meta: { passengerId: String(fresh.passengerId || "") },
-      });
+          await Task.create({
+            driverId: String(driverId),
+            sourceType: "BOOKING",
+            sourceId: String(fresh.bookingId),
+            taskType: "DROPOFF",
+            lat: Number(fresh.destinationLat),
+            lng: Number(fresh.destinationLng),
+            place: fresh.destinationPlace || "",
+            dependsOnTaskId: pickupTask._id,
+            status: "PENDING",
+            meta: { passengerId: String(fresh.passengerId || "") },
+          });
+        }
+
+        // ✅ After tasks exist: select ONE ACTIVE eligible task (nearest)
+        let lat = Number(driverLat);
+        let lng = Number(driverLng);
+
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+          try {
+            const ds2 = await DriverStatus.findOne({
+              driverId: new mongoose.Types.ObjectId(driverId),
+            })
+              .select("location")
+              .lean();
+            lat = Number(ds2?.location?.latitude);
+            lng = Number(ds2?.location?.longitude);
+          } catch {}
+        }
+
+        await enforceSingleActiveAndPickNearest(driverId, lat, lng);
+      }
+    } catch (e) {
+      console.warn("Task creation/replan failed:", e?.message || e);
     }
-  }
-} catch (e) {
-  console.warn("Task creation failed:", e?.message || e);
-}
 
-    // 🔔 NEW: send push notification to passenger  
+    // 🔔 send push notification to passenger
     try {
       if (fresh && fresh.passengerId) {
-        const passenger = await Passenger.findById(fresh.passengerId).select(
-          "pushToken"
-        );
+        const passenger = await Passenger.findById(fresh.passengerId).select("pushToken");
         if (passenger?.pushToken) {
           await sendPush(
             passenger.pushToken,
             "TODA Go",
             "A driver accepted your booking.",
-            {
-              bookingId: fresh.bookingId,
-              driverId: String(driverId),
-            }
+            { bookingId: fresh.bookingId, driverId: String(driverId) }
           );
-        } else {}
+        }
       }
     } catch (err) {
       console.error("❌ Error sending accept-booking push:", err);
-      // don't fail the API just because push failed
     }
 
     return res.status(200).json({
@@ -1467,7 +1548,8 @@ try {
 // ---------- POST /cancel-booking ----------
 router.post("/cancel-booking", async (req, res) => {
   try {
-    const { bookingId, cancelledBy } = req.body; // "driver" | "passenger" | "system"
+    const { bookingId, cancelledBy, driverLat, driverLng } = req.body; // "driver" | "passenger" | "system"
+
     if (!bookingId) {
       return res.status(400).json({ message: "bookingId required" });
     }
@@ -1479,6 +1561,16 @@ router.post("/cancel-booking", async (req, res) => {
     if (b.status === "accepted" && b.driverId) {
       await releaseSeats({ driverId: b.driverId, booking: b, reason: "cancel" });
     }
+
+    // ✅ cancel all open tasks for this booking (keep completed as history)
+    await Task.updateMany(
+      {
+        sourceType: "BOOKING",
+        sourceId: String(bookingId),
+        status: { $in: ["PENDING", "ACTIVE"] },
+      },
+      { $set: { status: "CANCELED" } }
+    );
 
     const updated = await Booking.findOneAndUpdate(
       { bookingId },
@@ -1493,6 +1585,30 @@ router.post("/cancel-booking", async (req, res) => {
       },
       { new: true }
     ).lean();
+
+    // ✅ replan (pick next ACTIVE task among remaining bookings)
+    if (b.driverId) {
+      let lat = Number(driverLat);
+      let lng = Number(driverLng);
+
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        try {
+          const ds2 = await DriverStatus.findOne({
+            driverId: new mongoose.Types.ObjectId(b.driverId),
+          })
+            .select("location")
+            .lean();
+          lat = Number(ds2?.location?.latitude);
+          lng = Number(ds2?.location?.longitude);
+        } catch {}
+      }
+
+      try {
+        await enforceSingleActiveAndPickNearest(b.driverId, lat, lng);
+      } catch (e) {
+        console.warn("cancel-booking replan failed:", e?.message || e);
+      }
+    }
 
     // 🔔 Notify driver ONLY if passenger cancelled and there is a driver
     try {
@@ -1509,11 +1625,10 @@ router.post("/cancel-booking", async (req, res) => {
               passengerId: String(b.passengerId || ""),
             }
           );
-        } else {}
+        }
       }
     } catch (err) {
       console.error("❌ Error sending cancel notification to driver:", err);
-      // Don't fail the API just because push failed
     }
 
     return res.status(200).json({ message: "Booking cancelled", booking: updated });
@@ -1526,7 +1641,8 @@ router.post("/cancel-booking", async (req, res) => {
 // ---------- POST /complete-booking ----------
 router.post("/complete-booking", async (req, res) => {
   try {
-    const { bookingId } = req.body;
+    const { bookingId, driverLat, driverLng } = req.body;
+
     if (!bookingId) {
       return res.status(400).json({ message: "bookingId required" });
     }
@@ -1538,6 +1654,16 @@ router.post("/complete-booking", async (req, res) => {
     if ((b.status === "accepted" || b.status === "enroute") && b.driverId) {
       await releaseSeats({ driverId: b.driverId, booking: b, reason: "complete" });
     }
+
+    // ✅ cancel all open tasks for this booking (keep completed as history)
+    await Task.updateMany(
+      {
+        sourceType: "BOOKING",
+        sourceId: String(bookingId),
+        status: { $in: ["PENDING", "ACTIVE"] },
+      },
+      { $set: { status: "CANCELED" } }
+    );
 
     const updated = await Booking.findOneAndUpdate(
       { bookingId },
@@ -1552,6 +1678,31 @@ router.post("/complete-booking", async (req, res) => {
       { new: true }
     );
 
+    // ✅ replan (pick next ACTIVE task among remaining bookings)
+    if (b.driverId) {
+      let lat = Number(driverLat);
+      let lng = Number(driverLng);
+
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        try {
+          const ds2 = await DriverStatus.findOne({
+            driverId: new mongoose.Types.ObjectId(b.driverId),
+          })
+            .select("location")
+            .lean();
+          lat = Number(ds2?.location?.latitude);
+          lng = Number(ds2?.location?.longitude);
+        } catch {}
+      }
+
+      try {
+        await enforceSingleActiveAndPickNearest(b.driverId, lat, lng);
+      } catch (e) {
+        console.warn("complete-booking replan failed:", e?.message || e);
+      }
+    }
+
+    // --- your RideHistory save block stays the same ---
     try {
       const niceType = ((t) => {
         const up = String(t || "CLASSIC").toUpperCase();
@@ -1562,8 +1713,7 @@ router.post("/complete-booking", async (req, res) => {
 
       const seats = Number(updated.partySize || 1);
       const baseFare = Number(updated.fare || 0);
-      const totalFare =
-        niceType === "Group" ? baseFare * (Number.isFinite(seats) ? seats : 1) : baseFare;
+      const totalFare = niceType === "Group" ? baseFare * (Number.isFinite(seats) ? seats : 1) : baseFare;
 
       await RideHistory.create({
         bookingId: updated.bookingId,
@@ -1586,7 +1736,6 @@ router.post("/complete-booking", async (req, res) => {
         bookingType: niceType,
         groupCount: Number.isFinite(seats) ? seats : 1,
 
-        // 🔵 NEW: persist “book for someone else” audit
         bookedFor: !!updated.bookedFor,
         riderName: updated.riderName || null,
         riderPhone: updated.riderPhone || null,
@@ -1597,12 +1746,10 @@ router.post("/complete-booking", async (req, res) => {
       console.error("❌ Error saving ride history:", e);
     }
 
-    // 🔔 Send push notification to passenger (no driver push here)
+    // 🔔 passenger push
     try {
       if (updated && updated.passengerId) {
-        const passenger = await Passenger.findById(updated.passengerId).select(
-          "pushToken"
-        );
+        const passenger = await Passenger.findById(updated.passengerId).select("pushToken");
         if (passenger?.pushToken) {
           await sendPush(
             passenger.pushToken,
@@ -1613,14 +1760,11 @@ router.post("/complete-booking", async (req, res) => {
               driverId: String(updated.driverId || ""),
             }
           );
-        } else {}
+        }
       }
     } catch (err) {
       console.error("❌ Error sending complete-booking push:", err);
-      // don't fail the API just because push failed
     }
-
-
 
     return res.status(200).json({
       message: "Booking marked as completed and history saved!",
