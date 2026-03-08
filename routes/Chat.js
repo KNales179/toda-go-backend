@@ -4,6 +4,9 @@ const router = express.Router();
 const ChatMessage = require("../models/ChatMessage");
 const Driver = require("../models/Drivers");
 const Passenger = require("../models/Passenger");
+const ChatConversation = require("../models/ChatConversation");
+const { upsertConversationConnection } = require("../utils/chatConversation");
+const { deleteExpiredChats } = require("../utils/deleteExpiredChats");
 
 function buildDriverName(d) {
   if (!d) return "Driver";
@@ -52,14 +55,22 @@ function getRoomForPair(driverId, passengerId) {
 // --- FETCH MESSAGES FOR A DRIVER–PASSENGER PAIR ---
 router.get("/:driverId/:passengerId", async (req, res) => {
   try {
-    const { driverId, passengerId } = req.params;
+    await deleteExpiredChats();
 
+    const { driverId, passengerId } = req.params;
     if (!driverId || !passengerId) {
       return res.status(400).json({ message: "driverId and passengerId required" });
     }
 
-    const messages = await ChatMessage.find({ driverId, passengerId })
-      .sort({ createdAt: 1 });
+    const convo = await ChatConversation.findOne({ driverId, passengerId });
+
+    if (convo?.expiresAt && new Date(convo.expiresAt) <= new Date()) {
+      await ChatMessage.deleteMany({ driverId, passengerId });
+      await ChatConversation.deleteOne({ _id: convo._id });
+      return res.status(200).json([]);
+    }
+
+    const messages = await ChatMessage.find({ driverId, passengerId }).sort({ createdAt: 1 });
 
     return res.status(200).json(messages);
   } catch (err) {
@@ -104,6 +115,12 @@ router.post("/send", async (req, res) => {
     });
 
     await newMsg.save();
+    await upsertConversationConnection({
+      driverId,
+      passengerId,
+      bookingId: bookingId ?? null,
+      connectedAt: new Date(),
+    });
 
     const pairRoom = getRoomForPair(driverId, passengerId);
 
@@ -227,8 +244,8 @@ router.patch("/delivered", async (req, res) => {
 // Passenger sessions → all drivers they've chatted with
 router.get("/sessions/passenger/:passengerId", async (req, res) => {
   try {
+    await deleteExpiredChats();
     const { passengerId } = req.params;
-
     const chats = await ChatMessage.find({ passengerId }).sort({ createdAt: -1 });
 
     const sessionsMap = new Map();
@@ -282,10 +299,9 @@ router.get("/sessions/passenger/:passengerId", async (req, res) => {
 // Driver sessions → all passengers they've chatted with
 router.get("/sessions/driver/:driverId", async (req, res) => {
   try {
+    await deleteExpiredChats();
     const { driverId } = req.params;
-
     const chats = await ChatMessage.find({ driverId }).sort({ createdAt: -1 });
-
     const sessionsMap = new Map();
 
     for (const chat of chats) {
@@ -331,6 +347,23 @@ router.get("/sessions/driver/:driverId", async (req, res) => {
   } catch (err) {
     console.error("❌ driver sessions error:", err);
     res.status(500).json({ message: "Server error fetching driver sessions" });
+  }
+});
+
+router.get("/conversation/:driverId/:passengerId", async (req, res) => {
+  try {
+    const { driverId, passengerId } = req.params;
+
+    const convo = await ChatConversation.findOne({ driverId, passengerId });
+
+    if (!convo) {
+      return res.status(404).json({ message: "Conversation not found" });
+    }
+
+    return res.status(200).json(convo);
+  } catch (err) {
+    console.error("❌ conversation fetch error:", err);
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
