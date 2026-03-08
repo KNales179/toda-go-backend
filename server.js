@@ -44,11 +44,49 @@ app.use((req, res, next) => {
 
 io.on("connection", (socket) => {
   console.log("🔌 socket connected:", socket.id);
+
+  socket.on("sessions:subscribe", ({ passengerId, driverId, role }) => {
+    try {
+      const userId =
+        role === "passenger" ? passengerId :
+        role === "driver" ? driverId :
+        null;
+
+      if (!userId) return;
+
+      socket.join(String(userId));
+      console.log(`📥 socket ${socket.id} joined user room: ${userId}`);
+    } catch (err) {
+      console.error("❌ sessions:subscribe error:", err);
+    }
+  });
+
+  socket.on("chat:join", ({ driverId, passengerId }) => {
+    try {
+      if (!driverId || !passengerId) return;
+      const room = `chat:${driverId}:${passengerId}`;
+      socket.join(room);
+      console.log(`💬 socket ${socket.id} joined chat room: ${room}`);
+    } catch (err) {
+      console.error("❌ chat:join error:", err);
+    }
+  });
+
+  socket.on("chat:leave", ({ driverId, passengerId }) => {
+    try {
+      if (!driverId || !passengerId) return;
+      const room = `chat:${driverId}:${passengerId}`;
+      socket.leave(room);
+      console.log(`🚪 socket ${socket.id} left chat room: ${room}`);
+    } catch (err) {
+      console.error("❌ chat:leave error:", err);
+    }
+  });
+
   socket.on("disconnect", () => {
     console.log("🔌 socket disconnected:", socket.id);
   });
 });
-
 // --- Routes ---
 const passengerRoutes = require("./routes/Passengerauth");
 const driverRoutes = require("./routes/Driverauth");
