@@ -8,7 +8,24 @@ const ChatConversation = require("../models/ChatConversation");
 const { upsertConversationConnection } = require("../utils/chatConversation");
 const { deleteExpiredChats } = require("../utils/deleteExpiredChats");
 const upload = require("../middleware/upload");
-const { uploadBufferToCloudinary } = require("../utils/cloudinaryConfig");
+const multer = require("multer");
+const streamifier = require("streamifier");
+const cloudinary = require("../utils/cloudinaryConfig");
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+});
+
+function uploadBufferToCloudinary(buffer, options = {}) {
+  return new Promise((resolve, reject) => {
+    const up = cloudinary.uploader.upload_stream(options, (err, result) => {
+      if (err) return reject(err);
+      resolve(result);
+    });
+    streamifier.createReadStream(buffer).pipe(up);
+  });
+}
 
 function buildDriverName(d) {
   if (!d) return "Driver";
@@ -377,14 +394,14 @@ router.post("/send-image", upload.single("image"), async (req, res) => {
       bookingId,
       senderId,
       senderRole,
-      message
+      message,
     } = req.body;
 
     if (!driverId || !passengerId || !senderId || !senderRole) {
       return res.status(400).json({ message: "Missing fields" });
     }
 
-    if (!req.file) {
+    if (!req.file?.buffer) {
       return res.status(400).json({ message: "No image uploaded" });
     }
 
@@ -395,11 +412,11 @@ router.post("/send-image", upload.single("image"), async (req, res) => {
     const recipientRole = senderRole === "driver" ? "passenger" : "driver";
     const recipientId = senderRole === "driver" ? passengerId : driverId;
 
-    const uploadResult = await uploadBufferToCloudinary(req.file.buffer, {
+    const up = await uploadBufferToCloudinary(req.file.buffer, {
       folder: "toda-go/chat-images",
       resource_type: "image",
       transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
-      public_id: `chat_${driverId}_${passengerId}_${Date.now()}`
+      public_id: `chat_${driverId}_${passengerId}_${Date.now()}`,
     });
 
     const newMsg = new ChatMessage({
@@ -412,11 +429,12 @@ router.post("/send-image", upload.single("image"), async (req, res) => {
       recipientRole,
       messageType: "image",
       message: String(message || "").trim(),
-      imageUrl: uploadResult.secure_url,
-      imagePublicId: uploadResult.public_id,
+      imageUrl: up.secure_url,
+      imagePublicId: up.public_id,
       delivered: true,
       deliveredAt: new Date(),
-      seen: false
+      seen: false,
+      seenAt: null,
     });
 
     await newMsg.save();
@@ -425,11 +443,10 @@ router.post("/send-image", upload.single("image"), async (req, res) => {
     req.io?.to(passengerId).emit("sessions:update");
     req.io?.emit("sessions:update");
 
-    res.status(201).json(newMsg);
-
+    return res.status(201).json(newMsg);
   } catch (err) {
     console.error("CHAT_IMAGE_SEND_ERROR", err);
-    res.status(500).json({ message: "Server error sending image" });
+    return res.status(500).json({ message: "Server error sending image" });
   }
 });
 
