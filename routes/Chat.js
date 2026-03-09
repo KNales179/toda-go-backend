@@ -8,7 +8,7 @@ const ChatConversation = require("../models/ChatConversation");
 const { upsertConversationConnection } = require("../utils/chatConversation");
 const { deleteExpiredChats } = require("../utils/deleteExpiredChats");
 const upload = require("../middleware/upload");
-const { uploadBufferToCloudinary } = require("../utils/cloudinary");
+const { uploadBufferToCloudinary } = require("../utils/cloudinaryConfig");
 
 function buildDriverName(d) {
   if (!d) return "Driver";
