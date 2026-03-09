@@ -7,7 +7,6 @@ const Passenger = require("../models/Passenger");
 const ChatConversation = require("../models/ChatConversation");
 const { upsertConversationConnection } = require("../utils/chatConversation");
 const { deleteExpiredChats } = require("../utils/deleteExpiredChats");
-const upload = require("../middleware/upload");
 const multer = require("multer");
 const streamifier = require("streamifier");
 const cloudinary = require("../utils/cloudinaryConfig");
