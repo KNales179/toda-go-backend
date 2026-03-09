@@ -7,6 +7,8 @@ const Passenger = require("../models/Passenger");
 const ChatConversation = require("../models/ChatConversation");
 const { upsertConversationConnection } = require("../utils/chatConversation");
 const { deleteExpiredChats } = require("../utils/deleteExpiredChats");
+const upload = require("../middleware/upload");
+const { uploadBufferToCloudinary } = require("../utils/cloudinary");
 
 function buildDriverName(d) {
   if (!d) return "Driver";
@@ -364,6 +366,70 @@ router.get("/conversation/:driverId/:passengerId", async (req, res) => {
   } catch (err) {
     console.error("❌ conversation fetch error:", err);
     return res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.post("/send-image", upload.single("image"), async (req, res) => {
+  try {
+    const {
+      driverId,
+      passengerId,
+      bookingId,
+      senderId,
+      senderRole,
+      message
+    } = req.body;
+
+    if (!driverId || !passengerId || !senderId || !senderRole) {
+      return res.status(400).json({ message: "Missing fields" });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ message: "No image uploaded" });
+    }
+
+    if (!["driver", "passenger"].includes(senderRole)) {
+      return res.status(400).json({ message: "Invalid senderRole" });
+    }
+
+    const recipientRole = senderRole === "driver" ? "passenger" : "driver";
+    const recipientId = senderRole === "driver" ? passengerId : driverId;
+
+    const uploadResult = await uploadBufferToCloudinary(req.file.buffer, {
+      folder: "toda-go/chat-images",
+      resource_type: "image",
+      transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
+      public_id: `chat_${driverId}_${passengerId}_${Date.now()}`
+    });
+
+    const newMsg = new ChatMessage({
+      driverId,
+      passengerId,
+      bookingId: bookingId ? Number(bookingId) : null,
+      senderId,
+      senderRole,
+      recipientId,
+      recipientRole,
+      messageType: "image",
+      message: String(message || "").trim(),
+      imageUrl: uploadResult.secure_url,
+      imagePublicId: uploadResult.public_id,
+      delivered: true,
+      deliveredAt: new Date(),
+      seen: false
+    });
+
+    await newMsg.save();
+
+    req.io?.to(driverId).emit("sessions:update");
+    req.io?.to(passengerId).emit("sessions:update");
+    req.io?.emit("sessions:update");
+
+    res.status(201).json(newMsg);
+
+  } catch (err) {
+    console.error("CHAT_IMAGE_SEND_ERROR", err);
+    res.status(500).json({ message: "Server error sending image" });
   }
 });
 

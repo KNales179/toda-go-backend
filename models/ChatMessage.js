@@ -21,12 +21,14 @@ const ChatMessageSchema = new mongoose.Schema(
       enum: ["passenger", "driver"],
       required: true,
     },
-
+    messageType: { type: String, enum: ["text", "image"], default: "text" },
     message: {
       type: String,
-      required: true,
+      default: "",
       trim: true,
     },
+    imageUrl: { type: String, default: null },
+    imagePublicId: { type: String, default: null },
 
     delivered: { type: Boolean, default: false },
     deliveredAt: { type: Date, default: null },
