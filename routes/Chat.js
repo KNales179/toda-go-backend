@@ -5,6 +5,7 @@ const ChatMessage = require("../models/ChatMessage");
 const Driver = require("../models/Drivers");
 const Passenger = require("../models/Passenger");
 const ChatConversation = require("../models/ChatConversation");
+const requireUserAuth = require("../middleware/requireUserAuth");
 const { upsertConversationConnection } = require("../utils/chatConversation");
 const { deleteExpiredChats } = require("../utils/deleteExpiredChats");
 const multer = require("multer");
@@ -66,6 +67,19 @@ function buildPassengerName(p) {
   );
 }
 
+router.use(requireUserAuth);
+
+function ensureChatAccess(req, res, driverId, passengerId) {
+  const userId = String(req.user?.sub || "");
+  const role = String(req.user?.role || "").toLowerCase();
+
+  if (role === "driver" && userId === String(driverId)) return true;
+  if (role === "passenger" && userId === String(passengerId)) return true;
+
+  res.status(403).json({ message: "Forbidden" });
+  return false;
+}
+
 function getRoomForPair(driverId, passengerId) {
   return `chat:${driverId}:${passengerId}`;
 }
@@ -79,6 +93,8 @@ router.get("/:driverId/:passengerId", async (req, res) => {
     if (!driverId || !passengerId) {
       return res.status(400).json({ message: "driverId and passengerId required" });
     }
+
+    if (!ensureChatAccess(req, res, driverId, passengerId)) return;
 
     const convo = await ChatConversation.findOne({ driverId, passengerId });
 
@@ -100,15 +116,20 @@ router.get("/:driverId/:passengerId", async (req, res) => {
 // --- SEND MESSAGE ---
 router.post("/send", async (req, res) => {
   try {
-    const { driverId, passengerId, bookingId, senderId, senderRole, message } = req.body;
+    const { driverId, passengerId, bookingId, message } = req.body;
 
-    if (!driverId || !passengerId || !senderId || !senderRole || !message?.trim()) {
+    const senderId = String(req.user.sub || "");
+    const senderRole = String(req.user.role || "").toLowerCase();
+
+    if (!driverId || !passengerId || !message?.trim()) {
       return res.status(400).json({ message: "Missing fields" });
     }
 
     if (!["driver", "passenger"].includes(senderRole)) {
       return res.status(400).json({ message: "Invalid senderRole" });
     }
+
+    if (!ensureChatAccess(req, res, driverId, passengerId)) return;
 
     const recipientRole = senderRole === "driver" ? "passenger" : "driver";
     const recipientId = senderRole === "driver" ? passengerId : driverId;
@@ -158,15 +179,20 @@ router.post("/send", async (req, res) => {
 // --- MARK PAIR MESSAGES AS SEEN BY CURRENT USER ---
 router.patch("/seen", async (req, res) => {
   try {
-    const { driverId, passengerId, viewerId, viewerRole } = req.body;
+    const { driverId, passengerId } = req.body;
 
-    if (!driverId || !passengerId || !viewerId || !viewerRole) {
-      return res.status(400).json({ message: "driverId, passengerId, viewerId, viewerRole are required" });
+    const viewerId = String(req.user.sub || "");
+    const viewerRole = String(req.user.role || "").toLowerCase();
+
+    if (!driverId || !passengerId) {
+      return res.status(400).json({ message: "driverId and passengerId are required" });
     }
 
     if (!["driver", "passenger"].includes(viewerRole)) {
       return res.status(400).json({ message: "Invalid viewerRole" });
     }
+
+    if (!ensureChatAccess(req, res, driverId, passengerId)) return;
 
     const result = await ChatMessage.updateMany(
       {
@@ -211,15 +237,20 @@ router.patch("/seen", async (req, res) => {
 // --- MARK PAIR MESSAGES AS DELIVERED TO CURRENT USER ---
 router.patch("/delivered", async (req, res) => {
   try {
-    const { driverId, passengerId, viewerId, viewerRole } = req.body;
+    const { driverId, passengerId } = req.body;
 
-    if (!driverId || !passengerId || !viewerId || !viewerRole) {
-      return res.status(400).json({ message: "driverId, passengerId, viewerId, viewerRole are required" });
+    const viewerId = String(req.user.sub || "");
+    const viewerRole = String(req.user.role || "").toLowerCase();
+
+    if (!driverId || !passengerId) {
+      return res.status(400).json({ message: "driverId and passengerId are required" });
     }
 
     if (!["driver", "passenger"].includes(viewerRole)) {
       return res.status(400).json({ message: "Invalid viewerRole" });
     }
+
+    if (!ensureChatAccess(req, res, driverId, passengerId)) return;
 
     const result = await ChatMessage.updateMany(
       {
@@ -264,6 +295,9 @@ router.get("/sessions/passenger/:passengerId", async (req, res) => {
   try {
     await deleteExpiredChats();
     const { passengerId } = req.params;
+    if (String(req.user.role || "").toLowerCase() !== "passenger" || String(req.user.sub || "") !== String(passengerId)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
     const chats = await ChatMessage.find({ passengerId }).sort({ createdAt: -1 });
 
     const sessionsMap = new Map();
@@ -319,6 +353,9 @@ router.get("/sessions/driver/:driverId", async (req, res) => {
   try {
     await deleteExpiredChats();
     const { driverId } = req.params;
+    if (String(req.user.role || "").toLowerCase() !== "driver" || String(req.user.sub || "") !== String(driverId)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
     const chats = await ChatMessage.find({ driverId }).sort({ createdAt: -1 });
     const sessionsMap = new Map();
 
@@ -371,6 +408,7 @@ router.get("/sessions/driver/:driverId", async (req, res) => {
 router.get("/conversation/:driverId/:passengerId", async (req, res) => {
   try {
     const { driverId, passengerId } = req.params;
+    if (!ensureChatAccess(req, res, driverId, passengerId)) return;
 
     const convo = await ChatConversation.findOne({ driverId, passengerId });
 
@@ -391,12 +429,13 @@ router.post("/send-image", upload.single("image"), async (req, res) => {
       driverId,
       passengerId,
       bookingId,
-      senderId,
-      senderRole,
       message,
     } = req.body;
 
-    if (!driverId || !passengerId || !senderId || !senderRole) {
+    const senderId = String(req.user.sub || "");
+    const senderRole = String(req.user.role || "").toLowerCase();
+
+    if (!driverId || !passengerId) {
       return res.status(400).json({ message: "Missing fields" });
     }
 
@@ -407,6 +446,7 @@ router.post("/send-image", upload.single("image"), async (req, res) => {
     if (!["driver", "passenger"].includes(senderRole)) {
       return res.status(400).json({ message: "Invalid senderRole" });
     }
+    if (!ensureChatAccess(req, res, driverId, passengerId)) return;
 
     const recipientRole = senderRole === "driver" ? "passenger" : "driver";
     const recipientId = senderRole === "driver" ? passengerId : driverId;

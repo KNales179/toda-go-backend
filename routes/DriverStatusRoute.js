@@ -1,13 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
-
+const requireUserAuth = require('../middleware/requireUserAuth');
 const Driver = require('../models/Drivers');
 const DriverStatus = require('../models/DriverStatus');
 const DriverPresence = require('../models/DriverPresence');
 const DriverMeter = require('../models/DriverMeter');
 
 // --- helpers ---
+router.use(requireUserAuth);
 const isObjectId = (s) => mongoose.Types.ObjectId.isValid(String(s || ''));
 
 function sanitizeCap(n) {
@@ -52,9 +53,14 @@ async function touchPresence(driverId, when = new Date()) {
 // POST /api/driver-status  ➜ toggle Online/Offline
 router.post('/driver-status', async (req, res) => {
   try {
-    const { driverId, isOnline, location, currentTodaId, inTodaZone } = req.body;
-    if (!driverId) return res.status(400).json({ error: 'driverId is required' });
-    if (!isObjectId(driverId)) return res.status(400).json({ error: 'Invalid driverId' });
+    const { isOnline, location, currentTodaId, inTodaZone } = req.body;
+
+    if (String(req.user?.role || '').toLowerCase() !== 'driver') {
+      return res.status(403).json({ error: 'Drivers only' });
+    }
+
+    const driverId = String(req.user.sub || '');
+    if (!isObjectId(driverId)) return res.status(401).json({ error: 'Invalid authenticated driver id' });
 
     const normLoc = normalizeLocation(location);
 
@@ -142,9 +148,14 @@ return res.status(200).json({ message: 'Driver is online (capacity synced)', sta
 // POST /api/driver-heartbeat  ➜ keep alive + presence extend
 router.post('/driver-heartbeat', async (req, res) => {
   try {
-    const { driverId, location, currentTodaId, inTodaZone } = req.body;
-    if (!driverId) return res.status(400).json({ error: 'driverId is required' });
-    if (!isObjectId(driverId)) return res.status(400).json({ error: 'Invalid driverId' });
+    const { location, currentTodaId, inTodaZone } = req.body;
+
+    if (String(req.user?.role || '').toLowerCase() !== 'driver') {
+      return res.status(403).json({ error: 'Drivers only' });
+    }
+
+    const driverId = String(req.user.sub || '');
+    if (!isObjectId(driverId)) return res.status(401).json({ error: 'Invalid authenticated driver id' });
     if (!location || (typeof location.lat !== 'number' && typeof location.latitude !== 'number')) {
       return res.status(400).json({ error: 'location {lat,lng} or {latitude,longitude} required' });
     }
@@ -227,6 +238,9 @@ return res.status(200).json({ ok: true, updatedAt: status.updatedAt, status });
 router.get('/driver-status/:driverId', async (req, res) => {
   try {
     const { driverId } = req.params;
+    if (String(req.user?.role || '').toLowerCase() !== 'driver' || String(req.user.sub || '') !== String(driverId)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     if (!driverId) return res.status(400).json({ message: 'driverId required' });
     if (!isObjectId(driverId)) return res.status(400).json({ error: 'Invalid driverId' });
 
