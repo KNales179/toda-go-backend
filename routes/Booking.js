@@ -1565,7 +1565,7 @@ router.post("/accept-booking", requireUserAuth, async (req, res) => {
 // ---------- POST /cancel-booking ----------
 router.post("/cancel-booking", async (req, res) => {
   try {
-    const { bookingId, cancelledBy, driverLat, driverLng } = req.body; // "driver" | "passenger" | "system"
+    const { bookingId, cancelledBy, driverLat, driverLng } = req.body;
 
     if (!bookingId) {
       return res.status(400).json({ message: "bookingId required" });

@@ -3,7 +3,9 @@ const express = require("express");
 const router = express.Router();
 const mongoose = require("mongoose");
 const Task = require("../models/Task");
+const requireUserAuth = require("../middleware/requireUserAuth");haversineMeters
 
+router.use(requireUserAuth);
 function haversineMeters(a, b) {
   const toRad = (v) => (v * Math.PI) / 180;
   const R = 6371000;
@@ -91,6 +93,9 @@ async function enforceSingleActiveAndPickNearest(driverId, curLat, curLng) {
 router.get("/tasks/:driverId", async (req, res) => {
   try {
     const { driverId } = req.params;
+    if (String(req.user?.role || "").toLowerCase() !== "driver" || String(req.user.sub || "") !== String(driverId)) {
+      return res.status(403).json({ ok: false, error: "Forbidden" });
+    }
     const tasks = await Task.find({
       driverId: String(driverId),
       status: { $ne: "CANCELED" },
@@ -107,8 +112,13 @@ router.get("/tasks/:driverId", async (req, res) => {
 // POST /api/tasks/replan  Body: { driverId, lat, lng }
 router.post("/tasks/replan", async (req, res) => {
   try {
-    const { driverId, lat, lng } = req.body || {};
-    if (!driverId) return res.status(400).json({ ok: false, error: "driverId required" });
+    const { lat, lng } = req.body || {};
+
+    if (String(req.user?.role || "").toLowerCase() !== "driver") {
+      return res.status(403).json({ ok: false, error: "Drivers only" });
+    }
+
+    const driverId = String(req.user.sub || "");
 
     const pick = await enforceSingleActiveAndPickNearest(driverId, lat, lng);
 
@@ -133,7 +143,13 @@ router.post("/tasks/:taskId/complete", async (req, res) => {
     const { driverLat, driverLng } = req.body || {};
 
     const t = await Task.findById(taskId);
+    if (String(req.user?.role || "").toLowerCase() !== "driver") {
+      return res.status(403).json({ ok: false, error: "Drivers only" });
+    }
     if (!t) return res.status(404).json({ ok: false, error: "Task not found" });
+    if (String(t.driverId) !== String(req.user.sub || "")) {
+      return res.status(403).json({ ok: false, error: "Forbidden" });
+    }
 
     if (t.status !== "COMPLETED") {
       t.status = "COMPLETED";

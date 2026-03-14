@@ -6,7 +6,9 @@ const router = express.Router();
 const RideHistory = require("../models/RideHistory");
 const Driver = require("../models/Drivers"); 
 const Passenger = require("../models/Passenger"); 
+const requireUserAuth = require("../middleware/requireUserAuth");
 
+router.use(requireUserAuth);
 async function reverseGeocodeORS(lat, lng) {
   try {
     if (!process.env.ORS_API_KEY) {
@@ -66,10 +68,17 @@ router.get("/rides", async (_req, res) => {
    plus server-side reverse geocoding for missing place names */
 router.get("/ridehistory", async (req, res) => {
   try {
-    const { passengerId = "", driverId = "" } = req.query;
+    const role = String(req.user?.role || "").toLowerCase();
+    const userId = String(req.user?.sub || "").trim();
     const filter = {};
-    if (passengerId) filter.passengerId = String(passengerId).trim();
-    if (driverId) filter.driverId = String(driverId).trim();
+
+    if (role === "passenger") {
+      filter.passengerId = userId;
+    } else if (role === "driver") {
+      filter.driverId = userId;
+    } else {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     const rides = await RideHistory.find(filter)
       .sort({ completedAt: -1, _id: -1 })
@@ -265,10 +274,30 @@ router.get("/ridehistory", async (req, res) => {
 
 router.delete("/ridehistory/:id", async (req, res) => {
   const { id } = req.params;
+  const role = String(req.user?.role || "").toLowerCase();
+  const userId = String(req.user?.sub || "");
   try {
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: "invalid_id" });
+    }
+
+    const ride = await RideHistory.findById(id).lean();
+
+    if (!ride) {
+      return res.status(404).json({ error: "not_found" });
+    }
+
+    if (role === "passenger") {
+      if (String(ride.passengerId || "") !== userId) {
+        return res.status(403).json({ error: "forbidden" });
+      }
+    } else if (role === "driver") {
+      if (String(ride.driverId || "") !== userId) {
+        return res.status(403).json({ error: "forbidden" });
+      }
+    } else {
+      return res.status(403).json({ error: "forbidden" });
     }
 
     const result = await RideHistory.deleteOne({ _id: new mongoose.Types.ObjectId(id) });

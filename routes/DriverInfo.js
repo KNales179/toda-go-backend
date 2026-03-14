@@ -3,87 +3,169 @@ const router = express.Router();
 const jwt = require("jsonwebtoken");
 
 const Driver = require("../models/Drivers");
+const Booking = require("../models/Bookings");
 const upload = require("../middleware/upload");
+const requireUserAuth = require("../middleware/requireUserAuth");
 
-router.get("/driver/:id", async (req, res) => {
+const DRIVER_SELF_FIELDS = [
+  "profileID",
+  "isLucenaVoter",
+  "votingLocation",
+  "createdAt",
+  "driverFirstName",
+  "driverMiddleName",
+  "driverLastName",
+  "driverName",
+  "driverSuffix",
+  "email",
+  "driverPhone",
+  "todaName",
+  "franchiseNumber",
+  "sector",
+  "experienceYears",
+  "gender",
+  "driverBirthdate",
+  "homeAddress",
+  "selfieImage",
+  "licenseId",
+  "restriction",
+  "isPresident",
+  "todaPresName",
+  "driverVerified",
+  "isVerified",
+  "plateNumber",
+  "capacity",
+].join(" ");
+
+const DRIVER_RELATED_FIELDS = [
+  "createdAt",
+  "driverFirstName",
+  "driverMiddleName",
+  "driverLastName",
+  "driverName",
+  "driverSuffix",
+  "todaName",
+  "franchiseNumber",
+  "sector",
+  "experienceYears",
+  "selfieImage",
+  "driverVerified",
+  "isVerified",
+  "plateNumber",
+  "capacity",
+].join(" ");
+
+const DRIVER_ADMIN_FIELDS = DRIVER_SELF_FIELDS;
+
+async function canPassengerAccessDriver(passengerId, driverId) {
+  const rel = await Booking.findOne({
+    passengerId: String(passengerId),
+    driverId: String(driverId),
+    status: { $in: ["accepted", "ongoing", "completed"] },
+  })
+    .select("_id")
+    .lean();
+
+  return !!rel;
+}
+
+function sanitizeDriverSelf(driver) {
+  return driver;
+}
+
+function sanitizeDriverRelated(driver) {
+  if (!driver) return driver;
+
+  return {
+    _id: driver._id,
+    createdAt: driver.createdAt || null,
+    driverFirstName: driver.driverFirstName || "",
+    driverMiddleName: driver.driverMiddleName || "",
+    driverLastName: driver.driverLastName || "",
+    driverName: driver.driverName || "",
+    driverSuffix: driver.driverSuffix || "",
+    todaName: driver.todaName || "",
+    franchiseNumber: driver.franchiseNumber || "",
+    sector: driver.sector || "",
+    experienceYears: driver.experienceYears || "",
+    selfieImage: driver.selfieImage || "",
+    driverVerified: !!driver.driverVerified,
+    isVerified: !!driver.isVerified,
+    plateNumber: driver.plateNumber || "",
+    capacity: driver.capacity ?? null,
+  };
+}
+
+function sanitizeDriverAdmin(driver) {
+  return driver;
+}
+
+router.get("/driver/:id", requireUserAuth, async (req, res) => {
   try {
-    const driver = await Driver.findById(req.params.id).select(
-      [
-        "profileID",
-        "isLucenaVoter",
-        "votingLocation",
-        "createdAt",
-        "driverFirstName",
-        "driverMiddleName",
-        "driverLastName",
-        "driverName",
-        "driverSuffix",
-        "email",
-        "driverPhone",
-        "todaName",
-        "franchiseNumber",
-        "sector",
-        "experienceYears",
-        "gender",
-        "driverBirthdate",
-        "homeAddress",
-        "selfieImage",
-        "licenseId",
-        "restriction",
-        "isPresident",
-        "todaPresName",
-        "driverVerified",
-        "isVerified",
-        "plateNumber",
-        "capacity",
-      ].join(" ")
-    );
+    const targetId = String(req.params.id);
+    const requesterId = String(req.user?.sub || "");
+    const requesterRole = String(req.user?.role || "");
 
+    let select = null;
+    let mode = null;
+
+    if (requesterRole === "driver" && requesterId === targetId) {
+      select = DRIVER_SELF_FIELDS;
+      mode = "self";
+    } else if (requesterRole === "passenger") {
+      const allowed = await canPassengerAccessDriver(requesterId, targetId);
+      if (!allowed) {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+      select = DRIVER_RELATED_FIELDS;
+      mode = "related";
+    } else if (requesterRole === "admin") {
+      select = DRIVER_ADMIN_FIELDS;
+      mode = "admin";
+    } else {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
+    const driver = await Driver.findById(targetId).select(select);
     if (!driver) return res.status(404).json({ message: "Driver not found" });
-    res.status(200).json({ driver });
+
+    let result = driver.toObject();
+
+    if (mode === "self") result = sanitizeDriverSelf(result);
+    if (mode === "related") result = sanitizeDriverRelated(result);
+    if (mode === "admin") result = sanitizeDriverAdmin(result);
+
+    return res.status(200).json({ driver: result });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    console.error("GET /driver/:id error:", err);
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
-router.get("/drivers", async (_req, res) => {
+router.get("/drivers", requireUserAuth, async (req, res) => {
   try {
-    const drivers = await Driver.find().select(
-      [
-        "profileID",
-        "isLucenaVoter",
-        "votingLocation",
-        "createdAt",
-        "driverFirstName",
-        "driverMiddleName",
-        "driverLastName",
-        "driverName",
-        "driverSuffix",
-        "email",
-        "driverPhone",
-        "todaName",
-        "franchiseNumber",
-        "sector",
-        "experienceYears",
-        "gender",
-        "driverBirthdate",
-        "homeAddress",
-        "selfieImage",
-        "licenseId",
-        "driverVerified",
-        "isVerified",
-        "plateNumber",
-        "capacity",
-      ].join(" ")
-    );
-    res.status(200).json(drivers);
+    if (req.user?.role !== "admin") {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
+    const drivers = await Driver.find().select(DRIVER_ADMIN_FIELDS);
+    return res.status(200).json(drivers);
   } catch (error) {
-    res.status(500).json({ message: "Server error" });
+    console.error("GET /drivers error:", error);
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
-router.patch("/driver/:id", async (req, res) => {
+router.patch("/driver/:id", requireUserAuth, async (req, res) => {
   try {
+    const targetId = String(req.params.id);
+    const requesterId = String(req.user?.sub || "");
+    const requesterRole = String(req.user?.role || "");
+
+    if (!(requesterRole === "driver" && requesterId === targetId) && requesterRole !== "admin") {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
     const {
       driverFirstName,
       driverMiddleName,
@@ -121,100 +203,68 @@ router.patch("/driver/:id", async (req, res) => {
       return res.status(400).json({ message: "Invalid experienceYears" });
     }
 
-    if ("driverFirstName" in allowed || "driverMiddleName" in allowed || "driverLastName" in allowed) {
-      const current = await Driver.findById(req.params.id).select(
+    if (
+      "driverFirstName" in allowed ||
+      "driverMiddleName" in allowed ||
+      "driverLastName" in allowed
+    ) {
+      const current = await Driver.findById(targetId).select(
         "driverFirstName driverMiddleName driverLastName"
       );
       if (!current) return res.status(404).json({ message: "Driver not found" });
 
-      const first = "driverFirstName" in allowed ? allowed.driverFirstName : current.driverFirstName;
-      const mid = "driverMiddleName" in allowed ? allowed.driverMiddleName : current.driverMiddleName;
-      const last = "driverLastName" in allowed ? allowed.driverLastName : current.driverLastName;
+      const first =
+        "driverFirstName" in allowed ? allowed.driverFirstName : current.driverFirstName;
+      const mid =
+        "driverMiddleName" in allowed ? allowed.driverMiddleName : current.driverMiddleName;
+      const last =
+        "driverLastName" in allowed ? allowed.driverLastName : current.driverLastName;
 
-      allowed.driverName = [first, mid, last].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+      allowed.driverName = [first, mid, last]
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
     }
 
     const driver = await Driver.findByIdAndUpdate(
-      req.params.id,
+      targetId,
       { $set: allowed },
       { new: true, runValidators: true }
-    ).select(
-      [
-        "profileID",
-        "isLucenaVoter",
-        "votingLocation",
-        "createdAt",
-        "driverFirstName",
-        "driverMiddleName",
-        "driverLastName",
-        "driverName",
-        "driverSuffix",
-        "email",
-        "driverPhone",
-        "franchiseNumber",
-        "sector",
-        "experienceYears",
-        "gender",
-        "driverBirthdate",
-        "homeAddress",
-        "selfieImage",
-        "licenseId",
-        "driverVerified",
-        "isVerified",
-        "plateNumber",
-        "capacity",
-      ].join(" ")
-    );
+    ).select(DRIVER_SELF_FIELDS);
 
     if (!driver) return res.status(404).json({ message: "Driver not found" });
-    res.status(200).json({ driver });
+    return res.status(200).json({ driver: sanitizeDriverSelf(driver.toObject()) });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    console.error("PATCH /driver/:id error:", err);
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
-router.post("/driver/:id/photo", upload.single("selfieImage"), async (req, res) => {
+router.post("/driver/:id/photo", requireUserAuth, upload.single("selfieImage"), async (req, res) => {
   try {
+    const targetId = String(req.params.id);
+    const requesterId = String(req.user?.sub || "");
+    const requesterRole = String(req.user?.role || "");
+
+    if (!(requesterRole === "driver" && requesterId === targetId) && requesterRole !== "admin") {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
     if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 
     const filePath = req.file.path.replace(/\\/g, "/");
     const driver = await Driver.findByIdAndUpdate(
-      req.params.id,
+      targetId,
       { $set: { selfieImage: filePath } },
       { new: true }
-    ).select(
-      [
-        "profileID",
-        "isLucenaVoter",
-        "votingLocation",
-        "createdAt",
-        "driverFirstName",
-        "driverMiddleName",
-        "driverLastName",
-        "driverName",
-        "driverSuffix",
-        "email",
-        "driverPhone",
-        "todaName",
-        "franchiseNumber",
-        "sector",
-        "experienceYears",
-        "gender",
-        "driverBirthdate",
-        "homeAddress",
-        "selfieImage",
-        "licenseId",
-        "driverVerified",
-        "isVerified",
-        "plateNumber",
-        "capacity",
-      ].join(" ")
-    );
+    ).select(DRIVER_SELF_FIELDS);
 
     if (!driver) return res.status(404).json({ message: "Driver not found" });
-    res.status(200).json({ driver });
+    return res.status(200).json({ driver: sanitizeDriverSelf(driver.toObject()) });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    console.error("POST /driver/:id/photo error:", err);
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
@@ -334,7 +384,11 @@ router.get("/president/drivers", requirePresidentAuth, async (req, res) => {
       ];
     }
 
-    const rows = await Driver.find(filter).select(DRIVER_LIST_SELECT).sort({ createdAt: -1 }).lean();
+    const rows = await Driver.find(filter)
+      .select(DRIVER_LIST_SELECT)
+      .sort({ createdAt: -1 })
+      .lean();
+
     const items = rows.map(driverCard);
 
     return res.json({
@@ -373,7 +427,11 @@ router.get("/president/members", requirePresidentAuth, async (req, res) => {
       ];
     }
 
-    const rows = await Driver.find(filter).select(DRIVER_LIST_SELECT).sort({ createdAt: -1 }).lean();
+    const rows = await Driver.find(filter)
+      .select(DRIVER_LIST_SELECT)
+      .sort({ createdAt: -1 })
+      .lean();
+
     const items = rows.map(driverCard);
 
     return res.json({
@@ -397,7 +455,9 @@ router.patch("/president/members/:id/add", requirePresidentAuth, async (req, res
       return res.status(400).json({ ok: false, error: "cannot_assign_self" });
     }
 
-    const target = await Driver.findById(targetId).select("isPresident todaName restriction").lean();
+    const target = await Driver.findById(targetId)
+      .select("isPresident todaName restriction")
+      .lean();
 
     if (!target) return res.status(404).json({ ok: false, error: "driver_not_found" });
 
@@ -418,7 +478,9 @@ router.patch("/president/members/:id/add", requirePresidentAuth, async (req, res
       targetId,
       { $set: { todaName: myToda } },
       { new: true, runValidators: true }
-    ).select(DRIVER_LIST_SELECT).lean();
+    )
+      .select(DRIVER_LIST_SELECT)
+      .lean();
 
     return res.json({
       ok: true,
@@ -440,7 +502,9 @@ router.patch("/president/members/:id/kick", requirePresidentAuth, async (req, re
       return res.status(400).json({ ok: false, error: "cannot_kick_self" });
     }
 
-    const target = await Driver.findById(targetId).select("isPresident todaName restriction").lean();
+    const target = await Driver.findById(targetId)
+      .select("isPresident todaName restriction")
+      .lean();
 
     if (!target) {
       return res.status(404).json({ ok: false, error: "driver_not_found" });
@@ -460,7 +524,9 @@ router.patch("/president/members/:id/kick", requirePresidentAuth, async (req, re
       targetId,
       { $set: { todaName: "Unassigned" } },
       { new: true, runValidators: true }
-    ).select(DRIVER_LIST_SELECT).lean();
+    )
+      .select(DRIVER_LIST_SELECT)
+      .lean();
 
     return res.json({
       ok: true,

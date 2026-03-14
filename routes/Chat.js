@@ -478,9 +478,11 @@ router.post("/send-image", upload.single("image"), async (req, res) => {
 
     await newMsg.save();
 
+    const pairRoom = getRoomForPair(driverId, passengerId);
+
     req.io?.to(driverId).emit("sessions:update");
     req.io?.to(passengerId).emit("sessions:update");
-    req.io?.emit("sessions:update");
+    req.io?.to(pairRoom).emit("chat:new-message", newMsg);
 
     return res.status(201).json(newMsg);
   } catch (err) {
