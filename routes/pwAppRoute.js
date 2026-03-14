@@ -1,14 +1,12 @@
 // routes/pwAppRoute.js
 const express = require("express");
 const router = express.Router();
-router.use(requireUserAuth);
 const mongoose = require("mongoose");
-
 const DriverStatus = require("../models/DriverStatus");
 const requireUserAuth = require("../middleware/requireUserAuth");
 const DriverMeter = require("../models/DriverMeter");
 const PwAppPassenger = require("../models/PwAppPassenger");
-
+router.use(requireUserAuth);
 // Fare computation breakdown
 function computeFareBreakdown(distanceMeters, passengerType) {
   const km = distanceMeters / 1000;
