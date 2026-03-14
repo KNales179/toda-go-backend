@@ -1656,16 +1656,25 @@ router.post("/cancel-booking", async (req, res) => {
 });
 
 // ---------- POST /complete-booking ----------
-router.post("/complete-booking", async (req, res) => {
+router.post("/complete-booking", requireUserAuth, async (req, res) => {
   try {
-    const { bookingId, driverLat, driverLng } = req.body;
+    if (req.user.role !== "driver") {
+      return res.status(403).json({ message: "Drivers only" });
+    }
+
+    const authDriverId = String(req.user.sub || "");
 
     if (!bookingId) {
       return res.status(400).json({ message: "bookingId required" });
     }
 
     const b = await Booking.findOne({ bookingId }).lean();
+
     if (!b) return res.status(404).json({ message: "Booking not found" });
+
+    if (String(b.driverId || "") !== authDriverId) {
+      return res.status(403).json({ message: "Not your booking" });
+    }
 
     // If accepted/enroute and has a driver, release seats
     if ((b.status === "accepted" || b.status === "enroute") && b.driverId) {
@@ -1813,9 +1822,10 @@ router.post("/passenger/push-token", async (req, res) => {
   }
 });
 
-router.post("/driver/push-token", async (req, res) => {
+router.post("/driver/push-token", requireUserAuth, async (req, res) => {
   try {
-    const { driverId, pushToken } = req.body;
+    const { pushToken } = req.body;
+    const driverId = String(req.user.sub || "");
     if (!driverId || !pushToken) {
       return res.status(400).json({ error: "Missing driverId or pushToken" });
     }
@@ -1861,7 +1871,10 @@ router.get("/booking/:bookingId/payment-info", async (req, res) => {
   }
 });
 
-router.post("/booking/:bookingId/payment-status", async (req, res) => {
+router.post("/booking/:bookingId/payment-status", requireUserAuth, async (req, res) => {
+  if (!["driver", "passenger"].includes(req.user.role)) {
+    return res.status(403).json({ ok: false, error: "Forbidden" });
+  }
   try {
     const { status } = req.body; // "paid" | "failed"
     if (!["paid", "failed"].includes(String(status))) {

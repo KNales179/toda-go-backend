@@ -1,9 +1,11 @@
 // routes/pwAppRoute.js
 const express = require("express");
 const router = express.Router();
+router.use(requireUserAuth);
 const mongoose = require("mongoose");
 
 const DriverStatus = require("../models/DriverStatus");
+const requireUserAuth = require("../middleware/requireUserAuth");
 const DriverMeter = require("../models/DriverMeter");
 const PwAppPassenger = require("../models/PwAppPassenger");
 
@@ -45,7 +47,8 @@ function computeFareBreakdown(distanceMeters, passengerType) {
 // POST /api/pwapp/add
 router.post("/pwapp/add", async (req, res) => {
   try {
-    const { driverId, passengerType = "REGULAR", note = "" } = req.body;
+    const { passengerType = "REGULAR", note = "" } = req.body;
+    const driverId = String(req.user.sub || "");
     if (!driverId) return res.status(400).json({ ok: false, error: "driverId required" });
 
     // Make sure driver is online + has location
@@ -95,6 +98,10 @@ router.post("/pwapp/add", async (req, res) => {
 router.get("/pwapp/active/:driverId", async (req, res) => {
   try {
     const { driverId } = req.params;
+    if (String(req.user.role || "").toLowerCase() !== "driver" ||
+        String(req.user.sub || "") !== String(driverId)) {
+      return res.status(403).json({ ok: false, error: "Forbidden" });
+    }
     const list = await PwAppPassenger.find({ driverId: String(driverId), status: "ACTIVE" })
       .sort({ createdAt: 1 })
       .lean();
