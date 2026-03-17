@@ -238,7 +238,26 @@ return res.status(200).json({ ok: true, updatedAt: status.updatedAt, status });
 router.get('/driver-status/:driverId', async (req, res) => {
   try {
     const { driverId } = req.params;
-    if (String(req.user?.role || '').toLowerCase() !== 'driver' || String(req.user.sub || '') !== String(driverId)) {
+    const requesterRole = String(req.user?.role || '').toLowerCase();
+    const requesterId = String(req.user.sub || '');
+
+    if (requesterRole === 'driver') {
+      if (requesterId !== String(driverId)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    } else if (requesterRole === 'passenger') {
+      const related = await Booking.findOne({
+        passengerId: requesterId,
+        driverId: String(driverId),
+        status: { $in: ["accepted", "enroute", "completed"] },
+      })
+        .select("_id")
+        .lean();
+
+      if (!related) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    } else {
       return res.status(403).json({ error: 'Forbidden' });
     }
     if (!driverId) return res.status(400).json({ message: 'driverId required' });

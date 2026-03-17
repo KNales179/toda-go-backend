@@ -66,7 +66,7 @@ async function canPassengerAccessDriver(passengerId, driverId) {
   const rel = await Booking.findOne({
     passengerId: String(passengerId),
     driverId: String(driverId),
-    status: { $in: ["accepted", "ongoing", "completed"] },
+    status: { $in: ["accepted", "enroute", "completed"] },
   })
     .select("_id")
     .lean();
