@@ -120,6 +120,7 @@ const debugLogRoutes = require("./routes/DebugLog");
 const liveMonitorRoutes = require("./routes/liveMonitor");
 const notificationRoutes = require("./routes/Notifications");
 const appealRoutes = require("./routes/Appeals");
+const presidentRoutes = require("./routes/PresidentRoute");
 
 // Mount routes AFTER io is attached
 app.use("/api/auth/passenger", passengerRoutes);
@@ -154,6 +155,7 @@ app.use("/api", debugLogRoutes);
 app.use("/api", liveMonitorRoutes);
 app.use("/api", notificationRoutes)
 app.use("/api/appeals", appealRoutes);
+app.use("/api", presidentRoutes);
 
 // Static uploads
 app.use("/uploads", express.static("uploads"));
