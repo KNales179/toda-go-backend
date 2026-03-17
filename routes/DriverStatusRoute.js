@@ -6,6 +6,7 @@ const Driver = require('../models/Drivers');
 const DriverStatus = require('../models/DriverStatus');
 const DriverPresence = require('../models/DriverPresence');
 const DriverMeter = require('../models/DriverMeter');
+const Booking = require('../models/Bookings')
 
 // --- helpers ---
 router.use(requireUserAuth);
