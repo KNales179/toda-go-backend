@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 const mongoose = require("mongoose");
 const Task = require("../models/Task");
+const Booking = require("../models/Bookings");
 const requireUserAuth = require("../middleware/requireUserAuth");
 
 router.use(requireUserAuth);
@@ -155,6 +156,38 @@ router.post("/tasks/:taskId/complete", async (req, res) => {
       t.status = "COMPLETED";
       t.completedAt = new Date();
       await t.save();
+    }
+
+    if (t.sourceType === "BOOKING" && t.sourceId) {
+      try {
+        const bookingId = String(t.sourceId);
+
+        if (t.taskType === "PICKUP") {
+          await Booking.findOneAndUpdate(
+            { bookingId },
+            {
+              $set: {
+                status: "accepted",
+                progressStatus: "to_dropoff",
+              },
+            }
+          );
+        }
+
+        if (t.taskType === "DROPOFF") {
+          await Booking.findOneAndUpdate(
+            { bookingId },
+            {
+              $set: {
+                status: "accepted",
+                progressStatus: "for_payment",
+              },
+            }
+          );
+        }
+      } catch (err) {
+        console.error("Task complete booking sync error:", err);
+      }
     }
 
     // IMPORTANT: do NOT auto-activate dependent tasks.

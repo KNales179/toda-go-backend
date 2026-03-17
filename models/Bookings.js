@@ -65,6 +65,11 @@ const BookingSchema = new mongoose.Schema(
       enum: ["pending", "accepted", "enroute", "completed", "canceled"],
       default: "pending",
     },
+    progressStatus: {
+      type: String,
+      enum: ["to_pickup", "to_dropoff", "for_payment"],
+      default: "to_pickup",
+    },
 
     // Types / seats
     bookingType: {
@@ -126,5 +131,6 @@ BookingSchema.index({ paymentStatus: 1 });
 BookingSchema.index({ bookedFor: 1 });
 BookingSchema.index({ pickupTodaId: 1 });        
 BookingSchema.index({ destinationTodaId: 1 });  
+BookingSchema.index({ progressStatus: 1 });
 
 module.exports = mongoose.model("Booking", BookingSchema);

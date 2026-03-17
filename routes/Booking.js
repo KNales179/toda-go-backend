@@ -368,6 +368,7 @@ async function reserveSeatsAtomic({ driverId, booking }) {
         status: "accepted",
         driverId: String(driverId),
         driverLock: booking.bookingType === "SOLO",
+        progressStatus: "to_pickup",
       },
     },
     { new: true }
@@ -1442,6 +1443,7 @@ router.post("/accept-booking", requireUserAuth, async (req, res) => {
           driverId,
           acceptedAt: new Date(),
           canceledAt: null,
+          progressStatus: "to_pickup",
         },
       }
     );
@@ -1663,6 +1665,7 @@ router.post("/complete-booking", requireUserAuth, async (req, res) => {
     }
 
     const authDriverId = String(req.user.sub || "");
+    const { bookingId, driverLat, driverLng } = req.body || {};
 
     if (!bookingId) {
       return res.status(400).json({ message: "bookingId required" });
@@ -1696,6 +1699,7 @@ router.post("/complete-booking", requireUserAuth, async (req, res) => {
       {
         $set: {
           status: "completed",
+          progressStatus: null,
           completedAt: new Date(),
           reservationExpiresAt: null,
           driverLock: false,
