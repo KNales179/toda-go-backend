@@ -7,8 +7,7 @@ const RideHistory = require("../models/RideHistory");
 const Driver = require("../models/Drivers"); 
 const Passenger = require("../models/Passenger"); 
 const requireUserAuth = require("../middleware/requireUserAuth");
-
-router.use(requireUserAuth);
+const requireAdminAuth = require("../middleware/requireAdminAuth");
 async function reverseGeocodeORS(lat, lng) {
   try {
     if (!process.env.ORS_API_KEY) {
@@ -53,12 +52,11 @@ async function reverseGeocodeORS(lat, lng) {
   }
 }
 
-/* ADMIN — unchanged: returns all rides */
-router.get("/rides", async (req, res) => {
+router.get("/rides", requireAdminAuth, async (req, res) => {
   try {
-    const role = String(req.user?.role || "").toLowerCase();
+    const role = String(req.admin?.role || "").toLowerCase();
 
-    if (role !== "admin") {
+    if (role !== "admin" && role !== "super_admin") {
       return res.status(403).json({ error: "forbidden" });
     }
 
@@ -75,7 +73,7 @@ router.get("/rides", async (req, res) => {
 
 /* PASSENGER/DRIVER — sanitized: returns driverName only (no driverId)
    plus server-side reverse geocoding for missing place names */
-router.get("/ridehistory", async (req, res) => {
+router.get("/ridehistory", requireUserAuth, async (req, res) => {
   try {
     const role = String(req.user?.role || "").toLowerCase();
     const userId = String(req.user?.sub || "").trim();
@@ -281,7 +279,7 @@ router.get("/ridehistory", async (req, res) => {
   }
 });
 
-router.delete("/ridehistory/:id", async (req, res) => {
+router.delete("/ridehistory/:id", requireUserAuth, async (req, res) => {
   const { id } = req.params;
   const role = String(req.user?.role || "").toLowerCase();
   const userId = String(req.user?.sub || "");
