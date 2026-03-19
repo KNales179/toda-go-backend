@@ -1,8 +1,11 @@
-//Adminauth.js
 const express = require("express");
 const router = express.Router();
 const jwt = require("jsonwebtoken");
+const speakeasy = require("speakeasy");
+const QRCode = require("qrcode");
+
 const Admin = require("../models/Admin");
+const AdminLoginChallenge = require("../models/AdminLoginChallenge");
 const requireAdminAuth = require("../middleware/requireAdminAuth");
 
 function signToken(admin) {
@@ -11,6 +14,25 @@ function signToken(admin) {
     process.env.JWT_SECRET,
     { expiresIn: "7d" }
   );
+}
+
+function getClientIp(req) {
+  return (
+    req.headers["x-forwarded-for"]?.toString().split(",")[0].trim() ||
+    req.socket?.remoteAddress ||
+    null
+  );
+}
+
+async function updateAdminLoginAudit(admin, req) {
+  admin.lastLoginAt = new Date();
+  admin.lastLoginIp = getClientIp(req);
+  admin.lastLoginUserAgent = req.headers["user-agent"] || null;
+  await admin.save();
+}
+
+function isValidOtp(code) {
+  return /^\d{6}$/.test(String(code || "").trim());
 }
 
 // ADMIN-ONLY REGISTER
@@ -36,12 +58,10 @@ router.post("/register", requireAdminAuth, async (req, res) => {
         .json({ message: "Password must be at least 6 characters" });
     }
 
-    // only super_admin can create admins
     if (req.admin.role !== "super_admin") {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    // do not allow creating super_admin from this route
     if (cleanRole !== "admin") {
       return res.status(400).json({ message: "Invalid role" });
     }
@@ -106,31 +126,51 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
-    // super admin: require 2FA flow before issuing full token
     if (admin.role === "super_admin") {
-      if (!admin.twoFactorEnabled) {
+      await AdminLoginChallenge.deleteMany({ adminId: admin._id });
+
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+      if (!admin.twoFactorEnabled || admin.mustSetup2FA) {
+        const secret = speakeasy.generateSecret({
+          name: `TODA Go (${admin.email})`,
+          issuer: "TODA Go",
+        });
+
+        const challenge = await AdminLoginChallenge.create({
+          adminId: admin._id,
+          type: "setup_2fa",
+          secret: secret.base32,
+          expiresAt,
+        });
+
+        const qrCode = await QRCode.toDataURL(secret.otpauth_url);
+
         return res.status(200).json({
           message: "2FA setup required",
           requires2FASetup: true,
+          challengeId: challenge._id.toString(),
+          qrCode,
+          manualCode: secret.base32,
           admin: admin.toSafeObject(),
         });
       }
 
+      const challenge = await AdminLoginChallenge.create({
+        adminId: admin._id,
+        type: "verify_2fa",
+        expiresAt,
+      });
+
       return res.status(200).json({
         message: "2FA verification required",
         requires2FA: true,
+        challengeId: challenge._id.toString(),
         admin: admin.toSafeObject(),
       });
     }
 
-    admin.lastLoginAt = new Date();
-    admin.lastLoginIp =
-      req.headers["x-forwarded-for"]?.toString().split(",")[0].trim() ||
-      req.socket?.remoteAddress ||
-      null;
-    admin.lastLoginUserAgent = req.headers["user-agent"] || null;
-
-    await admin.save();
+    await updateAdminLoginAudit(admin, req);
 
     const token = signToken(admin);
 
@@ -143,6 +183,132 @@ router.post("/login", async (req, res) => {
     return res
       .status(500)
       .json({ message: "Login failed", error: error.message });
+  }
+});
+
+router.post("/login/setup-2fa", async (req, res) => {
+  try {
+    const { challengeId, code } = req.body || {};
+    const cleanCode = String(code || "").trim();
+
+    if (!challengeId || !isValidOtp(cleanCode)) {
+      return res.status(400).json({ message: "Valid challengeId and 6-digit code are required" });
+    }
+
+    const challenge = await AdminLoginChallenge.findById(challengeId);
+    if (!challenge) {
+      return res.status(400).json({ message: "Invalid or expired 2FA challenge" });
+    }
+
+    if (challenge.type !== "setup_2fa") {
+      return res.status(400).json({ message: "Invalid 2FA challenge type" });
+    }
+
+    if (challenge.expiresAt.getTime() < Date.now()) {
+      await AdminLoginChallenge.deleteOne({ _id: challenge._id });
+      return res.status(400).json({ message: "2FA challenge expired. Please log in again." });
+    }
+
+    const verified = speakeasy.totp.verify({
+      secret: challenge.secret,
+      encoding: "base32",
+      token: cleanCode,
+      window: 1,
+    });
+
+    if (!verified) {
+      return res.status(400).json({ message: "Invalid 2FA code" });
+    }
+
+    const admin = await Admin.findById(challenge.adminId).select("+twoFactorSecret");
+    if (!admin || !admin.isActive) {
+      await AdminLoginChallenge.deleteOne({ _id: challenge._id });
+      return res.status(400).json({ message: "Admin not authorized" });
+    }
+
+    admin.twoFactorSecret = challenge.secret;
+    admin.twoFactorEnabled = true;
+    admin.mustSetup2FA = false;
+    admin.twoFactorVerifiedAt = new Date();
+
+    await updateAdminLoginAudit(admin, req);
+    await AdminLoginChallenge.deleteMany({ adminId: admin._id });
+
+    const token = signToken(admin);
+
+    return res.status(200).json({
+      message: "2FA setup complete",
+      token,
+      admin: admin.toSafeObject(),
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "2FA setup failed", error: error.message });
+  }
+});
+
+router.post("/login/verify-2fa", async (req, res) => {
+  try {
+    const { challengeId, code } = req.body || {};
+    const cleanCode = String(code || "").trim();
+
+    if (!challengeId || !isValidOtp(cleanCode)) {
+      return res.status(400).json({ message: "Valid challengeId and 6-digit code are required" });
+    }
+
+    const challenge = await AdminLoginChallenge.findById(challengeId);
+    if (!challenge) {
+      return res.status(400).json({ message: "Invalid or expired 2FA challenge" });
+    }
+
+    if (challenge.type !== "verify_2fa") {
+      return res.status(400).json({ message: "Invalid 2FA challenge type" });
+    }
+
+    if (challenge.expiresAt.getTime() < Date.now()) {
+      await AdminLoginChallenge.deleteOne({ _id: challenge._id });
+      return res.status(400).json({ message: "2FA challenge expired. Please log in again." });
+    }
+
+    const admin = await Admin.findById(challenge.adminId).select("+twoFactorSecret");
+    if (!admin || !admin.isActive) {
+      await AdminLoginChallenge.deleteOne({ _id: challenge._id });
+      return res.status(400).json({ message: "Admin not authorized" });
+    }
+
+    if (!admin.twoFactorEnabled || !admin.twoFactorSecret) {
+      await AdminLoginChallenge.deleteMany({ adminId: admin._id });
+      return res.status(400).json({ message: "2FA is not set up for this account" });
+    }
+
+    const verified = speakeasy.totp.verify({
+      secret: admin.twoFactorSecret,
+      encoding: "base32",
+      token: cleanCode,
+      window: 1,
+    });
+
+    if (!verified) {
+      return res.status(400).json({ message: "Invalid 2FA code" });
+    }
+
+    admin.twoFactorVerifiedAt = new Date();
+
+    await updateAdminLoginAudit(admin, req);
+    await AdminLoginChallenge.deleteMany({ adminId: admin._id });
+
+    const token = signToken(admin);
+
+    return res.status(200).json({
+      message: "2FA verified successfully",
+      token,
+      admin: admin.toSafeObject(),
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "2FA verification failed", error: error.message });
   }
 });
 
