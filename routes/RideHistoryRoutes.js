@@ -54,13 +54,22 @@ async function reverseGeocodeORS(lat, lng) {
 }
 
 /* ADMIN — unchanged: returns all rides */
-router.get("/rides", async (_req, res) => {
+router.get("/rides", async (req, res) => {
   try {
-    const rides = await RideHistory.find().sort({ completedAt: -1 }).lean();
-    res.status(200).json(rides);
+    const role = String(req.user?.role || "").toLowerCase();
+
+    if (role !== "admin") {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    const rides = await RideHistory.find()
+      .sort({ completedAt: -1, _id: -1 })
+      .lean();
+
+    res.status(200).json({ items: rides, total: rides.length });
   } catch (error) {
     console.error("❌ Failed to fetch all ride history:", error);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ error: "server_error" });
   }
 });
 
