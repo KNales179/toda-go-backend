@@ -7,6 +7,7 @@ const Appeal = require("../models/Appeal");
 const Passenger = require("../models/Passenger");
 const Driver = require("../models/Drivers");
 const requireAdminAuth = require("../middleware/requireAdminAuth");
+const requireUserAuth = require("../middleware/requireUserAuth");
 
 // ------------------------------
 // Helpers
@@ -21,20 +22,52 @@ function isExpiredRestriction(restriction) {
   return end.getTime() <= Date.now();
 }
 
+function getAuthUser(req) {
+  // Support multiple middleware shapes safely
+  const user =
+    req.user ||
+    req.auth ||
+    req.passenger ||
+    req.driver ||
+    null;
+
+  const userId =
+    user?.id ||
+    user?._id ||
+    user?.userId ||
+    user?.sub ||
+    null;
+
+  const userTypeRaw =
+    user?.role ||
+    user?.userType ||
+    user?.type ||
+    null;
+
+  const userType = String(userTypeRaw || "").toLowerCase();
+
+  return {
+    userId: userId ? String(userId) : null,
+    userType,
+  };
+}
+
 // =============================================
 // 📌 POST /api/appeals
 // Mobile submits appeal
+// AUTHENTICATED USER ONLY
 // =============================================
-router.post("/", async (req, res) => {
+router.post("/", requireUserAuth, async (req, res) => {
   try {
-    const { userType, userId, appealMessage } = req.body;
+    const { appealMessage } = req.body || {};
+    const { userId, userType } = getAuthUser(req);
 
     if (!["passenger", "driver"].includes(userType)) {
-      return res.status(400).json({ error: "Invalid userType" });
+      return res.status(403).json({ error: "Unauthorized user type" });
     }
 
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ error: "Invalid userId" });
+    if (!mongoose.Types.ObjectId.isValid(userId || "")) {
+      return res.status(401).json({ error: "Invalid authenticated user" });
     }
 
     const cleanMessage = String(appealMessage || "").trim();
@@ -68,7 +101,7 @@ router.post("/", async (req, res) => {
         error: "You already have a pending appeal.",
       });
     }
-    
+
     const appeal = await Appeal.create({
       userType,
       userId,
@@ -90,25 +123,29 @@ router.post("/", async (req, res) => {
 });
 
 // =============================================
-// ✅ PUBLIC
+// ✅ AUTHENTICATED USER
 // =============================================
 
-// GET /api/appeals/latest?userType=passenger|driver&userId=...
-router.get("/latest", async (req, res) => {
+// GET /api/appeals/latest
+// Gets latest appeal for CURRENT authenticated passenger/driver
+router.get("/latest", requireUserAuth, async (req, res) => {
   try {
-    const { userType, userId } = req.query;
+    const { userId, userType } = getAuthUser(req);
 
-    if (!["passenger", "driver"].includes(String(userType || ""))) {
-      return res.status(400).json({ ok: false, error: "invalid_userType" });
+    if (!["passenger", "driver"].includes(userType)) {
+      return res.status(403).json({ ok: false, error: "unauthorized_userType" });
     }
 
-    if (!mongoose.Types.ObjectId.isValid(String(userId || ""))) {
-      return res.status(400).json({ ok: false, error: "invalid_userId" });
+    if (!mongoose.Types.ObjectId.isValid(userId || "")) {
+      return res.status(401).json({ ok: false, error: "invalid_authenticated_user" });
     }
 
-    const Model = String(userType) === "passenger" ? Passenger : Driver;
-    const user = await Model.findById(String(userId)).select("restriction").lean();
-    if (!user) return res.status(404).json({ ok: false, error: "user_not_found" });
+    const Model = userType === "passenger" ? Passenger : Driver;
+    const user = await Model.findById(userId).select("restriction").lean();
+
+    if (!user) {
+      return res.status(404).json({ ok: false, error: "user_not_found" });
+    }
 
     const r = user.restriction || null;
 
@@ -117,8 +154,8 @@ router.get("/latest", async (req, res) => {
       const startAt = r?.startAt ? new Date(r.startAt) : null;
 
       const latestForThisRestriction = await Appeal.findOne({
-        userType: String(userType),
-        userId: String(userId),
+        userType,
+        userId,
         restrictionStartAt: startAt,
       })
         .sort({ createdAt: -1 })
@@ -127,15 +164,15 @@ router.get("/latest", async (req, res) => {
       return res.json({
         ok: true,
         appeal: latestForThisRestriction || null,
-        currentRestriction: r, // optional, helpful
+        currentRestriction: r,
       });
     }
 
     // ✅ If user is NOT restricted anymore:
     // Return the most recent handled appeal so UI can show APPROVED/REJECTED message
     const latestHandled = await Appeal.findOne({
-      userType: String(userType),
-      userId: String(userId),
+      userType,
+      userId,
       status: { $in: ["approved", "rejected", "resolved"] },
     })
       .sort({ handledAt: -1, createdAt: -1 })
@@ -144,7 +181,7 @@ router.get("/latest", async (req, res) => {
     return res.json({
       ok: true,
       appeal: latestHandled || null,
-      currentRestriction: r, // optional
+      currentRestriction: r,
     });
   } catch (err) {
     console.error("❌ latest appeal error:", err);
@@ -160,7 +197,7 @@ router.get("/latest", async (req, res) => {
 router.use("/admin", requireAdminAuth);
 
 // GET /api/appeals/admin
-// ✅ Now returns computedStatus + autoResolvedReason if restriction expired/lifted
+// ✅ Returns computedStatus + autoResolvedReason if restriction expired/lifted
 router.get("/admin", async (req, res) => {
   try {
     const appeals = await Appeal.find({})
@@ -221,7 +258,7 @@ router.get("/admin", async (req, res) => {
         ...a,
         computedStatus,
         autoResolvedReason,
-        restrictionSnapshot: restriction || null, // optional: helpful for UI
+        restrictionSnapshot: restriction || null,
       };
     });
 
@@ -234,7 +271,6 @@ router.get("/admin", async (req, res) => {
     return res.status(500).json({ error: "Server error" });
   }
 });
-
 
 router.patch("/admin/:id/approve", async (req, res) => {
   try {
@@ -251,13 +287,12 @@ router.patch("/admin/:id/approve", async (req, res) => {
     // Update appeal
     appeal.status = "approved";
     appeal.adminNotes = adminNotes || null;
-    appeal.handledByAdminId = req.admin?.id || null;
+    appeal.handledByAdminId = String(req.admin?.id || req.admin?._id || "");
     appeal.handledAt = new Date();
     await appeal.save();
 
     // 🔥 ALSO LIFT RESTRICTION
-    const Model =
-      appeal.userType === "passenger" ? Passenger : Driver;
+    const Model = appeal.userType === "passenger" ? Passenger : Driver;
 
     await Model.findByIdAndUpdate(appeal.userId, {
       "restriction.isRestricted": false,
@@ -270,8 +305,6 @@ router.patch("/admin/:id/approve", async (req, res) => {
     return res.status(500).json({ error: "Server error" });
   }
 });
-
-
 
 // PATCH /api/appeals/admin/:id/reject
 router.patch("/admin/:id/reject", async (req, res) => {
@@ -288,7 +321,7 @@ router.patch("/admin/:id/reject", async (req, res) => {
 
     appeal.status = "rejected";
     appeal.adminNotes = adminNotes || null;
-    appeal.handledByAdminId = req.admin?.id || null;
+    appeal.handledByAdminId = String(req.admin?.id || req.admin?._id || "");
     appeal.handledAt = new Date();
 
     await appeal.save();

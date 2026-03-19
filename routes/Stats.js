@@ -1,12 +1,16 @@
 // routes/stats.js
 const express = require("express");
+const mongoose = require("mongoose");
 const router = express.Router();
 
 const RideHistory = require("../models/RideHistory");
 const Booking = require("../models/Bookings");
 const Driver = require("../models/Drivers");
-const Passenger = require("../models/Passenger"); // used by /counts
+const Passenger = require("../models/Passenger");
 const DriverPresence = require("../models/DriverPresence");
+
+const requireAdminAuth = require("../middleware/requireAdminAuth");
+const requireUserAuth = require("../middleware/requireUserAuth");
 
 const TZ = "Asia/Manila";
 
@@ -15,7 +19,6 @@ function windowBounds(window = "7d") {
   const now = new Date();
 
   if (window === "today") {
-    // 00:00 Manila → next 00:00 Manila
     const parts = new Intl.DateTimeFormat("en-CA", {
       timeZone: TZ,
       year: "numeric",
@@ -52,9 +55,8 @@ const normalizePaymentMethod = (pm) => {
   const v = (pm || "cash").toString().toLowerCase();
   if (v === "gcash") return "gcash";
   if (v === "cash") return "cash";
-  return "cash"; // fallback
+  return "cash";
 };
-
 
 const completedDateExpr = {
   $toDate: {
@@ -64,19 +66,14 @@ const completedDateExpr = {
         $ifNull: [
           "$updatedAt",
           {
-            $ifNull: ["$createdAt", "$_id"]
-          }
-        ]
-      }
-    ]
-  }
+            $ifNull: ["$createdAt", "$_id"],
+          },
+        ],
+      },
+    ],
+  },
 };
 
-
-
-
-
-// $match helper for pipelines that already did: { $addFields: { bucketAt: ... } }
 const bucketWindowMatch = (start, end, isOverall) =>
   isOverall
     ? {}
@@ -86,8 +83,53 @@ const bucketWindowMatch = (start, end, isOverall) =>
         },
       };
 
-/** ---------------- A) Counts (optional) ---------------- **/
-router.get("/counts", async (req, res) => {
+function getAuthUser(req) {
+  const user = req.user || req.auth || req.driver || req.passenger || null;
+
+  const userId =
+    user?.id ||
+    user?._id ||
+    user?.userId ||
+    user?.sub ||
+    null;
+
+  const roleRaw =
+    user?.role ||
+    user?.userType ||
+    user?.type ||
+    null;
+
+  return {
+    userId: userId ? String(userId) : null,
+    role: String(roleRaw || "").toLowerCase(),
+  };
+}
+
+function validateDriverId(driverId) {
+  return mongoose.Types.ObjectId.isValid(String(driverId || ""));
+}
+
+function requireDriverSelf(req, res, next) {
+  const { driverId } = req.params;
+  const auth = getAuthUser(req);
+
+  if (!validateDriverId(driverId)) {
+    return res.status(400).json({ message: "Invalid driverId" });
+  }
+
+  if (auth.role !== "driver") {
+    return res.status(403).json({ message: "Forbidden" });
+  }
+
+  if (!auth.userId || String(auth.userId) !== String(driverId)) {
+    return res.status(403).json({ message: "Forbidden" });
+  }
+
+  next();
+}
+
+/** ---------------- shared handlers ---------------- **/
+async function handleCounts(req, res) {
   try {
     const driverCount = await Driver.countDocuments();
     const passengerCount = await Passenger.countDocuments();
@@ -95,20 +137,26 @@ router.get("/counts", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch counts" });
   }
-});
+}
 
-/** ---------------- B) Profile ---------------- **/
-router.get("/driver/:driverId/profile", async (req, res) => {
+async function handleDriverProfile(req, res) {
   try {
     const { driverId } = req.params;
+
+    if (!validateDriverId(driverId)) {
+      return res.status(400).json({ message: "Invalid driverId" });
+    }
 
     const d = await Driver.findById(driverId).select(
       "driverFirstName driverLastName driverName selfieImage rating ratingCount"
     );
+
     if (!d) return res.status(404).json({ message: "Driver not found" });
 
-    // Keep this as completed trips overall (profile badge)
-    const totalTrips = await Booking.countDocuments({ driverId, status: "completed" });
+    const totalTrips = await Booking.countDocuments({
+      driverId,
+      status: "completed",
+    });
 
     const name =
       [d.driverFirstName, d.driverLastName].filter(Boolean).join(" ") ||
@@ -129,12 +177,16 @@ router.get("/driver/:driverId/profile", async (req, res) => {
     console.error("stats profile error:", e);
     res.status(500).json({ message: "Server error" });
   }
-});
+}
 
-/** ---------------- C) Summary (KPIs + daily series) ---------------- **/
-router.get("/driver/:driverId/summary", async (req, res) => {
+async function handleDriverSummary(req, res) {
   try {
     const { driverId } = req.params;
+
+    if (!validateDriverId(driverId)) {
+      return res.status(400).json({ message: "Invalid driverId" });
+    }
+
     const window = String(req.query.window || "7d").toLowerCase();
     const { start, end } = windowBounds(window);
     const isOverall = window === "overall";
@@ -143,28 +195,27 @@ router.get("/driver/:driverId/summary", async (req, res) => {
       {
         $addFields: {
           statusBucketAt: {
-            $ifNull: [
-              { $toDate: "$createdAt" },
-              { $toDate: "$_id" }
-            ]
-          }
-        }
+            $ifNull: [{ $toDate: "$createdAt" }, { $toDate: "$_id" }],
+          },
+        },
       },
       { $match: { driverId } },
-      ...(isOverall ? [] : [{
-        $match: {
-          $expr: {
-            $and: [
-              { $gte: ["$statusBucketAt", start] },
-              { $lt: ["$statusBucketAt", end] }
-            ]
-          }
-        }
-      }]),
+      ...(isOverall
+        ? []
+        : [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $gte: ["$statusBucketAt", start] },
+                    { $lt: ["$statusBucketAt", end] },
+                  ],
+                },
+              },
+            },
+          ]),
       { $group: { _id: "$status", count: { $sum: 1 } } },
     ]);
-
-
 
     const statusCounts = statusAgg.reduce(
       (acc, r) => {
@@ -184,9 +235,10 @@ router.get("/driver/:driverId/summary", async (req, res) => {
     const completeRate = totalBookings
       ? statusCounts.completed / totalBookings
       : 0;
-    const cancelRate = totalBookings ? statusCounts.canceled / totalBookings : 0;
+    const cancelRate = totalBookings
+      ? statusCounts.canceled / totalBookings
+      : 0;
 
-    /* ---- 2) Income/avgFare/daily series from COMPLETED rides (windowed by completedAt/updatedAt) ---- */
     const daily = await Booking.aggregate([
       { $addFields: { bucketAt: completedDateExpr } },
       { $match: { driverId, status: "completed" } },
@@ -295,7 +347,6 @@ router.get("/driver/:driverId/summary", async (req, res) => {
       distanceKm: 0,
     };
 
-    /* ---- 3) Hours online (clip sessions to [start,end)) ---- */
     const hoursDoc =
       (
         await DriverPresence.aggregate([
@@ -305,7 +356,9 @@ router.get("/driver/:driverId/summary", async (req, res) => {
               clipStart: {
                 $cond: [{ $gt: ["$startAt", start] }, "$startAt", start],
               },
-              clipEnd: { $cond: [{ $lt: ["$endAt", end] }, "$endAt", end] },
+              clipEnd: {
+                $cond: [{ $lt: ["$endAt", end] }, "$endAt", end],
+              },
             },
           },
           {
@@ -320,46 +373,45 @@ router.get("/driver/:driverId/summary", async (req, res) => {
         ])
       )[0] || { hoursOnline: 0 };
 
-    /* ---- 4) Avg rating (stable) ---- */
     const d = await Driver.findById(driverId).select("rating ratingCount");
     let avgRating = Number(d?.rating || 0);
     if (avgRating > 5 && d?.ratingCount > 0) avgRating = avgRating / d.ratingCount;
 
-    /* ---- response ---- */
     res.json({
       window,
       kpis: {
-        // totals based on ALL bookings in window
         trips: totalBookings,
-
-        // percentages you’ll display: Complete % and Cancel %
         completeRate,
         cancelRate,
-
-        // money side from COMPLETED rides in window
         income: Number(completedSide.income.toFixed(2)),
         avgFare: Number(completedSide.avgFare.toFixed(2)),
         cashIncome: Number(completedSide.cashIncome.toFixed(2)),
         gcashIncome: Number(completedSide.gcashIncome.toFixed(2)),
         distanceKm: Number(completedSide.distanceKm.toFixed(2)),
-
-        // others
         hoursOnline: Number(hoursDoc.hoursOnline.toFixed(1)),
         avgRating: Number((avgRating || 0).toFixed(2)),
       },
-      daily, // for charts (completed rides timeline)
+      daily,
     });
   } catch (e) {
     console.error("stats summary error:", e);
     res.status(500).json({ message: "Server error" });
   }
-});
+}
 
-/** ---------------- D) Monthly income (completed rides) ---------------- **/
-router.get("/driver/:driverId/monthly", async (req, res) => {
+async function handleDriverMonthly(req, res) {
   try {
     const { driverId } = req.params;
+
+    if (!validateDriverId(driverId)) {
+      return res.status(400).json({ message: "Invalid driverId" });
+    }
+
     const year = Number(req.query.year) || new Date().getFullYear();
+
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+      return res.status(400).json({ message: "Invalid year" });
+    }
 
     const yearStart = new Date(`${year}-01-01T00:00:00.000Z`);
     const yearEnd = new Date(`${year + 1}-01-01T00:00:00.000Z`);
@@ -370,7 +422,10 @@ router.get("/driver/:driverId/monthly", async (req, res) => {
       {
         $match: {
           $expr: {
-            $and: [{ $gte: ["$bucketAt", yearStart] }, { $lt: ["$bucketAt", yearEnd] }],
+            $and: [
+              { $gte: ["$bucketAt", yearStart] },
+              { $lt: ["$bucketAt", yearEnd] },
+            ],
           },
         },
       },
@@ -379,7 +434,11 @@ router.get("/driver/:driverId/monthly", async (req, res) => {
           _id: {
             m: {
               $toInt: {
-                $dateToString: { format: "%m", date: "$bucketAt", timezone: TZ },
+                $dateToString: {
+                  format: "%m",
+                  date: "$bucketAt",
+                  timezone: TZ,
+                },
               },
             },
           },
@@ -410,15 +469,25 @@ router.get("/driver/:driverId/monthly", async (req, res) => {
     console.error("stats monthly error:", e);
     res.status(500).json({ message: "Server error" });
   }
-});
+}
 
-/** ---------------- E) Report table (completed rides + presence) ---------------- **/
-router.get("/driver/:driverId/report", async (req, res) => {
+async function handleDriverReport(req, res) {
   try {
     const { driverId } = req.params;
+
+    if (!validateDriverId(driverId)) {
+      return res.status(400).json({ message: "Invalid driverId" });
+    }
+
     const window = String(req.query.window || "day").toLowerCase();
 
-    const map = { day: "today", week: "7d", month: "30d", overall: "overall" };
+    const map = {
+      day: "today",
+      week: "7d",
+      month: "30d",
+      overall: "overall",
+    };
+
     const mapped = map[window] || "today";
     const { start, end } = windowBounds(mapped);
     const isOverall = mapped === "overall";
@@ -446,8 +515,12 @@ router.get("/driver/:driverId/report", async (req, res) => {
           { $match: { driverId, startAt: { $lt: end }, endAt: { $gt: start } } },
           {
             $project: {
-              clipStart: { $cond: [{ $gt: ["$startAt", start] }, "$startAt", start] },
-              clipEnd: { $cond: [{ $lt: ["$endAt", end] }, "$endAt", end] },
+              clipStart: {
+                $cond: [{ $gt: ["$startAt", start] }, "$startAt", start],
+              },
+              clipEnd: {
+                $cond: [{ $lt: ["$endAt", end] }, "$endAt", end],
+              },
             },
           },
           {
@@ -469,53 +542,79 @@ router.get("/driver/:driverId/report", async (req, res) => {
     res.json({
       window,
       rows: [
-        { key: "dropoffs", label: "Successful drop-offs", value: base.dropoffs, unit: "" },
-        { key: "income", label: "Total income", value: Number(base.income.toFixed(2)), unit: "PHP" },
-        { key: "distance", label: "Distance traveled", value: Number((base.distance || 0).toFixed(1)), unit: "km" },
-        { key: "avgRating", label: "Average rating", value: Number((avgRating || 0).toFixed(2)), unit: "★" },
-        { key: "hoursOnline", label: "Hours online", value: Number(hoursDoc.hoursOnline.toFixed(1)), unit: "h" },
+        {
+          key: "dropoffs",
+          label: "Successful drop-offs",
+          value: base.dropoffs,
+          unit: "",
+        },
+        {
+          key: "income",
+          label: "Total income",
+          value: Number(base.income.toFixed(2)),
+          unit: "PHP",
+        },
+        {
+          key: "distance",
+          label: "Distance traveled",
+          value: Number((base.distance || 0).toFixed(1)),
+          unit: "km",
+        },
+        {
+          key: "avgRating",
+          label: "Average rating",
+          value: Number((avgRating || 0).toFixed(2)),
+          unit: "★",
+        },
+        {
+          key: "hoursOnline",
+          label: "Hours online",
+          value: Number(hoursDoc.hoursOnline.toFixed(1)),
+          unit: "h",
+        },
       ],
     });
   } catch (e) {
     console.error("stats report error:", e);
     res.status(500).json({ message: "Server error" });
   }
-});
+}
 
-router.post("/admin/dev/hydrate-bookings-from-history", async (req, res) => {
+async function handleHydrateBookings(req, res) {
   try {
     const year = Number(req.query.year) || new Date().getFullYear();
-    const month = Number(req.query.month); // 1–12 or NaN for whole year
+    const month = Number(req.query.month);
 
-    const start = month
-      ? new Date(year, month - 1, 1)
-      : new Date(year, 0, 1);
-    const end = month
-      ? new Date(year, month, 1)
-      : new Date(year + 1, 0, 1);
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+      return res.status(400).json({ error: "Invalid year" });
+    }
 
-    // 1) Load RideHistory docs in that window
+    if (!Number.isNaN(month) && (!Number.isInteger(month) || month < 1 || month > 12)) {
+      return res.status(400).json({ error: "Invalid month" });
+    }
+
+    const start = month ? new Date(year, month - 1, 1) : new Date(year, 0, 1);
+    const end = month ? new Date(year, month, 1) : new Date(year + 1, 0, 1);
+
     const historyDocs = await RideHistory.find({
       createdAt: { $gte: start, $lt: end },
     }).lean();
 
     if (!historyDocs.length) {
-      return res.json({ insertedCount: 0, message: "No RideHistory docs found in range" });
+      return res.json({
+        insertedCount: 0,
+        message: "No RideHistory docs found in range",
+      });
     }
 
-    // 2) For safety: skip bookings that already exist with same bookingId
-    const bookingIds = historyDocs
-      .map((h) => h.bookingId)
-      .filter(Boolean);
+    const bookingIds = historyDocs.map((h) => h.bookingId).filter(Boolean);
 
     const existingBookings = await Booking.find(
       { bookingId: { $in: bookingIds } },
       { bookingId: 1 }
     ).lean();
 
-    const existingSet = new Set(
-      existingBookings.map((b) => String(b.bookingId))
-    );
+    const existingSet = new Set(existingBookings.map((b) => String(b.bookingId)));
 
     const toInsert = historyDocs
       .filter((h) => h.bookingId && !existingSet.has(String(h.bookingId)))
@@ -556,6 +655,30 @@ router.post("/admin/dev/hydrate-bookings-from-history", async (req, res) => {
     console.error("[DEV HYDRATE] Error hydrating Bookings from RideHistory:", err);
     return res.status(500).json({ error: "Failed to hydrate Bookings" });
   }
-});
+}
+
+/** ---------------- routes ---------------- **/
+
+// Admin-only counts
+router.get("/counts", requireAdminAuth, handleCounts);
+
+// Driver self-only routes
+router.get("/driver/:driverId/profile", requireUserAuth, requireDriverSelf, handleDriverProfile);
+router.get("/driver/:driverId/summary", requireUserAuth, requireDriverSelf, handleDriverSummary);
+router.get("/driver/:driverId/monthly", requireUserAuth, requireDriverSelf, handleDriverMonthly);
+router.get("/driver/:driverId/report", requireUserAuth, requireDriverSelf, handleDriverReport);
+
+// Admin mirrors for viewing any driver analytics
+router.get("/admin/driver/:driverId/profile", requireAdminAuth, handleDriverProfile);
+router.get("/admin/driver/:driverId/summary", requireAdminAuth, handleDriverSummary);
+router.get("/admin/driver/:driverId/monthly", requireAdminAuth, handleDriverMonthly);
+router.get("/admin/driver/:driverId/report", requireAdminAuth, handleDriverReport);
+
+// Admin dev route
+router.post(
+  "/admin/dev/hydrate-bookings-from-history",
+  requireAdminAuth,
+  handleHydrateBookings
+);
 
 module.exports = router;

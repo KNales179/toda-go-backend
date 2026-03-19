@@ -6,7 +6,6 @@ const RideHistory = require("../models/RideHistory");
 const Passenger = require("../models/Passenger");
 const Driver = require("../models/Drivers");
 
-// ✅ add admin auth middleware
 const requireAdminAuth = require("../middleware/requireAdminAuth");
 
 // --- Helper: Build monthly aggregation pipeline ---
@@ -14,13 +13,11 @@ function monthlyAggPipeline() {
   const now = new Date();
   const currentYear = now.getFullYear();
 
-  const yearStart = new Date(currentYear, 0, 1);         // Jan 1
-  const nextYearStart = new Date(currentYear + 1, 0, 1); // Jan 1 next year
+  const yearStart = new Date(currentYear, 0, 1);
+  const nextYearStart = new Date(currentYear + 1, 0, 1);
 
   return [
     {
-      // Always try to convert createdAt (string or Date) to a Date,
-      // fall back to ObjectId timestamp if createdAt is missing.
       $addFields: {
         eventDate: {
           $ifNull: [{ $toDate: "$createdAt" }, { $toDate: "$_id" }],
@@ -51,7 +48,6 @@ function monthlyAggPipeline() {
 }
 
 // ---------- MONTHLY STATS ----------
-// ✅ protected with admin auth
 router.get("/admin/stats/monthly", requireAdminAuth, async (req, res) => {
   try {
     const tripsAgg = await RideHistory.aggregate(monthlyAggPipeline());
@@ -86,18 +82,8 @@ router.get("/admin/stats/monthly", requireAdminAuth, async (req, res) => {
     mergeAgg(driversAgg, "drivers");
 
     const monthNames = [
-      "Jan",
-      "Feb",
-      "Mar",
-      "Apr",
-      "May",
-      "Jun",
-      "Jul",
-      "Aug",
-      "Sep",
-      "Oct",
-      "Nov",
-      "Dec",
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
 
     const result = Array.from(map.values())
@@ -119,12 +105,11 @@ router.get("/admin/stats/monthly", requireAdminAuth, async (req, res) => {
 });
 
 // ---------- WEEKLY STATS (current month, per week) ----------
-// ✅ protected with admin auth
 router.get("/admin/stats/weekly", requireAdminAuth, async (req, res) => {
   try {
     const now = new Date();
     const year = now.getFullYear();
-    const monthIndex = now.getMonth(); // 0-based
+    const monthIndex = now.getMonth();
 
     const startOfMonth = new Date(year, monthIndex, 1);
     const endOfMonth = new Date(year, monthIndex + 1, 0, 23, 59, 59, 999);
@@ -194,7 +179,6 @@ router.get("/admin/stats/weekly", requireAdminAuth, async (req, res) => {
     const result = Array.from(map.values())
       .sort((a, b) => a.week - b.week)
       .map((row) => ({
-        // we still use "month" as the label key so the same chart works
         month: `Week ${row.week}`,
         trips: row.trips || 0,
         users: row.users || 0,
@@ -208,7 +192,10 @@ router.get("/admin/stats/weekly", requireAdminAuth, async (req, res) => {
   }
 });
 
-// ------------------- DEV ROUTES (left unchanged) -------------------
+// Protect all dev routes below this line
+router.use("/admin/dev", requireAdminAuth);
+
+// ------------------- DEV ROUTES -------------------
 router.post("/admin/dev/seed-ridehistory", async (req, res) => {
   try {
     const { raw } = req.body;
@@ -221,9 +208,7 @@ router.post("/admin/dev/seed-ridehistory", async (req, res) => {
       const parsed = JSON.parse(raw);
       docs = Array.isArray(parsed) ? parsed : [parsed];
     } catch (e) {
-      return res
-        .status(400)
-        .json({ error: "Invalid JSON", details: String(e) });
+      return res.status(400).json({ error: "Invalid JSON", details: String(e) });
     }
 
     const cleaned = docs.map((d) => {
@@ -249,20 +234,16 @@ router.post("/admin/dev/ridehistory-trim", async (req, res) => {
     const { month, count } = req.body;
 
     if (!month || typeof month !== "string") {
-      return res
-        .status(400)
-        .json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
+      return res.status(400).json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
     }
     const n = Number(count);
     if (!n || n <= 0) {
-      return res
-        .status(400)
-        .json({ error: "Missing or invalid count (must be > 0)." });
+      return res.status(400).json({ error: "Missing or invalid count (must be > 0)." });
     }
 
     const [yearStr, monthStr] = month.split("-");
     const year = Number(yearStr);
-    const monthIndex = Number(monthStr) - 1; // JS Date: 0-based
+    const monthIndex = Number(monthStr) - 1;
 
     if (
       !Number.isInteger(year) ||
@@ -322,9 +303,7 @@ router.post("/admin/dev/seed-passengers", async (req, res) => {
       const parsed = JSON.parse(raw);
       docs = Array.isArray(parsed) ? parsed : [parsed];
     } catch (e) {
-      return res
-        .status(400)
-        .json({ error: "Invalid JSON", details: String(e) });
+      return res.status(400).json({ error: "Invalid JSON", details: String(e) });
     }
 
     const cleaned = docs.map((d) => {
@@ -386,15 +365,11 @@ router.post("/admin/dev/passenger-trim", async (req, res) => {
     const { month, count } = req.body;
 
     if (!month || typeof month !== "string") {
-      return res
-        .status(400)
-        .json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
+      return res.status(400).json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
     }
     const n = Number(count);
     if (!n || n <= 0) {
-      return res
-        .status(400)
-        .json({ error: "Missing or invalid count (must be > 0)." });
+      return res.status(400).json({ error: "Missing or invalid count (must be > 0)." });
     }
 
     const [yearStr, monthStr] = month.split("-");
@@ -459,9 +434,7 @@ router.post("/admin/dev/seed-drivers", async (req, res) => {
       const parsed = JSON.parse(raw);
       docs = Array.isArray(parsed) ? parsed : [parsed];
     } catch (e) {
-      return res
-        .status(400)
-        .json({ error: "Invalid JSON", details: String(e) });
+      return res.status(400).json({ error: "Invalid JSON", details: String(e) });
     }
 
     const cleaned = docs.map((d) => {
@@ -488,15 +461,11 @@ router.post("/admin/dev/driver-trim", async (req, res) => {
     const { month, count } = req.body;
 
     if (!month || typeof month !== "string") {
-      return res
-        .status(400)
-        .json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
+      return res.status(400).json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
     }
     const n = Number(count);
     if (!n || n <= 0) {
-      return res
-        .status(400)
-        .json({ error: "Missing or invalid count (must be > 0)." });
+      return res.status(400).json({ error: "Missing or invalid count (must be > 0)." });
     }
 
     const [yearStr, monthStr] = month.split("-");

@@ -1,11 +1,16 @@
 // routes/liveMonitor.js
 const express = require("express");
+const mongoose = require("mongoose");
 const router = express.Router();
 
 const Toda = require("../models/Toda");
 const Driver = require("../models/Drivers");
 const DriverStatus = require("../models/DriverStatus");
 const Booking = require("../models/Bookings");
+const requireAdminAuth = require("../middleware/requireAdminAuth");
+
+// Protect all routes in this file for admin only
+router.use(requireAdminAuth);
 
 /**
  * GET /api/toda/locations
@@ -143,16 +148,22 @@ router.get("/bookings/active", async (req, res) => {
 router.delete("/bookings/:id", async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid booking id" });
+    }
+
     const deleted = await Booking.findByIdAndDelete(id);
+
     if (!deleted) {
       return res.status(404).json({ error: "Booking not found" });
     }
+
     res.json({ ok: true });
   } catch (err) {
     console.error("Error deleting booking:", err);
     res.status(500).json({ error: "Failed to delete booking" });
   }
 });
-
 
 module.exports = router;

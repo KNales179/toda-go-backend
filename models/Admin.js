@@ -27,23 +27,40 @@ const AdminSchema = new mongoose.Schema(
       type: String,
       required: true,
       minlength: 6,
-      select: false, // 🔥 hide password by default in queries
+      select: false,
     },
 
     role: {
       type: String,
-      enum: ["superadmin", "admin"],
+      enum: ["super_admin", "admin"],
       default: "admin",
     },
 
     isActive: { type: Boolean, default: true },
 
+    // 2FA
+    twoFactorEnabled: { type: Boolean, default: false },
+    twoFactorSecret: { type: String, default: null, select: false },
+    twoFactorVerifiedAt: { type: Date, default: null },
+    mustSetup2FA: { type: Boolean, default: false },
+
+    // optional later
+    trustedDeviceEnabled: { type: Boolean, default: false },
+
+    // audit/basic tracking
     lastLoginAt: { type: Date, default: null },
+    lastLoginIp: { type: String, default: null },
+    lastLoginUserAgent: { type: String, default: null },
+
+    createdByAdminId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Admin",
+      default: null,
+    },
   },
   { timestamps: true }
 );
 
-// Hash password like your Driver model
 AdminSchema.pre("save", async function (next) {
   if (!this.password || !this.isModified("password")) return next();
   const salt = await bcrypt.genSalt(10);
@@ -51,12 +68,10 @@ AdminSchema.pre("save", async function (next) {
   next();
 });
 
-// Compare password helper
 AdminSchema.methods.comparePassword = async function (plain) {
   return bcrypt.compare(plain, this.password);
 };
 
-// Safe JSON (no password)
 AdminSchema.methods.toSafeObject = function () {
   return {
     _id: this._id,
@@ -65,7 +80,14 @@ AdminSchema.methods.toSafeObject = function () {
     email: this.email,
     role: this.role,
     isActive: this.isActive,
+    twoFactorEnabled: this.twoFactorEnabled,
+    twoFactorVerifiedAt: this.twoFactorVerifiedAt,
+    mustSetup2FA: this.mustSetup2FA,
+    trustedDeviceEnabled: this.trustedDeviceEnabled,
     lastLoginAt: this.lastLoginAt,
+    lastLoginIp: this.lastLoginIp,
+    lastLoginUserAgent: this.lastLoginUserAgent,
+    createdByAdminId: this.createdByAdminId,
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,
   };

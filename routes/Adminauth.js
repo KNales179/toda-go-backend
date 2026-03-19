@@ -1,3 +1,4 @@
+//Adminauth.js
 const express = require("express");
 const router = express.Router();
 const jwt = require("jsonwebtoken");
@@ -12,26 +13,41 @@ function signToken(admin) {
   );
 }
 
-router.post("/register", async (req, res) => {
+// ADMIN-ONLY REGISTER
+router.post("/register", requireAdminAuth, async (req, res) => {
   try {
-    const { name = "", username, email, password } = req.body;
+    const { name = "", username, email, password, role } = req.body || {};
 
-    if (!username || !email || !password) {
+    const cleanName = String(name || "").trim();
+    const cleanUsername = String(username || "").trim().toLowerCase();
+    const cleanEmail = String(email || "").trim().toLowerCase();
+    const cleanPassword = String(password || "");
+    const cleanRole = String(role || "admin").trim().toLowerCase();
+
+    if (!cleanUsername || !cleanEmail || !cleanPassword) {
       return res
         .status(400)
         .json({ message: "username, email, password are required" });
     }
-    if (password.length < 6) {
+
+    if (cleanPassword.length < 6) {
       return res
         .status(400)
         .json({ message: "Password must be at least 6 characters" });
     }
 
+    // only super_admin can create admins
+    if (req.admin.role !== "super_admin") {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
+    // do not allow creating super_admin from this route
+    if (cleanRole !== "admin") {
+      return res.status(400).json({ message: "Invalid role" });
+    }
+
     const existing = await Admin.findOne({
-      $or: [
-        { email: String(email).toLowerCase() },
-        { username: String(username).toLowerCase() },
-      ],
+      $or: [{ email: cleanEmail }, { username: cleanUsername }],
     });
 
     if (existing) {
@@ -41,17 +57,19 @@ router.post("/register", async (req, res) => {
     }
 
     const admin = await Admin.create({
-      name,
-      username,
-      email,
-      password,
+      name: cleanName,
+      username: cleanUsername,
+      email: cleanEmail,
+      password: cleanPassword,
+      role: "admin",
+      isActive: true,
+      twoFactorEnabled: false,
+      mustSetup2FA: false,
+      createdByAdminId: req.admin.id,
     });
-
-    const token = signToken(admin);
 
     return res.status(201).json({
       message: "Admin registered successfully",
-      token,
       admin: admin.toSafeObject(),
     });
   } catch (error) {
@@ -63,9 +81,9 @@ router.post("/register", async (req, res) => {
 
 router.post("/login", async (req, res) => {
   try {
-    const { emailOrUsername, email, username, password } = req.body;
+    const { emailOrUsername, email, username, password } = req.body || {};
 
-    const loginValue = (emailOrUsername || email || username || "")
+    const loginValue = String(emailOrUsername || email || username || "")
       .toLowerCase()
       .trim();
 
@@ -84,9 +102,34 @@ router.post("/login", async (req, res) => {
     }
 
     const ok = await admin.comparePassword(password);
-    if (!ok) return res.status(400).json({ message: "Invalid credentials" });
+    if (!ok) {
+      return res.status(400).json({ message: "Invalid credentials" });
+    }
+
+    // super admin: require 2FA flow before issuing full token
+    if (admin.role === "super_admin") {
+      if (!admin.twoFactorEnabled) {
+        return res.status(200).json({
+          message: "2FA setup required",
+          requires2FASetup: true,
+          admin: admin.toSafeObject(),
+        });
+      }
+
+      return res.status(200).json({
+        message: "2FA verification required",
+        requires2FA: true,
+        admin: admin.toSafeObject(),
+      });
+    }
 
     admin.lastLoginAt = new Date();
+    admin.lastLoginIp =
+      req.headers["x-forwarded-for"]?.toString().split(",")[0].trim() ||
+      req.socket?.remoteAddress ||
+      null;
+    admin.lastLoginUserAgent = req.headers["user-agent"] || null;
+
     await admin.save();
 
     const token = signToken(admin);
@@ -111,6 +154,9 @@ router.get("/me", requireAdminAuth, async (req, res) => {
       username: req.admin.username,
       email: req.admin.email,
       name: req.admin.name,
+      isActive: req.admin.isActive,
+      twoFactorEnabled: req.admin.twoFactorEnabled,
+      mustSetup2FA: req.admin.mustSetup2FA,
     },
   });
 });
