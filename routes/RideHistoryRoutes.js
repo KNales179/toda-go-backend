@@ -4,6 +4,7 @@ const axios = require("axios");
 const router = express.Router();
 
 const RideHistory = require("../models/RideHistory");
+const Booking = require("../models/Bookings");
 const Driver = require("../models/Drivers"); 
 const Passenger = require("../models/Passenger"); 
 const requireUserAuth = require("../middleware/requireUserAuth");
@@ -52,6 +53,253 @@ async function reverseGeocodeORS(lat, lng) {
   }
 }
 
+router.get("/admin/trips", requireAdminAuth, async (req, res) => {
+  try {
+    const role = String(req.admin?.role || "").toLowerCase();
+
+    if (role !== "admin" && role !== "super_admin") {
+      return res.status(403).json({ ok: false, error: "forbidden" });
+    }
+
+    // ---------------------------------
+    // 1) Load non-completed bookings
+    // ---------------------------------
+    const bookings = await Booking.find({
+      status: { $in: ["pending", "accepted", "canceled", "cancelled", "enroute"] },
+    })
+      .sort({ createdAt: -1, _id: -1 })
+      .lean();
+
+    // ---------------------------------
+    // 2) Load completed trips from RideHistory
+    // ---------------------------------
+    const completedRides = await RideHistory.find()
+      .sort({ completedAt: -1, _id: -1 })
+      .lean();
+
+    // ---------------------------------
+    // 3) Collect unique driver/passenger IDs from both sources
+    // ---------------------------------
+    const allDriverIds = [
+      ...new Set(
+        [...bookings, ...completedRides]
+          .map((x) => x.driverId)
+          .filter(Boolean)
+          .map(String)
+      ),
+    ];
+
+    const allPassengerIds = [
+      ...new Set(
+        [...bookings, ...completedRides]
+          .map((x) => x.passengerId)
+          .filter(Boolean)
+          .map(String)
+      ),
+    ];
+
+    const driverObjectIds = allDriverIds
+      .map((id) =>
+        mongoose.Types.ObjectId.isValid(id)
+          ? new mongoose.Types.ObjectId(id)
+          : null
+      )
+      .filter(Boolean);
+
+    const passengerObjectIds = allPassengerIds
+      .map((id) =>
+        mongoose.Types.ObjectId.isValid(id)
+          ? new mongoose.Types.ObjectId(id)
+          : null
+      )
+      .filter(Boolean);
+
+    // ---------------------------------
+    // 4) Build driver name map
+    // ---------------------------------
+    const driversById = new Map();
+    if (driverObjectIds.length) {
+      const drivers = await Driver.find({ _id: { $in: driverObjectIds } })
+        .select("driverName driverFirstName driverMiddleName driverLastName")
+        .lean();
+
+      drivers.forEach((d) => {
+        const fullName =
+          d.driverName ||
+          [d.driverFirstName, d.driverMiddleName, d.driverLastName]
+            .filter(Boolean)
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        driversById.set(String(d._id), fullName || "Driver");
+      });
+    }
+
+    // ---------------------------------
+    // 5) Build passenger name map
+    // ---------------------------------
+    const passengersById = new Map();
+    if (passengerObjectIds.length) {
+      const passengers = await Passenger.find({ _id: { $in: passengerObjectIds } })
+        .select("firstName middleName lastName")
+        .lean();
+
+      passengers.forEach((p) => {
+        const fullName = [p.firstName, p.middleName, p.lastName]
+          .filter(Boolean)
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        passengersById.set(String(p._id), fullName || "Passenger");
+      });
+    }
+
+    // ---------------------------------
+    // 6) Normalize live bookings
+    // ---------------------------------
+    const bookingItems = bookings.map((b) => {
+      const rawStatus = String(b.status || "pending").toLowerCase();
+
+      return {
+        source: "booking",
+        _id: String(b._id),
+        bookingId: b.bookingId || "",
+        passengerId: b.passengerId ? String(b.passengerId) : null,
+        passengerName:
+          passengersById.get(String(b.passengerId)) ||
+          b.passengerName ||
+          "Passenger",
+
+        driverId: b.driverId ? String(b.driverId) : null,
+        driverName: b.driverId
+          ? driversById.get(String(b.driverId)) || "Driver"
+          : "Unassigned",
+
+        pickupLabel:
+          b.pickupPlace ||
+          b.pickupLabel ||
+          b.pickupName ||
+          b.pickupAddress ||
+          "Pickup location",
+
+        destinationLabel:
+          b.destinationPlace ||
+          b.destinationLabel ||
+          b.destinationName ||
+          b.destinationAddress ||
+          "Destination",
+
+        pickupPlace: b.pickupPlace || "",
+        destinationPlace: b.destinationPlace || "",
+
+        fare: b.fare ?? 0,
+        totalFare:
+          b.totalFare != null
+            ? b.totalFare
+            : b.bookingType === "GROUP"
+            ? Number(b.fare || 0) * Number(b.partySize || 1)
+            : Number(b.fare || 0),
+
+        paymentMethod: b.paymentMethod || "",
+        paymentStatus: b.paymentStatus || "",
+        notes: b.notes || "",
+
+        bookingType: String(b.bookingType || "CLASSIC").toLowerCase(),
+        groupCount: Number(b.partySize || 1),
+
+        bookedFor: !!b.bookedFor,
+        riderName: b.riderName || "",
+        riderPhone: b.riderPhone || "",
+
+        status: rawStatus,
+        createdAt: b.createdAt || null,
+        acceptedAt: b.acceptedAt || null,
+        completedAt: null,
+        canceledAt: b.canceledAt || null,
+      };
+    });
+
+    // ---------------------------------
+    // 7) Normalize completed ride history
+    // ---------------------------------
+    const rideItems = completedRides.map((r) => {
+      return {
+        source: "ridehistory",
+        _id: String(r._id),
+        bookingId: r.bookingId || "",
+        passengerId: r.passengerId ? String(r.passengerId) : null,
+        passengerName:
+          passengersById.get(String(r.passengerId)) ||
+          r.passengerName ||
+          "Passenger",
+
+        driverId: r.driverId ? String(r.driverId) : null,
+        driverName:
+          driversById.get(String(r.driverId)) ||
+          r.driverName ||
+          "Driver",
+
+        pickupLabel:
+          r.pickupPlace ||
+          r.pickupLabel ||
+          r.pickupName ||
+          r.pickupAddress ||
+          "Pickup location",
+
+        destinationLabel:
+          r.destinationPlace ||
+          r.destinationLabel ||
+          r.destinationName ||
+          r.destinationAddress ||
+          "Destination",
+
+        pickupPlace: r.pickupPlace || "",
+        destinationPlace: r.destinationPlace || "",
+
+        fare: r.fare ?? 0,
+        totalFare: r.totalFare != null ? r.totalFare : r.fare ?? 0,
+
+        paymentMethod: r.paymentMethod || "",
+        paymentStatus: r.paymentStatus || "",
+        notes: r.notes || "",
+
+        bookingType: String(r.bookingType || "classic").toLowerCase(),
+        groupCount: Number(r.groupCount || 1),
+
+        bookedFor: !!r.bookedFor,
+        riderName: r.riderName || "",
+        riderPhone: r.riderPhone || "",
+
+        status: "completed",
+        createdAt: r.createdAt || r.completedAt || null,
+        acceptedAt: null,
+        completedAt: r.completedAt || null,
+        canceledAt: null,
+      };
+    });
+
+    // ---------------------------------
+    // 8) Merge + sort
+    // ---------------------------------
+    const items = [...bookingItems, ...rideItems].sort((a, b) => {
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bTime - aTime;
+    });
+
+    return res.status(200).json({
+      ok: true,
+      items,
+      total: items.length,
+    });
+  } catch (error) {
+    console.error("❌ Failed to fetch admin trips:", error);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
 router.get("/rides", requireAdminAuth, async (req, res) => {
   try {
     const role = String(req.admin?.role || "").toLowerCase();
@@ -64,10 +312,128 @@ router.get("/rides", requireAdminAuth, async (req, res) => {
       .sort({ completedAt: -1, _id: -1 })
       .lean();
 
-    res.status(200).json({ items: rides, total: rides.length });
+    // -----------------------------
+    // Map driver IDs -> names
+    // -----------------------------
+    const driverIds = [...new Set(rides.map((r) => r.driverId).filter(Boolean))];
+
+    const driverObjectIds = driverIds
+      .map((id) =>
+        mongoose.Types.ObjectId.isValid(id)
+          ? new mongoose.Types.ObjectId(id)
+          : null
+      )
+      .filter(Boolean);
+
+    let driversById = new Map();
+    if (driverObjectIds.length) {
+      const drivers = await Driver.find({ _id: { $in: driverObjectIds } })
+        .select("driverName driverFirstName driverMiddleName driverLastName")
+        .lean();
+
+      drivers.forEach((d) => {
+        const fullName =
+          d.driverName ||
+          [d.driverFirstName, d.driverMiddleName, d.driverLastName]
+            .filter(Boolean)
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        driversById.set(String(d._id), fullName || "Driver");
+      });
+    }
+
+    // -----------------------------
+    // Map passenger IDs -> names
+    // -----------------------------
+    const passengerIds = [...new Set(rides.map((r) => r.passengerId).filter(Boolean))];
+
+    const passengerObjectIds = passengerIds
+      .map((id) =>
+        mongoose.Types.ObjectId.isValid(id)
+          ? new mongoose.Types.ObjectId(id)
+          : null
+      )
+      .filter(Boolean);
+
+    let passengersById = new Map();
+    if (passengerObjectIds.length) {
+      const passengers = await Passenger.find({ _id: { $in: passengerObjectIds } })
+        .select("firstName middleName lastName")
+        .lean();
+
+      passengers.forEach((p) => {
+        const fullName = [p.firstName, p.middleName, p.lastName]
+          .filter(Boolean)
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        passengersById.set(String(p._id), fullName || "Passenger");
+      });
+    }
+
+    // -----------------------------
+    // Build items
+    // -----------------------------
+    const items = rides.map((r) => {
+      const pickupLabel =
+        r.pickupPlace ||
+        r.pickupLabel ||
+        r.pickupName ||
+        r.pickupAddress ||
+        "Pickup location";
+
+      const destinationLabel =
+        r.destinationPlace ||
+        r.destinationLabel ||
+        r.destinationName ||
+        r.destinationAddress ||
+        "Destination";
+
+      return {
+        _id: String(r._id),
+        bookingId: r.bookingId || "",
+        passengerId: r.passengerId || null,
+        passengerName:
+          passengersById.get(String(r.passengerId)) ||
+          r.passengerName ||
+          "Passenger",
+
+        driverId: r.driverId ? String(r.driverId) : null,
+        driverName:
+          driversById.get(String(r.driverId)) ||
+          r.driverName ||
+          "Driver",
+
+        pickupLabel,
+        destinationLabel,
+
+        pickupPlace: r.pickupPlace || "",
+        destinationPlace: r.destinationPlace || "",
+
+        fare: r.fare ?? 0,
+        totalFare: r.totalFare != null ? r.totalFare : r.fare ?? 0,
+
+        bookingType: r.bookingType || "",
+        groupCount: r.groupCount ?? 1,
+        paymentMethod: r.paymentMethod || "",
+        notes: r.notes || "",
+
+        bookedFor: !!r.bookedFor,
+        riderName: r.riderName || "",
+        riderPhone: r.riderPhone || "",
+
+        createdAt: r.completedAt || r.createdAt || null,
+        completedAt: r.completedAt || null,
+      };
+    });
+
+    return res.status(200).json({ items, total: items.length });
   } catch (error) {
     console.error("❌ Failed to fetch all ride history:", error);
-    res.status(500).json({ error: "server_error" });
+    return res.status(500).json({ error: "server_error" });
   }
 });
 

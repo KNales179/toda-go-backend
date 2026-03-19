@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 const fetch = require("node-fetch");
 const requireUserAuth = require("../middleware/requireUserAuth");
+const requireAdminAuth = require("../middleware/requireAdminAuth");
 const mongoose = require("mongoose");
 const DriverStatus = require("../models/DriverStatus");
 const Passenger = require("../models/Passenger");
@@ -1848,8 +1849,14 @@ router.post("/driver/push-token", requireUserAuth, async (req, res) => {
 });
 
 // ---------- (Optional) GET /bookings — debug only ----------
-router.get("/bookings", async (_req, res) => {
+router.get("/bookings", requireAdminAuth, async (req, res) => {
   try {
+    const role = String(req.admin?.role || "").toLowerCase();
+
+    if (role !== "admin" && role !== "super_admin") {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
     const rows = await Booking.find({}).sort({ createdAt: -1 }).lean();
     return res.status(200).json(
       rows.map((b) => ({
