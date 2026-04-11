@@ -4,7 +4,7 @@ const router = express.Router();
 const FareConfig = require("../models/FareConfig");
 const requireAdminAuth = require("../middleware/requireAdminAuth");
 
-const ALLOWED_CHARGE_MODES = ["ceil", "floor", "round", "exact"];
+const ALLOWED_CHARGE_MODES = ["per_passenger", "per_trip"];
 const ALLOWED_DISCOUNT_APPLIES_TO = ["student", "senior", "pwd"];
 
 function toNumberOrNull(value) {

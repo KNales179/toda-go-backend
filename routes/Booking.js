@@ -1,4 +1,4 @@
-// routes/Booking.js (Mongo-only)
+// Booking.js
 const express = require("express");
 const router = express.Router();
 const fetch = require("node-fetch");
@@ -9,6 +9,7 @@ const DriverStatus = require("../models/DriverStatus");
 const Passenger = require("../models/Passenger");
 const RideHistory = require("../models/RideHistory");
 const Booking = require("../models/Bookings");
+const FareConfig = require("../models/FareConfig");
 const Driver = require("../models/Drivers");
 const Toda = require("../models/Toda");
 const Task = require("../models/Task");
@@ -950,16 +951,17 @@ router.post("/book", requireUserAuth, async (req, res) => {
       pickupLng,
       destinationLat,
       destinationLng,
-      fare,
+      estimatedFare = 0,
+      distanceKm,
       paymentMethod,
       notes,
       pickupPlace,
       destinationPlace,
       bookingType = "CLASSIC",
       partySize,
-      bookedFor,     
-      riderName,     
-      riderPhone,     
+      bookedFor,
+      riderName,
+      riderPhone,
       chosenRoute,
     } = req.body;
 
@@ -1004,6 +1006,69 @@ router.post("/book", requireUserAuth, async (req, res) => {
     const isShareable = type !== "SOLO";
     const reservedSeats = size;
 
+    // ------------------------------
+    // Compute final authoritative fare on backend
+    // ------------------------------
+    let resolvedDistanceKm = Number(distanceKm);
+
+    if (!Number.isFinite(resolvedDistanceKm) || resolvedDistanceKm <= 0) {
+      const routeMeters = Number(chosenRoute?.distanceMeters);
+      if (Number.isFinite(routeMeters) && routeMeters > 0) {
+        resolvedDistanceKm = routeMeters / 1000;
+      }
+    }
+
+    if (!Number.isFinite(resolvedDistanceKm) || resolvedDistanceKm <= 0) {
+      return res.status(400).json({ message: "Valid distanceKm is required" });
+    }
+
+    const config = await FareConfig.getSingleton();
+    const isSolo = type === "SOLO";
+    const fareRules = isSolo ? config.special : config.regular;
+
+    let computedFare = 0;
+
+    if (isSolo && resolvedDistanceKm <= Number(fareRules.shortKm || 0)) {
+      computedFare = Number(fareRules.shortFare || 0);
+    } else {
+      const extraKm = Math.max(0, resolvedDistanceKm - Number(fareRules.baseKm || 0));
+      const additionalUnits = Math.ceil(extraKm);
+
+      computedFare =
+        Number(fareRules.baseFare || 0) +
+        additionalUnits * Number(fareRules.addlPerKm || 0);
+    }
+
+    if (fareRules.chargeMode === "per_passenger") {
+      computedFare *= size;
+    }
+
+    let discountApplied = 0;
+
+    try {
+      const passenger = await Passenger.findById(passengerId);
+
+      if (
+        config.discounts?.enabled &&
+        passenger?.discount &&
+        passenger?.discountVerification?.status === "approved"
+      ) {
+        const normalizedType = String(passenger.discountType || "").toLowerCase();
+        const allowedTypes = Array.isArray(config.discounts?.appliesTo)
+          ? config.discounts.appliesTo.map((x) => String(x).toLowerCase())
+          : [];
+
+        if (allowedTypes.includes(normalizedType)) {
+          discountApplied = Number(config.discounts.percent || 0);
+          computedFare = computedFare - (computedFare * discountApplied) / 100;
+        }
+      }
+    } catch (err) {
+      console.warn("Passenger discount lookup failed during booking:", err?.message || err);
+    }
+
+    computedFare = Math.round(computedFare);
+
     let passengerName = "Passenger";
     try {
       const p = await Passenger.findById(passengerId).select("firstName middleName lastName");
@@ -1039,7 +1104,18 @@ router.post("/book", requireUserAuth, async (req, res) => {
       pickupLng,
       destinationLat,
       destinationLng,
-      fare,
+      fare: computedFare,
+      estimatedFare: Number(estimatedFare) || 0,
+      distanceKm: resolvedDistanceKm,
+      fareBreakdown: {
+        baseFare: Number(fareRules.baseFare || 0),
+        addlPerKm: Number(fareRules.addlPerKm || 0),
+        discountApplied,
+        bookingType: type,
+        chargeMode: fareRules.chargeMode || "",
+        partySize: size,
+        computedAt: new Date(),
+      },
       paymentMethod,
       notes,
       pickupPlace,

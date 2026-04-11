@@ -55,7 +55,18 @@ const BookingSchema = new mongoose.Schema(
     ],
 
     // Fare & misc
-    fare: Number,
+    fare: { type: Number, default: 0 }, // final authoritative fare from backend
+    estimatedFare: { type: Number, default: 0 }, // passenger-side estimate shown before booking
+    distanceKm: { type: Number, default: 0 }, // distance used for fare computation
+    fareBreakdown: {
+      baseFare: { type: Number, default: 0 },
+      addlPerKm: { type: Number, default: 0 },
+      discountApplied: { type: Number, default: 0 },
+      bookingType: { type: String, default: "CLASSIC" },
+      chargeMode: { type: String, default: "" },
+      partySize: { type: Number, default: 1 },
+      computedAt: { type: Date, default: null },
+    },
     paymentMethod: String,
     notes: String,
 

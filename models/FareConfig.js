@@ -1,3 +1,4 @@
+//FareConfig.js
 const mongoose = require("mongoose");
 
 const FareConfigSchema = new mongoose.Schema(
