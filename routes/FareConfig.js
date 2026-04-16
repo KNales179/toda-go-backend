@@ -22,7 +22,7 @@ function isNonNegativeNumber(value) {
  * PUBLIC READ
  * Used by booking/app system to fetch current fare matrix
  */
-router.get("/fare-config", requireUserAuth, async (req, res) => {
+router.get("/config/fare-config", requireUserAuth, async (req, res) => {
   try {
     const config = await FareConfig.getSingleton();
 
