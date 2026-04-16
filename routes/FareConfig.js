@@ -17,6 +17,7 @@ function isNonNegativeNumber(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+//
 /**
  * PUBLIC READ
  * Used by booking/app system to fetch current fare matrix
