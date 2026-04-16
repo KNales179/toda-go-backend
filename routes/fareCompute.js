@@ -3,9 +3,8 @@ const express = require("express");
 const router = express.Router();
 const FareConfig = require("../models/FareConfig");
 const Passenger = require("../models/Passenger");
-const requireAuth = require("../middleware/requireAuth");
 
-router.post("/fare/compute", requireAuth, async (req, res) => {
+router.post("/fare/compute", async (req, res) => {
   try {
     const { distanceKm, bookingType = "CLASSIC", partySize = 1 } = req.body;
 
