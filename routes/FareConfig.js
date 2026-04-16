@@ -27,6 +27,8 @@ router.get("/fare-config", requireUserAuth, async (req, res) => {
     const config = await FareConfig.getSingleton();
 
     res.json({
+      ok: true,
+      source: "fare-config-public-route",
       regular: config.regular,
       special: config.special,
       discounts: config.discounts,
