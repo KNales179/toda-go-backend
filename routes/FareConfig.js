@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 const FareConfig = require("../models/FareConfig");
 const requireAdminAuth = require("../middleware/requireAdminAuth");
+const requireUserAuth = require("../middleware/requireUserAuth")
 
 const ALLOWED_CHARGE_MODES = ["per_passenger", "per_trip"];
 const ALLOWED_DISCOUNT_APPLIES_TO = ["student", "senior", "pwd"];
@@ -21,7 +22,7 @@ function isNonNegativeNumber(value) {
  * PUBLIC READ
  * Used by booking/app system to fetch current fare matrix
  */
-router.get("/fare-config", async (req, res) => {
+router.get("/fare-config", requireUserAuth, async (req, res) => {
   try {
     const config = await FareConfig.getSingleton();
 
