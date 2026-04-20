@@ -3,7 +3,6 @@ const express = require("express");
 const router = express.Router();
 const FareConfig = require("../models/FareConfig");
 const requireAdminAuth = require("../middleware/requireAdminAuth");
-const requireUserAuth = require("../middleware/requireUserAuth")
 
 const ALLOWED_CHARGE_MODES = ["per_passenger", "per_trip"];
 const ALLOWED_DISCOUNT_APPLIES_TO = ["student", "senior", "pwd"];
@@ -17,28 +16,6 @@ function toNumberOrNull(value) {
 function isNonNegativeNumber(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
-
-/**
- * PUBLIC READ
- * Used by booking/app system to fetch current fare matrix
- */
-router.get("/config/fare-config", requireUserAuth, async (req, res) => {
-  try {
-    const config = await FareConfig.getSingleton();
-
-    res.json({
-      ok: true,
-      source: "fare-config-public-route",
-      regular: config.regular,
-      special: config.special,
-      discounts: config.discounts,
-      lastUpdatedAt: config.lastUpdatedAt,
-    });
-  } catch (err) {
-    console.error("GET /fare-config error:", err);
-    res.status(500).json({ message: "Failed to load fare configuration." });
-  }
-});
 
 /**
  * ADMIN READ
