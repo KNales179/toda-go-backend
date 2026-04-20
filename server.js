@@ -126,6 +126,7 @@ const fareCompute = require("./routes/fareCompute");
 const debugProbeRoutes = require("./routes/DebugProbe");
 
 // Mount routes AFTER io is attached
+app.use("/api", publicFareConfigRoutes); 
 app.use("/api/auth/passenger", passengerRoutes);
 app.use("/api/auth/driver", driverRoutes);
 app.use("/api/login/passenger", passengerLoginRoutes);
@@ -151,9 +152,8 @@ app.use("/api", cloudinary);
 app.use("/api/driver", media);
 app.use("/api", AdminUsers);
 app.use("/api", adminDashboard);
-app.use("/api", adminStatsRoutes); 
+app.use("/api", adminStatsRoutes);
 app.use("/api", fareConfigRoutes);
-app.use("/api", publicFareConfigRoutes);
 app.use("/api/admin", adminTodaRoutes);
 app.use("/api", debugLogRoutes);
 app.use("/api", liveMonitorRoutes);

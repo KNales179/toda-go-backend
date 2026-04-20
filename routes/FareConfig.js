@@ -17,10 +17,7 @@ function isNonNegativeNumber(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-/**
- * ADMIN READ
- * Used by admin panel
- */
+
 router.get("/fare-config", async (req, res) => {
   try {
     const config = await FareConfig.getSingleton();
