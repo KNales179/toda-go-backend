@@ -1925,15 +1925,23 @@ router.post("/driver/push-token", requireUserAuth, async (req, res) => {
 });
 
 // ---------- (Optional) GET /bookings — debug only ----------
-router.get("/bookings", requireAdminAuth, async (req, res) => {
+router.get("/bookings", requireUserAuth, async (req, res) => {
   try {
-    const role = String(req.admin?.role || "").toLowerCase();
+    const role = String(req.user?.role || "").toLowerCase();
+    const userId = String(req.user?.sub || "");
 
-    if (role !== "admin" && role !== "super_admin") {
+    let rows = [];
+
+    if (role === "admin" || role === "super_admin") {
+      rows = await Booking.find({}).sort({ createdAt: -1 }).lean();
+    } else if (role === "passenger") {
+      rows = await Booking.find({ passengerId: userId }).sort({ createdAt: -1 }).lean();
+    } else if (role === "driver") {
+      rows = await Booking.find({ driverId: userId }).sort({ createdAt: -1 }).lean();
+    } else {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    const rows = await Booking.find({}).sort({ createdAt: -1 }).lean();
     return res.status(200).json(
       rows.map((b) => ({
         ...b,

@@ -44,9 +44,13 @@ router.post("/fare/compute", async (req, res) => {
 
     // 3. Charge mode
     let size = Number(partySize);
-    if (isSolo) size = 1;
-    else if (!Number.isFinite(size) || size < 1) size = 1;
-    else if (normalizedType === "GROUP" && size > 5) size = 5;
+
+    if (normalizedType === "GROUP") {
+      if (!Number.isFinite(size) || size < 1) size = 1;
+      if (size > 5) size = 5;
+    } else {
+      size = 1;
+    }
 
     if (fareRules.chargeMode === "per_passenger") {
       fare *= size;
