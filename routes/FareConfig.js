@@ -21,7 +21,7 @@ function isNonNegativeNumber(value) {
  * ADMIN READ
  * Used by admin panel
  */
-router.get("/admin/fare-config", requireAdminAuth, async (req, res) => {
+router.get("/fare-config", async (req, res) => {
   try {
     const config = await FareConfig.getSingleton();
     res.json(config);
