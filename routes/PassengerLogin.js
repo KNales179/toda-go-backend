@@ -27,6 +27,12 @@ router.post("/login", async (req, res) => {
       { expiresIn: "30d" }
     );
 
+    console.log("🔥 LOGIN HIT THIS BACKEND:", {
+      passengerId: passenger._id.toString(),
+      email: passenger.email,
+      time: new Date().toISOString()
+    });
+
     return res.status(200).json({
       message: "Login successful",
       userId: passenger._id,
