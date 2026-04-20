@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const FareConfig = require("../models/FareConfig");
 
-router.get("/public/fare-config", async (req, res) => {
+router.get("/public/farematrix", async (req, res) => {
   try {
     console.log("🔥 HIT PUBLIC FARE CONFIG FILE");
 
