@@ -112,7 +112,7 @@ router.post('/api/route/variants', async (req, res) => {
     const coords = [start, end];
 
     // Try a few preferences to approximate “different main routes”
-    const prefs = ["fastest"];
+    const prefs = ["shortest"];
     const results = [];
 
     for (const pref of prefs) {
