@@ -1467,33 +1467,69 @@ router.get("/driver-requests/:driverId", requireUserAuth, async (req, res) => {
       status: { $in: ["pending", "accepted"] },
     }).lean();
 
-    const sanitized = (rows || []).map((b) => ({
-      id: String(b.bookingId || ""),
-      status: b.status ?? "pending",
-      driverId: b.driverId ? String(b.driverId) : "",
-      passengerId: b.passengerId ? String(b.passengerId) : "",
-      pickupLat: Number(b.pickupLat) || 0,
-      pickupLng: Number(b.pickupLng) || 0,
-      destinationLat: Number(b.destinationLat) || 0,
-      destinationLng: Number(b.destinationLng) || 0,
-      fare: Number(b.fare) || 0,
-      paymentMethod: b.paymentMethod || "",
-      notes: b.notes || "",
-      passengerName: b.passengerName || "Passenger",
-      createdAt: b.createdAt || new Date(),
+    const sanitized = (rows || []).map((b) => {
+      const fb = b.fareBreakdown || {};
 
-      bookingType: b.bookingType,
-      partySize: b.partySize,
-      isShareable: b.isShareable,
-      reservationExpiresAt: b.reservationExpiresAt || null,
+      const distanceKm = Number(b.distanceKm || fb.distanceKm || 0);
+      const baseFare = Number(fb.baseFare || 0);
+      const addlPerKm = Number(fb.addlPerKm || 0);
+      const discountApplied = Number(fb.discountApplied || 0);
 
-      // NEW fields for driver UI
-      bookedFor: !!b.bookedFor,
-      riderName: b.riderName || "",
-      riderPhone: b.riderPhone || "",
-      pickupPlace: b.pickupPlace || null,
-      destinationPlace: b.destinationPlace || null,
-    }));
+      const baseKm = String(b.bookingType || "CLASSIC").toUpperCase() === "SOLO" ? 2 : 2;
+
+      const additionalUnits =
+        distanceKm > 0 ? Math.ceil(Math.max(0, distanceKm - baseKm)) : 0;
+
+      const additionalFare = additionalUnits * addlPerKm;
+      const originalFare = baseFare + additionalFare;
+      const discountAmount =
+        discountApplied > 0 ? (originalFare * discountApplied) / 100 : 0;
+
+      return {
+        id: String(b.bookingId || ""),
+        status: b.status ?? "pending",
+        driverId: b.driverId ? String(b.driverId) : "",
+        passengerId: b.passengerId ? String(b.passengerId) : "",
+
+        pickupLat: Number(b.pickupLat) || 0,
+        pickupLng: Number(b.pickupLng) || 0,
+        destinationLat: Number(b.destinationLat) || 0,
+        destinationLng: Number(b.destinationLng) || 0,
+
+        fare: Number(b.fare) || 0,
+        estimatedFare: Number(b.estimatedFare) || 0,
+        distanceKm,
+
+        fareBreakdown: {
+          distanceKm,
+          baseFare,
+          additionalFare,
+          originalFare,
+          discountApplied,
+          discountAmount,
+          totalFare: Number(b.fare) || 0,
+        },
+
+        paymentMethod: b.paymentMethod || "",
+        paymentStatus: b.paymentStatus || "none",
+        driverPayment: b.driverPayment || null,
+
+        notes: b.notes || "",
+        passengerName: b.passengerName || "Passenger",
+        createdAt: b.createdAt || new Date(),
+
+        bookingType: b.bookingType,
+        partySize: b.partySize,
+        isShareable: b.isShareable,
+        reservationExpiresAt: b.reservationExpiresAt || null,
+
+        bookedFor: !!b.bookedFor,
+        riderName: b.riderName || "",
+        riderPhone: b.riderPhone || "",
+        pickupPlace: b.pickupPlace || null,
+        destinationPlace: b.destinationPlace || null,
+      };
+    });
 
     return res.status(200).json(sanitized);
   } catch (err) {
