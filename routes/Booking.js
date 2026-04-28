@@ -1053,7 +1053,18 @@ router.post("/book", requireUserAuth, async (req, res) => {
         passenger?.discount &&
         passenger?.discountVerification?.status === "approved"
       ) {
-        const normalizedType = String(passenger.discountType || "").toLowerCase();
+        function normalizeDiscountType(value) {
+          const v = String(value || "").trim().toLowerCase();
+
+          if (v === "senior citizen" || v === "senior") return "senior";
+          if (v === "pwd") return "pwd";
+          if (v === "student") return "student";
+
+          return "";
+        }
+        const normalizedType = normalizeDiscountType(
+          passenger.discountType || passenger.discountVerification?.type
+        );
         const allowedTypes = Array.isArray(config.discounts?.appliesTo)
           ? config.discounts.appliesTo.map((x) => String(x).toLowerCase())
           : [];

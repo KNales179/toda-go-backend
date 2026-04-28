@@ -3,8 +3,9 @@ const express = require("express");
 const router = express.Router();
 const FareConfig = require("../models/FareConfig");
 const Passenger = require("../models/Passenger");
+const requireUserAuth = require("../middleware/requireUserAuth");
 
-router.post("/fare/compute", async (req, res) => {
+router.post("/fare/compute", requireUserAuth, async (req, res) => {
   try {
     const { distanceKm, bookingType = "CLASSIC", partySize = 1 } = req.body;
 
@@ -67,10 +68,22 @@ router.post("/fare/compute", async (req, res) => {
       passenger?.discount &&
       passenger?.discountVerification?.status === "approved"
     ) {
-      const normalizedDiscountType = (passenger.discountType || "").toLowerCase();
+      const normalizeDiscountType = (value) => {
+        const v = String(value || "").trim().toLowerCase();
+
+        if (v === "senior citizen" || v === "senior") return "senior";
+        if (v === "pwd") return "pwd";
+        if (v === "student") return "student";
+
+        return "";
+      };
+
+      const normalizedDiscountType = normalizeDiscountType(
+        passenger.discountType || passenger.discountVerification?.type
+      );
 
       const allowedTypes = config.discounts.appliesTo.map((x) =>
-        x.toLowerCase()
+        String(x).trim().toLowerCase()
       );
 
       if (allowedTypes.includes(normalizedDiscountType)) {
