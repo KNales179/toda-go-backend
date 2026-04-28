@@ -1382,18 +1382,57 @@ router.get("/waiting-bookings", requireUserAuth, async (req, res) => {
 
     const shaped = filtered.map((b) => {
       const id = b.bookingId || String(b._id);
+
+      const fareBreakdown = b.fareBreakdown || {};
+      const baseFare = Number(fareBreakdown.baseFare || 0);
+      const addlPerKm = Number(fareBreakdown.addlPerKm || 0);
+      const discountApplied = Number(fareBreakdown.discountApplied || 0);
+      const distanceKm = Number(b.distanceKm || fareBreakdown.distanceKm || 0);
+
+      const baseKm =
+        String(b.bookingType || "CLASSIC").toUpperCase() === "SOLO"
+          ? 2
+          : 2;
+
+      const additionalUnits =
+        distanceKm > 0 ? Math.ceil(Math.max(0, distanceKm - baseKm)) : 0;
+
+      const additionalFare = additionalUnits * addlPerKm;
+      const originalFare = baseFare + additionalFare;
+      const discountAmount =
+        discountApplied > 0 ? (originalFare * discountApplied) / 100 : 0;
+
       return {
         id,
         bookingId: id,
-        fare: b.fare,
+
+        fare: Number(b.fare || 0),
+
         pickup: { lat: b.pickupLat, lng: b.pickupLng },
         destination: { lat: b.destinationLat, lng: b.destinationLng },
+
+        pickupPlace: b.pickupPlace || "",
+        destinationPlace: b.destinationPlace || "",
+
         passengerPreview: {
-          name: b.passengerName,
-          bookedFor: b.bookedFor || false,
+          name: b.passengerName || "Passenger",
+          bookedFor: !!b.bookedFor,
+          riderName: b.riderName || "",
+          riderPhone: b.riderPhone || "",
         },
-        bookingType: b.bookingType,
+
+        bookingType: b.bookingType || "CLASSIC",
         partySize: b.partySize || 1,
+
+        fareBreakdown: {
+          distanceKm,
+          baseFare,
+          additionalFare,
+          originalFare,
+          discountApplied,
+          discountAmount,
+          totalFare: Number(b.fare || 0),
+        },
       };
     });
 
