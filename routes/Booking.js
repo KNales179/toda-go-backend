@@ -1820,6 +1820,71 @@ router.post("/cancel-booking", async (req, res) => {
   }
 });
 
+// ---------- POST /booking/:bookingId/pickup-complete ----------
+router.post("/booking/:bookingId/pickup-complete", requireUserAuth, async (req, res) => {
+  try {
+    if (req.user.role !== "driver") {
+      return res.status(403).json({ message: "Drivers only" });
+    }
+
+    const authDriverId = String(req.user.sub || "");
+    const { bookingId } = req.params;
+
+    const booking = await Booking.findOne({ bookingId }).lean();
+
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    if (String(booking.driverId || "") !== authDriverId) {
+      return res.status(403).json({ message: "Not your booking" });
+    }
+
+    const updated = await Booking.findOneAndUpdate(
+      {
+        bookingId,
+        status: { $in: ["accepted", "enroute"] },
+      },
+      {
+        $set: {
+          status: "enroute",
+          progressStatus: "to_dropoff",
+          pickedUpAt: new Date(),
+        },
+      },
+      { new: true }
+    ).lean();
+
+    await Task.updateMany(
+      {
+        sourceType: "BOOKING",
+        sourceId: String(bookingId),
+        taskType: "PICKUP",
+        status: { $in: ["PENDING", "ACTIVE"] },
+      },
+      { $set: { status: "COMPLETED" } }
+    );
+
+    await Task.updateMany(
+      {
+        sourceType: "BOOKING",
+        sourceId: String(bookingId),
+        taskType: "DROPOFF",
+        status: "PENDING",
+      },
+      { $set: { status: "ACTIVE" } }
+    );
+
+    return res.status(200).json({
+      ok: true,
+      booking: updated,
+    });
+  } catch (err) {
+    console.error("❌ pickup-complete error:", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
 // ---------- POST /complete-booking ----------
 router.post("/complete-booking", requireUserAuth, async (req, res) => {
   try {
