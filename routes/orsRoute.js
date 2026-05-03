@@ -825,7 +825,14 @@ async function getDirectionsWithCacheAndQueue({
   const normalized = normalizeCoords(coords);
   const cacheKey = coordsCacheKey(normalized, cacheExtra);
 
-  const cached = getCachedRoute(cacheKey);
+  const debugSkipProviders = Array.isArray(extraBody.debugSkipProviders)
+    ? extraBody.debugSkipProviders.map((p) => String(p).toLowerCase())
+    : [];
+
+  const shouldBypassCache = debugSkipProviders.length > 0;
+
+  const cached = shouldBypassCache ? null : getCachedRoute(cacheKey);
+
   if (cached) {
     logRoute("Route served from cache.", {
       label,
@@ -837,6 +844,14 @@ async function getDirectionsWithCacheAndQueue({
       ...cached,
       source: "cache",
     };
+  }
+
+  if (shouldBypassCache) {
+    logRoute("Cache bypassed for debug provider test.", {
+      label,
+      cacheKey,
+      debugSkipProviders,
+    });
   }
 
   const result = await enqueueRouteJob({
