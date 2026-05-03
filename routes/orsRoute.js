@@ -13,6 +13,11 @@ const ORS_MATRIX_URL =
 const ORS_SNAP_URL =
   "https://api.openrouteservice.org/v2/snap/driving-car";
 
+const GRAPHHOPPER_ROUTE_URL = "https://graphhopper.com/api/1/route";
+
+const TOMTOM_ROUTE_BASE_URL =
+  "https://api.tomtom.com/routing/1/calculateRoute";
+
 // ======================================================
 // CONFIG
 // ======================================================
@@ -40,6 +45,14 @@ let lastOrsRequestAt = 0;
 
 const providerState = {
   ors: {
+    limitedUntil: 0,
+    failCount: 0,
+  },
+  graphhopper: {
+    limitedUntil: 0,
+    failCount: 0,
+  },
+  tomtom: {
     limitedUntil: 0,
     failCount: 0,
   },
@@ -152,6 +165,148 @@ function isProviderLimited(provider) {
   return now() < providerState[provider].limitedUntil;
 }
 
+function getErrorStatus(e) {
+  return e?.response?.status || e?.status || 0;
+}
+
+function isFallbackWorthyError(e) {
+  const status = getErrorStatus(e);
+
+  // 429 = rate limit
+  // 5xx = provider/server issue
+  // 0 = timeout/network/no response
+  return status === 429 || status >= 500 || status === 0;
+}
+
+function providerDisplayName(provider) {
+  if (provider === "ors") return "ORS";
+  if (provider === "graphhopper") return "GraphHopper";
+  if (provider === "tomtom") return "TomTom";
+  return provider;
+}
+
+function normalizeGraphHopperRoute(data) {
+  const path = data?.paths?.[0];
+
+  if (!path) return null;
+
+  const coordinates =
+    path?.points?.coordinates ||
+    path?.points?.features?.[0]?.geometry?.coordinates ||
+    [];
+
+  if (!Array.isArray(coordinates) || !coordinates.length) {
+    return null;
+  }
+
+  const coordsForMap = coordinates.map(([lng, lat]) => [lat, lng]);
+  const distance = Number(path.distance || 0);
+  const duration = Number(path.time || 0) / 1000;
+
+  return {
+    ok: true,
+    provider: "graphhopper",
+    source: "live",
+    geometry: {
+      type: "LineString",
+      coordinates,
+    },
+    coordsForMap,
+    summary: {
+      distance,
+      duration,
+    },
+    raw: {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          properties: {
+            summary: {
+              distance,
+              duration,
+            },
+            provider: "graphhopper",
+          },
+          geometry: {
+            type: "LineString",
+            coordinates,
+          },
+        },
+      ],
+      metadata: {
+        provider: "graphhopper",
+      },
+    },
+  };
+}
+
+function normalizeTomTomRoute(data) {
+  const route = data?.routes?.[0];
+
+  if (!route?.legs?.length) return null;
+
+  const coordinates = [];
+
+  for (const leg of route.legs) {
+    const points = Array.isArray(leg.points) ? leg.points : [];
+
+    for (const p of points) {
+      if (
+        typeof p?.longitude === "number" &&
+        typeof p?.latitude === "number"
+      ) {
+        coordinates.push([p.longitude, p.latitude]);
+      }
+    }
+  }
+
+  if (!coordinates.length) return null;
+
+  const coordsForMap = coordinates.map(([lng, lat]) => [lat, lng]);
+  const summary = route.summary || {};
+
+  const distance = Number(summary.lengthInMeters || 0);
+  const duration = Number(summary.travelTimeInSeconds || 0);
+
+  return {
+    ok: true,
+    provider: "tomtom",
+    source: "live",
+    geometry: {
+      type: "LineString",
+      coordinates,
+    },
+    coordsForMap,
+    summary: {
+      distance,
+      duration,
+    },
+    raw: {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          properties: {
+            summary: {
+              distance,
+              duration,
+            },
+            provider: "tomtom",
+          },
+          geometry: {
+            type: "LineString",
+            coordinates,
+          },
+        },
+      ],
+      metadata: {
+        provider: "tomtom",
+      },
+    },
+  };
+}
+
 function normalizeOrsGeoJson(data, provider = "ors") {
   const feat = data?.features?.[0];
 
@@ -231,6 +386,240 @@ async function callORSDirections(coords, extraBody = {}) {
 
     throw e;
   }
+}
+
+async function callGraphHopperDirections(coords) {
+  const key = process.env.GRAPHHOPPER_API_KEY;
+
+  if (!key) {
+    const err = new Error("GRAPHHOPPER_API_KEY missing");
+    err.status = 500;
+    err.providerConfigMissing = true;
+    throw err;
+  }
+
+  if (isProviderLimited("graphhopper")) {
+    const err = new Error("GraphHopper temporarily rate-limited");
+    err.status = 429;
+    err.providerLimited = true;
+    throw err;
+  }
+
+  const points = coords.map(([lng, lat]) => `${lat},${lng}`);
+
+  try {
+    const response = await axios.get(GRAPHHOPPER_ROUTE_URL, {
+      params: {
+        key,
+        vehicle: "car",
+        locale: "en",
+        points_encoded: false,
+        point: points,
+      },
+      paramsSerializer: (params) => {
+        const sp = new URLSearchParams();
+
+        Object.entries(params).forEach(([k, v]) => {
+          if (Array.isArray(v)) {
+            v.forEach((item) => sp.append(k, item));
+          } else {
+            sp.append(k, v);
+          }
+        });
+
+        return sp.toString();
+      },
+      timeout: ORS_TIMEOUT_MS,
+    });
+
+    providerState.graphhopper.failCount = 0;
+    return response.data;
+  } catch (e) {
+    if (e.response?.status === 429) {
+      markProviderLimited("graphhopper", e.response?.data || e.message);
+    }
+
+    throw e;
+  }
+}
+
+async function callTomTomDirections(coords) {
+  const key = process.env.TOMTOM_API_KEY;
+
+  if (!key) {
+    const err = new Error("TOMTOM_API_KEY missing");
+    err.status = 500;
+    err.providerConfigMissing = true;
+    throw err;
+  }
+
+  if (isProviderLimited("tomtom")) {
+    const err = new Error("TomTom temporarily rate-limited");
+    err.status = 429;
+    err.providerLimited = true;
+    throw err;
+  }
+
+  // TomTom format:
+  // /calculateRoute/lat,lng:lat,lng/json?key=...
+  const routePath = coords.map(([lng, lat]) => `${lat},${lng}`).join(":");
+  const url = `${TOMTOM_ROUTE_BASE_URL}/${routePath}/json`;
+
+  try {
+    const response = await axios.get(url, {
+      params: {
+        key,
+        routeType: "fastest",
+        traffic: false,
+        travelMode: "car",
+        instructionsType: "text",
+        computeBestOrder: false,
+        routeRepresentation: "polyline",
+      },
+      timeout: ORS_TIMEOUT_MS,
+    });
+
+    providerState.tomtom.failCount = 0;
+    return response.data;
+  } catch (e) {
+    if (e.response?.status === 429) {
+      markProviderLimited("tomtom", e.response?.data || e.message);
+    }
+
+    throw e;
+  }
+}
+
+async function getDirectionsFromBestProvider(coords, extraBody = {}) {
+  const providers = [
+    {
+      name: "ors",
+      run: async () => {
+        const data = await callORSDirections(coords, extraBody);
+        return normalizeOrsGeoJson(data, "ors");
+      },
+    },
+    {
+      name: "graphhopper",
+      run: async () => {
+        // GraphHopper Free has stricter location limits.
+        // Keep this guard so bigger driver plans can skip GraphHopper later.
+        if (coords.length > 5) {
+          const err = new Error("GraphHopper skipped because route has more than 5 points");
+          err.status = 422;
+          err.skipProvider = true;
+          throw err;
+        }
+
+        const data = await callGraphHopperDirections(coords);
+        return normalizeGraphHopperRoute(data);
+      },
+    },
+    {
+      name: "tomtom",
+      run: async () => {
+        const data = await callTomTomDirections(coords);
+        return normalizeTomTomRoute(data);
+      },
+    },
+  ];
+
+  let lastError = null;
+
+  for (const provider of providers) {
+    try {
+      if (isProviderLimited(provider.name)) {
+        logRoute(`${providerDisplayName(provider.name)} is currently limited. Skipping provider.`, {
+          provider: provider.name,
+          limitedUntil: providerState[provider.name]?.limitedUntil
+            ? new Date(providerState[provider.name].limitedUntil).toISOString()
+            : null,
+        });
+
+        continue;
+      }
+
+      logRoute(`Trying route provider: ${providerDisplayName(provider.name)}.`);
+
+      const result = await provider.run();
+
+      if (!result?.geometry?.coordinates?.length) {
+        const err = new Error(`${providerDisplayName(provider.name)} returned no route geometry`);
+        err.status = 502;
+        throw err;
+      }
+
+      logRoute(`Route provider succeeded: ${providerDisplayName(provider.name)}.`, {
+        distance: result.summary?.distance,
+        duration: result.summary?.duration,
+      });
+
+      return result;
+    } catch (e) {
+      lastError = e;
+
+      const status = getErrorStatus(e);
+
+      if (e.skipProvider) {
+        logRoute(`${providerDisplayName(provider.name)} skipped.`, {
+          message: e.message,
+        });
+        continue;
+      }
+
+      if (e.providerConfigMissing) {
+        logRoute(`${providerDisplayName(provider.name)} is not configured. Skipping.`, {
+          message: e.message,
+        });
+        continue;
+      }
+
+      if (status === 429) {
+        markProviderLimited(provider.name, e.response?.data || e.message);
+
+        const nextProvider =
+          provider.name === "ors"
+            ? "GraphHopper"
+            : provider.name === "graphhopper"
+              ? "TomTom"
+              : "queue";
+
+        logRoute(
+          `${providerDisplayName(provider.name)} reached limit. Switching to ${nextProvider}.`,
+          { status }
+        );
+
+        continue;
+      }
+
+      if (isFallbackWorthyError(e)) {
+        const nextProvider =
+          provider.name === "ors"
+            ? "GraphHopper"
+            : provider.name === "graphhopper"
+              ? "TomTom"
+              : "queue";
+
+        logRoute(
+          `${providerDisplayName(provider.name)} failed. Switching to ${nextProvider}.`,
+          {
+            status,
+            message: e.response?.data || e.message,
+          }
+        );
+
+        continue;
+      }
+
+      // Bad input errors should not keep trying other providers.
+      throw e;
+    }
+  }
+
+  const err = new Error("All routing providers failed or are currently limited");
+  err.status = 503;
+  err.details = lastError?.response?.data || lastError?.message || null;
+  throw err;
 }
 
 async function callORSMatrix(body = {}) {
@@ -447,21 +836,19 @@ async function getDirectionsWithCacheAndQueue({
     replaceKey,
     label,
     run: async () => {
-      const data = await callORSDirections(normalized, extraBody);
-
-      const normalizedResult = normalizeOrsGeoJson(data, "ors");
+      const normalizedResult = await getDirectionsFromBestProvider(normalized, extraBody);
 
       if (!normalizedResult) {
-        const err = new Error("ORS_NO_FEATURES");
+        const err = new Error("NO_ROUTE_FEATURES");
         err.status = 502;
-        err.details = data;
         throw err;
       }
 
       setCachedRoute(cacheKey, normalizedResult);
 
-      logRoute("Route served from ORS live request.", {
+      logRoute("Route served from live provider request.", {
         label,
+        provider: normalizedResult.provider,
         cacheKey,
         distance: normalizedResult.summary.distance,
         duration: normalizedResult.summary.duration,
@@ -849,11 +1236,28 @@ router.get("/api/route/status", (req, res) => {
     ok: true,
     providers: {
       ors: {
+        configured: Boolean(process.env.ORS_API_KEY),
         limited: isProviderLimited("ors"),
         limitedUntil: providerState.ors.limitedUntil
           ? new Date(providerState.ors.limitedUntil).toISOString()
           : null,
         failCount: providerState.ors.failCount,
+      },
+      graphhopper: {
+        configured: Boolean(process.env.GRAPHHOPPER_API_KEY),
+        limited: isProviderLimited("graphhopper"),
+        limitedUntil: providerState.graphhopper.limitedUntil
+          ? new Date(providerState.graphhopper.limitedUntil).toISOString()
+          : null,
+        failCount: providerState.graphhopper.failCount,
+      },
+      tomtom: {
+        configured: Boolean(process.env.TOMTOM_API_KEY),
+        limited: isProviderLimited("tomtom"),
+        limitedUntil: providerState.tomtom.limitedUntil
+          ? new Date(providerState.tomtom.limitedUntil).toISOString()
+          : null,
+        failCount: providerState.tomtom.failCount,
       },
     },
     queue: {
