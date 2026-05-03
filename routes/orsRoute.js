@@ -7,6 +7,12 @@ const router = express.Router();
 const ORS_DIRECTIONS_URL =
   "https://api.openrouteservice.org/v2/directions/driving-car/geojson";
 
+const ORS_MATRIX_URL =
+  "https://api.openrouteservice.org/v2/matrix/driving-car";
+
+const ORS_SNAP_URL =
+  "https://api.openrouteservice.org/v2/snap/driving-car";
+
 // ======================================================
 // CONFIG
 // ======================================================
@@ -220,6 +226,92 @@ async function callORSDirections(coords, extraBody = {}) {
     const status = e.response?.status;
 
     if (status === 429) {
+      markProviderLimited("ors", e.response?.data || e.message);
+    }
+
+    throw e;
+  }
+}
+
+async function callORSMatrix(body = {}) {
+  const ORS_KEY = process.env.ORS_API_KEY;
+
+  if (!ORS_KEY) {
+    const err = new Error("Server misconfig: ORS_API_KEY missing");
+    err.status = 500;
+    throw err;
+  }
+
+  if (isProviderLimited("ors")) {
+    const err = new Error("ORS temporarily rate-limited");
+    err.status = 429;
+    err.providerLimited = true;
+    throw err;
+  }
+
+  const elapsed = now() - lastOrsRequestAt;
+  if (elapsed < ORS_REQUEST_SPACING_MS) {
+    await sleep(ORS_REQUEST_SPACING_MS - elapsed);
+  }
+
+  lastOrsRequestAt = now();
+
+  try {
+    const response = await axios.post(ORS_MATRIX_URL, body, {
+      headers: {
+        Authorization: ORS_KEY,
+        "Content-Type": "application/json",
+      },
+      timeout: ORS_TIMEOUT_MS,
+    });
+
+    providerState.ors.failCount = 0;
+    return response.data;
+  } catch (e) {
+    if (e.response?.status === 429) {
+      markProviderLimited("ors", e.response?.data || e.message);
+    }
+
+    throw e;
+  }
+}
+
+async function callORSSnap(body = {}) {
+  const ORS_KEY = process.env.ORS_API_KEY;
+
+  if (!ORS_KEY) {
+    const err = new Error("Server misconfig: ORS_API_KEY missing");
+    err.status = 500;
+    throw err;
+  }
+
+  if (isProviderLimited("ors")) {
+    const err = new Error("ORS temporarily rate-limited");
+    err.status = 429;
+    err.providerLimited = true;
+    throw err;
+  }
+
+  const elapsed = now() - lastOrsRequestAt;
+  if (elapsed < ORS_REQUEST_SPACING_MS) {
+    await sleep(ORS_REQUEST_SPACING_MS - elapsed);
+  }
+
+  lastOrsRequestAt = now();
+
+  try {
+    const response = await axios.post(ORS_SNAP_URL, body, {
+      headers: {
+        Authorization: ORS_KEY,
+        "Content-Type": "application/json",
+      },
+      timeout: ORS_TIMEOUT_MS,
+    });
+
+    providerState.ors.failCount = 0;
+    return response.data;
+  } catch (e) {
+    if (e.response?.status === 429) {
       markProviderLimited("ors", e.response?.data || e.message);
     }
 
@@ -590,6 +682,159 @@ router.post("/api/route/variants", async (req, res) => {
 
     return res.status(e.response?.status || e.status || 500).json({
       error: "ROUTE_VARIANTS_FAILED",
+      details: e.response?.data || e.details || e.message,
+    });
+  }
+});
+
+// ======================================================
+// ORS MATRIX + SNAP ENDPOINTS
+// ======================================================
+
+// POST /api/route/matrix
+// Body example:
+// {
+//   "locations": [[121.61, 13.94], [121.62, 13.95], [121.63, 13.96]],
+//   "sources": [0],
+//   "destinations": [1, 2],
+//   "metrics": ["distance", "duration"]
+// }
+router.post("/api/route/matrix", async (req, res) => {
+  try {
+    const {
+      locations,
+      sources,
+      destinations,
+      metrics = ["distance", "duration"],
+      units = "km",
+    } = req.body || {};
+
+    if (!Array.isArray(locations) || locations.length < 2 || !locations.every(validPair)) {
+      return res.status(400).json({
+        error: "INVALID_INPUT",
+        details: "Provide locations as [[lng,lat], [lng,lat], ...]",
+      });
+    }
+
+    const safeLocations = normalizeCoords(locations).slice(0, 25);
+
+    const body = {
+      locations: safeLocations,
+      metrics,
+      units,
+    };
+
+    if (Array.isArray(sources)) body.sources = sources;
+    if (Array.isArray(destinations)) body.destinations = destinations;
+
+    const matrix = await enqueueRouteJob({
+      priority: Number(req.body?.priority || 3),
+      replaceable: Boolean(req.body?.replaceable || false),
+      replaceKey: req.body?.replaceKey || null,
+      label: "POST /api/route/matrix",
+      run: async () => {
+        logRoute("ORS Matrix request started.", {
+          locations: safeLocations.length,
+          sources: body.sources,
+          destinations: body.destinations,
+        });
+
+        const data = await callORSMatrix(body);
+
+        logRoute("ORS Matrix request completed.", {
+          locations: safeLocations.length,
+        });
+
+        return {
+          ok: true,
+          provider: "ors",
+          source: "live",
+          data,
+        };
+      },
+    });
+
+    return res.json(matrix);
+  } catch (e) {
+    if (e.replaced) {
+      return res.status(409).json({
+        error: "MATRIX_REQUEST_REPLACED",
+        details: e.message,
+      });
+    }
+
+    console.error("[ROUTING] matrix failed:", e.response?.data || e.details || e.message);
+
+    return res.status(e.response?.status || e.status || 500).json({
+      error: "MATRIX_FAILED",
+      details: e.response?.data || e.details || e.message,
+    });
+  }
+});
+
+// POST /api/route/snap
+// Body example:
+// {
+//   "locations": [[121.61, 13.94], [121.62, 13.95]],
+//   "radius": 350
+// }
+router.post("/api/route/snap", async (req, res) => {
+  try {
+    const { locations, radius = 350 } = req.body || {};
+
+    if (!Array.isArray(locations) || locations.length < 1 || !locations.every(validPair)) {
+      return res.status(400).json({
+        error: "INVALID_INPUT",
+        details: "Provide locations as [[lng,lat], [lng,lat], ...]",
+      });
+    }
+
+    const safeLocations = normalizeCoords(locations).slice(0, 50);
+
+    const body = {
+      locations: safeLocations,
+      radius: Number(radius) || 350,
+    };
+
+    const snapped = await enqueueRouteJob({
+      priority: Number(req.body?.priority || 4),
+      replaceable: Boolean(req.body?.replaceable ?? true),
+      replaceKey: req.body?.replaceKey || null,
+      label: "POST /api/route/snap",
+      run: async () => {
+        logRoute("ORS Snap request started.", {
+          locations: safeLocations.length,
+          radius: body.radius,
+        });
+
+        const data = await callORSSnap(body);
+
+        logRoute("ORS Snap request completed.", {
+          locations: safeLocations.length,
+        });
+
+        return {
+          ok: true,
+          provider: "ors",
+          source: "live",
+          data,
+        };
+      },
+    });
+
+    return res.json(snapped);
+  } catch (e) {
+    if (e.replaced) {
+      return res.status(409).json({
+        error: "SNAP_REQUEST_REPLACED",
+        details: e.message,
+      });
+    }
+
+    console.error("[ROUTING] snap failed:", e.response?.data || e.details || e.message);
+
+    return res.status(e.response?.status || e.status || 500).json({
+      error: "SNAP_FAILED",
       details: e.response?.data || e.details || e.message,
     });
   }

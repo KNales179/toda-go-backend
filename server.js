@@ -128,6 +128,7 @@ const debugProbeRoutes = require("./routes/DebugProbe");
 // Mount routes AFTER io is attached
 app.use("/api", publicFareConfigRoutes); 
 app.use("/api", fareCompute);
+app.use(orsRoute);
 app.use("/api/auth/passenger", passengerRoutes);
 app.use("/api/auth/driver", driverRoutes);
 app.use("/api/login/passenger", passengerLoginRoutes);
@@ -144,7 +145,6 @@ app.use("/api/stats", statsRoute);
 app.use("/api/feedback", feedbackRoutes);
 app.use("/api", reportsRoute);
 app.use("/api", rideHistoryRoute);
-app.use(orsRoute);
 app.use(geocodeRoute);
 app.use("/api/chat", chatRoutes);
 app.use(placesRoute);
