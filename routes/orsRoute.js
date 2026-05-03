@@ -24,11 +24,11 @@ const TOMTOM_ROUTE_BASE_URL =
 
 const ROUTE_CACHE_TTL_MS = 1000 * 60 * 10; // 10 minutes
 const MAX_QUEUE_SIZE = 150;
-const ORS_CONCURRENCY = 2;
-const ORS_REQUEST_SPACING_MS = 350;
-const ORS_TIMEOUT_MS = 15000;
+const ROUTE_CONCURRENCY = 2;
+const ROUTE_REQUEST_SPACING_MS = 350;
+const ROUTE_TIMEOUT_MS = 15000;
 
-// If ORS returns 429, skip ORS temporarily instead of hammering it
+// If a provider returns 429, skip it temporarily instead of hammering it
 const RATE_LIMIT_COOLDOWN_MS = 1000 * 60; // 1 minute
 
 // ======================================================
@@ -40,8 +40,8 @@ const routeCache = new Map();
 const routeQueue = [];
 const queuedByReplaceKey = new Map();
 
-let activeOrsRequests = 0;
-let lastOrsRequestAt = 0;
+let activeRouteRequests = 0;
+let lastProviderRequestAt = 0;
 
 const providerState = {
   ors: {
@@ -109,9 +109,11 @@ function normalizeCoords(coords) {
 
 function parseQueryPair(s) {
   if (!s || typeof s !== "string") return null;
+
   const [lngStr, latStr] = s.split(",").map((t) => t.trim());
   const lng = parseFloat(lngStr);
   const lat = parseFloat(latStr);
+
   return [lng, lat];
 }
 
@@ -125,6 +127,7 @@ function coordsCacheKey(coords, extra = {}) {
     .join("|");
 
   const extraKey = Object.keys(extra)
+    .filter((k) => extra[k] !== undefined && extra[k] !== null && extra[k] !== "")
     .sort()
     .map((k) => `${k}:${extra[k]}`)
     .join("|");
@@ -152,17 +155,19 @@ function setCachedRoute(key, data) {
 }
 
 function markProviderLimited(provider, reason) {
+  if (!providerState[provider]) return;
+
   providerState[provider].limitedUntil = now() + RATE_LIMIT_COOLDOWN_MS;
   providerState[provider].failCount += 1;
 
-  logRoute(`${provider.toUpperCase()} rate limit reached. Queueing protected requests for now.`, {
+  logRoute(`${provider.toUpperCase()} rate limit reached.`, {
     reason,
     limitedUntil: new Date(providerState[provider].limitedUntil).toISOString(),
   });
 }
 
 function isProviderLimited(provider) {
-  return now() < providerState[provider].limitedUntil;
+  return now() < (providerState[provider]?.limitedUntil || 0);
 }
 
 function getErrorStatus(e) {
@@ -183,6 +188,49 @@ function providerDisplayName(provider) {
   if (provider === "graphhopper") return "GraphHopper";
   if (provider === "tomtom") return "TomTom";
   return provider;
+}
+
+async function waitForProviderSpacing() {
+  const elapsed = now() - lastProviderRequestAt;
+
+  if (elapsed < ROUTE_REQUEST_SPACING_MS) {
+    await sleep(ROUTE_REQUEST_SPACING_MS - elapsed);
+  }
+
+  lastProviderRequestAt = now();
+}
+
+// ======================================================
+// NORMALIZERS
+// Make all providers return one shape.
+// ======================================================
+
+function normalizeOrsGeoJson(data, provider = "ors") {
+  const feat = data?.features?.[0];
+
+  if (!feat?.geometry?.coordinates?.length) {
+    return null;
+  }
+
+  const coordinates = feat.geometry.coordinates;
+  const coordsForMap = coordinates.map(([lng, lat]) => [lat, lng]);
+  const summary = feat.properties?.summary || {};
+
+  return {
+    ok: true,
+    provider,
+    source: "live",
+    geometry: {
+      type: "LineString",
+      coordinates,
+    },
+    coordsForMap,
+    summary: {
+      distance: Number(summary.distance || 0),
+      duration: Number(summary.duration || 0),
+    },
+    raw: data,
+  };
 }
 
 function normalizeGraphHopperRoute(data) {
@@ -307,33 +355,9 @@ function normalizeTomTomRoute(data) {
   };
 }
 
-function normalizeOrsGeoJson(data, provider = "ors") {
-  const feat = data?.features?.[0];
-
-  if (!feat?.geometry?.coordinates?.length) {
-    return null;
-  }
-
-  const coordinates = feat.geometry.coordinates;
-  const coordsForMap = coordinates.map(([lng, lat]) => [lat, lng]);
-  const summary = feat.properties?.summary || {};
-
-  return {
-    ok: true,
-    provider,
-    source: "live",
-    geometry: {
-      type: "LineString",
-      coordinates,
-    },
-    coordsForMap,
-    summary: {
-      distance: Number(summary.distance || 0),
-      duration: Number(summary.duration || 0),
-    },
-    raw: data,
-  };
-}
+// ======================================================
+// PROVIDER CALLS
+// ======================================================
 
 async function callORSDirections(coords, extraBody = {}) {
   const ORS_KEY = process.env.ORS_API_KEY;
@@ -341,6 +365,7 @@ async function callORSDirections(coords, extraBody = {}) {
   if (!ORS_KEY) {
     const err = new Error("Server misconfig: ORS_API_KEY missing");
     err.status = 500;
+    err.providerConfigMissing = true;
     throw err;
   }
 
@@ -351,13 +376,7 @@ async function callORSDirections(coords, extraBody = {}) {
     throw err;
   }
 
-  // spacing to avoid bursts
-  const elapsed = now() - lastOrsRequestAt;
-  if (elapsed < ORS_REQUEST_SPACING_MS) {
-    await sleep(ORS_REQUEST_SPACING_MS - elapsed);
-  }
-
-  lastOrsRequestAt = now();
+  await waitForProviderSpacing();
 
   try {
     const response = await axios.post(
@@ -371,16 +390,14 @@ async function callORSDirections(coords, extraBody = {}) {
           Authorization: ORS_KEY,
           "Content-Type": "application/json",
         },
-        timeout: ORS_TIMEOUT_MS,
+        timeout: ROUTE_TIMEOUT_MS,
       }
     );
 
     providerState.ors.failCount = 0;
     return response.data;
   } catch (e) {
-    const status = e.response?.status;
-
-    if (status === 429) {
+    if (e.response?.status === 429) {
       markProviderLimited("ors", e.response?.data || e.message);
     }
 
@@ -407,6 +424,8 @@ async function callGraphHopperDirections(coords) {
 
   const points = coords.map(([lng, lat]) => `${lat},${lng}`);
 
+  await waitForProviderSpacing();
+
   try {
     const response = await axios.get(GRAPHHOPPER_ROUTE_URL, {
       params: {
@@ -429,7 +448,7 @@ async function callGraphHopperDirections(coords) {
 
         return sp.toString();
       },
-      timeout: ORS_TIMEOUT_MS,
+      timeout: ROUTE_TIMEOUT_MS,
     });
 
     providerState.graphhopper.failCount = 0;
@@ -465,6 +484,8 @@ async function callTomTomDirections(coords) {
   const routePath = coords.map(([lng, lat]) => `${lat},${lng}`).join(":");
   const url = `${TOMTOM_ROUTE_BASE_URL}/${routePath}/json`;
 
+  await waitForProviderSpacing();
+
   try {
     const response = await axios.get(url, {
       params: {
@@ -476,7 +497,7 @@ async function callTomTomDirections(coords) {
         computeBestOrder: false,
         routeRepresentation: "polyline",
       },
-      timeout: ORS_TIMEOUT_MS,
+      timeout: ROUTE_TIMEOUT_MS,
     });
 
     providerState.tomtom.failCount = 0;
@@ -490,10 +511,89 @@ async function callTomTomDirections(coords) {
   }
 }
 
+async function callORSMatrix(body = {}) {
+  const ORS_KEY = process.env.ORS_API_KEY;
+
+  if (!ORS_KEY) {
+    const err = new Error("Server misconfig: ORS_API_KEY missing");
+    err.status = 500;
+    throw err;
+  }
+
+  if (isProviderLimited("ors")) {
+    const err = new Error("ORS temporarily rate-limited");
+    err.status = 429;
+    err.providerLimited = true;
+    throw err;
+  }
+
+  await waitForProviderSpacing();
+
+  try {
+    const response = await axios.post(ORS_MATRIX_URL, body, {
+      headers: {
+        Authorization: ORS_KEY,
+        "Content-Type": "application/json",
+      },
+      timeout: ROUTE_TIMEOUT_MS,
+    });
+
+    providerState.ors.failCount = 0;
+    return response.data;
+  } catch (e) {
+    if (e.response?.status === 429) {
+      markProviderLimited("ors", e.response?.data || e.message);
+    }
+
+    throw e;
+  }
+}
+
+async function callORSSnap(body = {}) {
+  const ORS_KEY = process.env.ORS_API_KEY;
+
+  if (!ORS_KEY) {
+    const err = new Error("Server misconfig: ORS_API_KEY missing");
+    err.status = 500;
+    throw err;
+  }
+
+  if (isProviderLimited("ors")) {
+    const err = new Error("ORS temporarily rate-limited");
+    err.status = 429;
+    err.providerLimited = true;
+    throw err;
+  }
+
+  await waitForProviderSpacing();
+
+  try {
+    const response = await axios.post(ORS_SNAP_URL, body, {
+      headers: {
+        Authorization: ORS_KEY,
+        "Content-Type": "application/json",
+      },
+      timeout: ROUTE_TIMEOUT_MS,
+    });
+
+    providerState.ors.failCount = 0;
+    return response.data;
+  } catch (e) {
+    if (e.response?.status === 429) {
+      markProviderLimited("ors", e.response?.data || e.message);
+    }
+
+    throw e;
+  }
+}
+
+// ======================================================
+// BEST PROVIDER SELECTION
+// Directions only: ORS → GraphHopper → TomTom
+// Matrix/Snap are ORS-only for now.
+// ======================================================
+
 async function getDirectionsFromBestProvider(coords, extraBody = {}) {
-  const debugSkipProviders = Array.isArray(extraBody.debugSkipProviders)
-  ? extraBody.debugSkipProviders.map((p) => String(p).toLowerCase())
-  : [];
   const providers = [
     {
       name: "ors",
@@ -506,9 +606,11 @@ async function getDirectionsFromBestProvider(coords, extraBody = {}) {
       name: "graphhopper",
       run: async () => {
         // GraphHopper Free has stricter location limits.
-        // Keep this guard so bigger driver plans can skip GraphHopper later.
+        // If future driver-plan route has many stops, skip GraphHopper and try TomTom.
         if (coords.length > 5) {
-          const err = new Error("GraphHopper skipped because route has more than 5 points");
+          const err = new Error(
+            "GraphHopper skipped because route has more than 5 points"
+          );
           err.status = 422;
           err.skipProvider = true;
           throw err;
@@ -531,12 +633,6 @@ async function getDirectionsFromBestProvider(coords, extraBody = {}) {
 
   for (const provider of providers) {
     try {
-      if (debugSkipProviders.includes(provider.name)) {
-        logRoute(`${providerDisplayName(provider.name)} skipped by debugSkipProviders.`, {
-          provider: provider.name,
-        });
-        continue;
-      }
       if (isProviderLimited(provider.name)) {
         logRoute(`${providerDisplayName(provider.name)} is currently limited. Skipping provider.`, {
           provider: provider.name,
@@ -553,7 +649,9 @@ async function getDirectionsFromBestProvider(coords, extraBody = {}) {
       const result = await provider.run();
 
       if (!result?.geometry?.coordinates?.length) {
-        const err = new Error(`${providerDisplayName(provider.name)} returned no route geometry`);
+        const err = new Error(
+          `${providerDisplayName(provider.name)} returned no route geometry`
+        );
         err.status = 502;
         throw err;
       }
@@ -631,94 +729,12 @@ async function getDirectionsFromBestProvider(coords, extraBody = {}) {
   throw err;
 }
 
-async function callORSMatrix(body = {}) {
-  const ORS_KEY = process.env.ORS_API_KEY;
-
-  if (!ORS_KEY) {
-    const err = new Error("Server misconfig: ORS_API_KEY missing");
-    err.status = 500;
-    throw err;
-  }
-
-  if (isProviderLimited("ors")) {
-    const err = new Error("ORS temporarily rate-limited");
-    err.status = 429;
-    err.providerLimited = true;
-    throw err;
-  }
-
-  const elapsed = now() - lastOrsRequestAt;
-  if (elapsed < ORS_REQUEST_SPACING_MS) {
-    await sleep(ORS_REQUEST_SPACING_MS - elapsed);
-  }
-
-  lastOrsRequestAt = now();
-
-  try {
-    const response = await axios.post(ORS_MATRIX_URL, body, {
-      headers: {
-        Authorization: ORS_KEY,
-        "Content-Type": "application/json",
-      },
-      timeout: ORS_TIMEOUT_MS,
-    });
-
-    providerState.ors.failCount = 0;
-    return response.data;
-  } catch (e) {
-    if (e.response?.status === 429) {
-      markProviderLimited("ors", e.response?.data || e.message);
-    }
-
-    throw e;
-  }
-}
-
-async function callORSSnap(body = {}) {
-  const ORS_KEY = process.env.ORS_API_KEY;
-
-  if (!ORS_KEY) {
-    const err = new Error("Server misconfig: ORS_API_KEY missing");
-    err.status = 500;
-    throw err;
-  }
-
-  if (isProviderLimited("ors")) {
-    const err = new Error("ORS temporarily rate-limited");
-    err.status = 429;
-    err.providerLimited = true;
-    throw err;
-  }
-
-  const elapsed = now() - lastOrsRequestAt;
-  if (elapsed < ORS_REQUEST_SPACING_MS) {
-    await sleep(ORS_REQUEST_SPACING_MS - elapsed);
-  }
-
-  lastOrsRequestAt = now();
-
-  try {
-    const response = await axios.post(ORS_SNAP_URL, body, {
-      headers: {
-        Authorization: ORS_KEY,
-        "Content-Type": "application/json",
-      },
-      timeout: ORS_TIMEOUT_MS,
-    });
-
-    providerState.ors.failCount = 0;
-    return response.data;
-  } catch (e) {
-    if (e.response?.status === 429) {
-      markProviderLimited("ors", e.response?.data || e.message);
-    }
-
-    throw e;
-  }
-}
+// ======================================================
+// QUEUE
+// ======================================================
 
 function processQueue() {
-  if (activeOrsRequests >= ORS_CONCURRENCY) return;
+  if (activeRouteRequests >= ROUTE_CONCURRENCY) return;
   if (!routeQueue.length) return;
 
   const job = routeQueue.shift();
@@ -730,7 +746,7 @@ function processQueue() {
     }
   }
 
-  activeOrsRequests += 1;
+  activeRouteRequests += 1;
 
   (async () => {
     try {
@@ -739,8 +755,8 @@ function processQueue() {
     } catch (err) {
       job.reject(err);
     } finally {
-      activeOrsRequests -= 1;
-      setTimeout(processQueue, ORS_REQUEST_SPACING_MS);
+      activeRouteRequests -= 1;
+      setTimeout(processQueue, ROUTE_REQUEST_SPACING_MS);
     }
   })();
 }
@@ -761,7 +777,7 @@ function enqueueRouteJob({
 
     const jobId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-    // Latest request wins for preview/destination tapping
+    // Latest request wins for preview/destination tapping.
     if (replaceable && replaceKey) {
       const oldJobId = queuedByReplaceKey.get(replaceKey);
 
@@ -769,6 +785,7 @@ function enqueueRouteJob({
         const idx = routeQueue.findIndex((j) => j.jobId === oldJobId);
         if (idx >= 0) {
           const [oldJob] = routeQueue.splice(idx, 1);
+
           oldJob.reject(
             Object.assign(new Error("Replaced by newer route request"), {
               status: 409,
@@ -813,6 +830,10 @@ function enqueueRouteJob({
   });
 }
 
+// ======================================================
+// ROUTE CACHE + QUEUE WRAPPER
+// ======================================================
+
 async function getDirectionsWithCacheAndQueue({
   coords,
   extraBody = {},
@@ -825,13 +846,7 @@ async function getDirectionsWithCacheAndQueue({
   const normalized = normalizeCoords(coords);
   const cacheKey = coordsCacheKey(normalized, cacheExtra);
 
-  const debugSkipProviders = Array.isArray(extraBody.debugSkipProviders)
-    ? extraBody.debugSkipProviders.map((p) => String(p).toLowerCase())
-    : [];
-
-  const shouldBypassCache = debugSkipProviders.length > 0;
-
-  const cached = shouldBypassCache ? null : getCachedRoute(cacheKey);
+  const cached = getCachedRoute(cacheKey);
 
   if (cached) {
     logRoute("Route served from cache.", {
@@ -846,21 +861,16 @@ async function getDirectionsWithCacheAndQueue({
     };
   }
 
-  if (shouldBypassCache) {
-    logRoute("Cache bypassed for debug provider test.", {
-      label,
-      cacheKey,
-      debugSkipProviders,
-    });
-  }
-
   const result = await enqueueRouteJob({
     priority,
     replaceable,
     replaceKey,
     label,
     run: async () => {
-      const normalizedResult = await getDirectionsFromBestProvider(normalized, extraBody);
+      const normalizedResult = await getDirectionsFromBestProvider(
+        normalized,
+        extraBody
+      );
 
       if (!normalizedResult) {
         const err = new Error("NO_ROUTE_FEATURES");
@@ -957,14 +967,6 @@ router.post("/api/route", async (req, res) => {
 
     const route = await getDirectionsWithCacheAndQueue({
       coords,
-      extraBody: {
-        debugSkipProviders: req.body?.debugSkipProviders,
-      },
-      cacheExtra: {
-        debugSkipProviders: Array.isArray(req.body?.debugSkipProviders)
-          ? req.body.debugSkipProviders.join(",")
-          : "",
-      },
       priority: Number(req.body?.priority || 2),
       replaceable: Boolean(req.body?.replaceable || false),
       replaceKey: req.body?.replaceKey || `route:${identity}`,
@@ -980,7 +982,10 @@ router.post("/api/route", async (req, res) => {
       });
     }
 
-    console.error("[ROUTING] POST /api/route failed:", e.response?.data || e.details || e.message);
+    console.error(
+      "[ROUTING] POST /api/route failed:",
+      e.response?.data || e.details || e.message
+    );
 
     return res.status(e.response?.status || e.status || 500).json({
       error: "ROUTE_FAILED",
@@ -1013,7 +1018,10 @@ router.get("/api/route", async (req, res) => {
 
     return res.json(legacyGeoJsonResponse(route));
   } catch (e) {
-    console.error("[ROUTING] GET /api/route failed:", e.response?.data || e.details || e.message);
+    console.error(
+      "[ROUTING] GET /api/route failed:",
+      e.response?.data || e.details || e.message
+    );
 
     return res.status(e.response?.status || e.status || 500).json({
       error: "ROUTE_FAILED",
@@ -1038,7 +1046,7 @@ router.post("/api/route/variants", async (req, res) => {
     const identity = getRequestIdentity(req);
 
     // ORS supports preferences like recommended, fastest, shortest.
-    // Some may return same-looking geometry depending on roads, but this restores the options.
+    // Some may return same-looking geometry depending on roads.
     const prefs = ["recommended", "fastest", "shortest"];
 
     const results = [];
@@ -1053,7 +1061,10 @@ router.post("/api/route/variants", async (req, res) => {
           replaceable: Boolean(req.body?.replaceable ?? true),
           replaceKey:
             req.body?.replaceKey ||
-            `route-variants:${identity}:${roundCoord(start[0], 4)},${roundCoord(start[1], 4)}:${roundCoord(end[0], 4)},${roundCoord(end[1], 4)}`,
+            `route-variants:${identity}:${roundCoord(start[0], 4)},${roundCoord(
+              start[1],
+              4
+            )}:${roundCoord(end[0], 4)},${roundCoord(end[1], 4)}`,
           label: `POST /api/route/variants:${pref}`,
         });
 
@@ -1084,7 +1095,7 @@ router.post("/api/route/variants", async (req, res) => {
 
     if (!results.length) {
       return res.status(502).json({
-        error: "ORS_NO_VARIANTS",
+        error: "ROUTE_NO_VARIANTS",
       });
     }
 
@@ -1097,7 +1108,10 @@ router.post("/api/route/variants", async (req, res) => {
       });
     }
 
-    console.error("[ROUTING] variants failed:", e.response?.data || e.details || e.message);
+    console.error(
+      "[ROUTING] variants failed:",
+      e.response?.data || e.details || e.message
+    );
 
     return res.status(e.response?.status || e.status || 500).json({
       error: "ROUTE_VARIANTS_FAILED",
@@ -1111,13 +1125,6 @@ router.post("/api/route/variants", async (req, res) => {
 // ======================================================
 
 // POST /api/route/matrix
-// Body example:
-// {
-//   "locations": [[121.61, 13.94], [121.62, 13.95], [121.63, 13.96]],
-//   "sources": [0],
-//   "destinations": [1, 2],
-//   "metrics": ["distance", "duration"]
-// }
 router.post("/api/route/matrix", async (req, res) => {
   try {
     const {
@@ -1128,7 +1135,11 @@ router.post("/api/route/matrix", async (req, res) => {
       units = "km",
     } = req.body || {};
 
-    if (!Array.isArray(locations) || locations.length < 2 || !locations.every(validPair)) {
+    if (
+      !Array.isArray(locations) ||
+      locations.length < 2 ||
+      !locations.every(validPair)
+    ) {
       return res.status(400).json({
         error: "INVALID_INPUT",
         details: "Provide locations as [[lng,lat], [lng,lat], ...]",
@@ -1182,7 +1193,10 @@ router.post("/api/route/matrix", async (req, res) => {
       });
     }
 
-    console.error("[ROUTING] matrix failed:", e.response?.data || e.details || e.message);
+    console.error(
+      "[ROUTING] matrix failed:",
+      e.response?.data || e.details || e.message
+    );
 
     return res.status(e.response?.status || e.status || 500).json({
       error: "MATRIX_FAILED",
@@ -1192,16 +1206,15 @@ router.post("/api/route/matrix", async (req, res) => {
 });
 
 // POST /api/route/snap
-// Body example:
-// {
-//   "locations": [[121.61, 13.94], [121.62, 13.95]],
-//   "radius": 350
-// }
 router.post("/api/route/snap", async (req, res) => {
   try {
     const { locations, radius = 350 } = req.body || {};
 
-    if (!Array.isArray(locations) || locations.length < 1 || !locations.every(validPair)) {
+    if (
+      !Array.isArray(locations) ||
+      locations.length < 1 ||
+      !locations.every(validPair)
+    ) {
       return res.status(400).json({
         error: "INVALID_INPUT",
         details: "Provide locations as [[lng,lat], [lng,lat], ...]",
@@ -1250,7 +1263,10 @@ router.post("/api/route/snap", async (req, res) => {
       });
     }
 
-    console.error("[ROUTING] snap failed:", e.response?.data || e.details || e.message);
+    console.error(
+      "[ROUTING] snap failed:",
+      e.response?.data || e.details || e.message
+    );
 
     return res.status(e.response?.status || e.status || 500).json({
       error: "SNAP_FAILED",
@@ -1294,9 +1310,9 @@ router.get("/api/route/status", (req, res) => {
     },
     queue: {
       size: routeQueue.length,
-      active: activeOrsRequests,
+      active: activeRouteRequests,
       maxSize: MAX_QUEUE_SIZE,
-      concurrency: ORS_CONCURRENCY,
+      concurrency: ROUTE_CONCURRENCY,
     },
     cache: {
       size: routeCache.size,
