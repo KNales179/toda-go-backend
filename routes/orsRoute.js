@@ -957,6 +957,14 @@ router.post("/api/route", async (req, res) => {
 
     const route = await getDirectionsWithCacheAndQueue({
       coords,
+      extraBody: {
+        debugSkipProviders: req.body?.debugSkipProviders,
+      },
+      cacheExtra: {
+        debugSkipProviders: Array.isArray(req.body?.debugSkipProviders)
+          ? req.body.debugSkipProviders.join(",")
+          : "",
+      },
       priority: Number(req.body?.priority || 2),
       replaceable: Boolean(req.body?.replaceable || false),
       replaceKey: req.body?.replaceKey || `route:${identity}`,
