@@ -491,6 +491,9 @@ async function callTomTomDirections(coords) {
 }
 
 async function getDirectionsFromBestProvider(coords, extraBody = {}) {
+  const debugSkipProviders = Array.isArray(extraBody.debugSkipProviders)
+  ? extraBody.debugSkipProviders.map((p) => String(p).toLowerCase())
+  : [];
   const providers = [
     {
       name: "ors",
@@ -528,6 +531,12 @@ async function getDirectionsFromBestProvider(coords, extraBody = {}) {
 
   for (const provider of providers) {
     try {
+      if (debugSkipProviders.includes(provider.name)) {
+        logRoute(`${providerDisplayName(provider.name)} skipped by debugSkipProviders.`, {
+          provider: provider.name,
+        });
+        continue;
+      }
       if (isProviderLimited(provider.name)) {
         logRoute(`${providerDisplayName(provider.name)} is currently limited. Skipping provider.`, {
           provider: provider.name,
