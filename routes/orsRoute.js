@@ -1121,6 +1121,166 @@ router.post("/api/route/variants", async (req, res) => {
 });
 
 // ======================================================
+// DRIVER PLAN ROUTE
+// One request for the driver's full sorted job plan.
+// Example:
+// driver/current → P1 → P2 → D1 → P3 → D3 → D2
+// ======================================================
+
+function validPlanTask(t) {
+  return (
+    t &&
+    typeof t === "object" &&
+    okLat(Number(t.lat)) &&
+    okLng(Number(t.lng))
+  );
+}
+
+function taskLabel(t, index) {
+  const type = String(t.taskType || t.type || "STOP").toUpperCase();
+  const bookingId = String(t.bookingId || t.sourceId || t.id || index);
+  return `${type}:${bookingId}`;
+}
+
+function buildPlanVersion(tasks = []) {
+  return tasks.map((t, index) => taskLabel(t, index)).join("|");
+}
+
+function enrichGeoJsonResponse(geo, route, extra = {}) {
+  const out = geo || {
+    type: "FeatureCollection",
+    features: [],
+  };
+
+  out.metadata = {
+    ...(out.metadata || {}),
+    provider: route?.provider,
+    source: route?.source,
+    ...extra,
+  };
+
+  if (out.features?.[0]) {
+    out.features[0].properties = {
+      ...(out.features[0].properties || {}),
+      provider: route?.provider,
+      source: route?.source,
+      routeType: extra.routeType,
+      planVersion: extra.planVersion,
+      stopCount: extra.stopCount,
+    };
+  }
+
+  return out;
+}
+
+// POST /api/route/driver-plan
+// Body:
+// {
+//   "driverId": "...",
+//   "currentLocation": { "lat": 13.941, "lng": 121.617 },
+//   "tasks": [
+//     { "taskType": "PICKUP", "bookingId": "B1", "lat": 13.944, "lng": 121.620 },
+//     { "taskType": "DROPOFF", "bookingId": "B1", "lat": 13.948, "lng": 121.625 }
+//   ],
+//   "planVersion": "optional"
+// }
+router.post("/api/route/driver-plan", async (req, res) => {
+  try {
+    const {
+      driverId,
+      currentLocation,
+      tasks = [],
+      planVersion,
+      priority = 1,
+      replaceable = true,
+    } = req.body || {};
+
+    const startLat = Number(currentLocation?.lat ?? currentLocation?.latitude);
+    const startLng = Number(currentLocation?.lng ?? currentLocation?.longitude);
+
+    if (!okLat(startLat) || !okLng(startLng)) {
+      return res.status(400).json({
+        error: "INVALID_DRIVER_LOCATION",
+        details: "Provide currentLocation as { lat, lng }",
+      });
+    }
+
+    if (!Array.isArray(tasks) || tasks.length < 1) {
+      return res.status(400).json({
+        error: "INVALID_TASKS",
+        details: "Provide at least one task stop",
+      });
+    }
+
+    const safeTasks = tasks.filter(validPlanTask).slice(0, 25);
+
+    if (!safeTasks.length) {
+      return res.status(400).json({
+        error: "NO_VALID_TASK_STOPS",
+        details: "Tasks must include valid lat/lng",
+      });
+    }
+
+    const finalPlanVersion = String(planVersion || buildPlanVersion(safeTasks));
+
+    const coords = [
+      [startLng, startLat],
+      ...safeTasks.map((t) => [Number(t.lng), Number(t.lat)]),
+    ];
+
+    if (!validCoords(coords)) {
+      return res.status(400).json({
+        error: "INVALID_PLAN_COORDINATES",
+        details: "Driver plan contains invalid coordinates",
+      });
+    }
+
+    const replaceKey = driverId
+      ? `driver-plan:${driverId}`
+      : `driver-plan:${getRequestIdentity(req)}`;
+
+    const route = await getDirectionsWithCacheAndQueue({
+      coords,
+      cacheExtra: {
+        routeType: "driver-plan",
+        driverId: driverId || "",
+        planVersion: finalPlanVersion,
+      },
+      priority: Number(priority || 1),
+      replaceable: Boolean(replaceable),
+      replaceKey,
+      label: "POST /api/route/driver-plan",
+    });
+
+    const geo = enrichGeoJsonResponse(legacyGeoJsonResponse(route), route, {
+      routeType: "driver-plan",
+      driverId: driverId || null,
+      planVersion: finalPlanVersion,
+      stopCount: safeTasks.length,
+    });
+
+    return res.json(geo);
+  } catch (e) {
+    if (e.replaced) {
+      return res.status(409).json({
+        error: "DRIVER_PLAN_REPLACED",
+        details: e.message,
+      });
+    }
+
+    console.error(
+      "[ROUTING] driver-plan failed:",
+      e.response?.data || e.details || e.message
+    );
+
+    return res.status(e.response?.status || e.status || 500).json({
+      error: "DRIVER_PLAN_FAILED",
+      details: e.response?.data || e.details || e.message,
+    });
+  }
+});
+
+// ======================================================
 // ORS MATRIX + SNAP ENDPOINTS
 // ======================================================
 
