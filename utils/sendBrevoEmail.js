@@ -1,26 +1,42 @@
-const brevo = require("@getbrevo/brevo");
-
-const apiInstance = new brevo.TransactionalEmailsApi();
-apiInstance.authentications.apiKey.apiKey = process.env.BREVO_API_KEY;
-
 async function sendBrevoEmail({ to, subject, htmlContent, textContent }) {
   try {
-    const sendSmtpEmail = new brevo.SendSmtpEmail();
+    if (!process.env.BREVO_API_KEY) {
+      throw new Error("BREVO_API_KEY is missing in environment variables.");
+    }
 
-    sendSmtpEmail.sender = {
-      name: process.env.BREVO_SENDER_NAME || "TODA Go",
-      email: process.env.BREVO_SENDER_EMAIL,
-    };
+    if (!process.env.BREVO_SENDER_EMAIL) {
+      throw new Error("BREVO_SENDER_EMAIL is missing in environment variables.");
+    }
 
-    sendSmtpEmail.to = [{ email: to }];
-    sendSmtpEmail.subject = subject;
-    sendSmtpEmail.htmlContent = htmlContent;
-    sendSmtpEmail.textContent = textContent;
+    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "api-key": process.env.BREVO_API_KEY,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sender: {
+          name: process.env.BREVO_SENDER_NAME || "TODA Go",
+          email: process.env.BREVO_SENDER_EMAIL,
+        },
+        to: [{ email: to }],
+        subject,
+        htmlContent,
+        textContent,
+      }),
+    });
 
-    const result = await apiInstance.sendTransacEmail(sendSmtpEmail);
-    return result;
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      console.error("❌ Brevo API error:", data);
+      throw new Error(data?.message || "Failed to send Brevo email.");
+    }
+
+    return data;
   } catch (error) {
-    console.error("❌ Brevo email error:", error?.response?.body || error?.body || error);
+    console.error("❌ sendBrevoEmail error:", error.message || error);
     throw error;
   }
 }
