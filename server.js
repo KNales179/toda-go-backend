@@ -88,7 +88,7 @@ io.on("connection", (socket) => {
   });
 });
 
-const sendBrevoEmail = require("./src/utils/sendBrevoEmail");
+const sendBrevoEmail = require("./utils/sendBrevoEmail");
 
 app.get("/api/test-brevo-email", async (req, res) => {
   try {
