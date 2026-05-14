@@ -87,6 +87,30 @@ io.on("connection", (socket) => {
     console.log("🔌 socket disconnected:", socket.id);
   });
 });
+
+const sendBrevoEmail = require("./src/utils/sendBrevoEmail");
+
+app.get("/api/test-brevo-email", async (req, res) => {
+  try {
+    await sendBrevoEmail({
+      to: "yourtestemail@gmail.com",
+      subject: "TODA Go Brevo Test",
+      htmlContent: `
+        <h2>TODA Go Email Test</h2>
+        <p>If you received this, Brevo is working.</p>
+      `,
+      textContent: "TODA Go Email Test. If you received this, Brevo is working.",
+    });
+
+    res.json({ success: true, message: "Test email sent successfully." });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to send test email.",
+      error: error?.response?.body || error?.body || error.message,
+    });
+  }
+});
 // --- Routes ---
 const passengerRoutes = require("./routes/Passengerauth");
 const driverRoutes = require("./routes/Driverauth");
