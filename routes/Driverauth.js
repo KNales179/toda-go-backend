@@ -3,7 +3,6 @@ const express = require("express");
 const router = express.Router();
 
 const Driver = require("../models/Drivers");
-const Operator = require("../models/Operator");
 const Notification = require("../models/Notification");
 
 const { v4: uuidv4 } = require("uuid");
@@ -175,202 +174,240 @@ router.post("/:id/gcash-qr", upload.single("qr"), async (req, res) => {
 // ==================== R E G I S T R A T I O N ======================
 // ===================================================================
 
-router.post( "/register-driver",
+router.post(
+  "/register-driver",
   upload.fields([
     { name: "selfie", maxCount: 1 },
-    { name: "votersIDImage", maxCount: 1 },
     { name: "driversLicenseImage", maxCount: 1 },
-    { name: "orcrImage", maxCount: 1 },
   ]),
   async (req, res) => {
     try {
       const {
-        role,
-        driverEmail, driverPassword,
-        operatorEmail, operatorPassword,
-        franchiseNumber, plateNumber, todaName, sector,
-        operatorFirstName, operatorMiddleName, operatorLastName, operatorSuffix, operatorBirthdate, operatorPhone,
-        driverFirstName, driverMiddleName, driverLastName, driverSuffix, driverBirthdate, driverPhone,
-        experienceYears, isLucenaVoter, votingLocation, capacity, 
+        driverEmail,
+        driverPassword,
+
+        driverFirstName,
+        driverMiddleName,
+        driverLastName,
+        driverSuffix,
+        driverBirthdate,
+        driverPhone,
+
+        franchiseNumber,
+        plateNumber,
+        todaName,
+        sector,
+        experienceYears,
+        capacity,
+        trikeColor,
       } = req.body;
 
-      if (!req.files?.votersIDImage) {
-        return res.status(400).json({ error: "Voter's ID image is required" });
+      if (!driverEmail || !driverPassword) {
+        return res.status(400).json({
+          error: "Email and password are required",
+        });
       }
 
-      if ((role === "Driver" || role === "Both") && driverEmail) {
-        const exists = await Driver.findOne({ email: driverEmail });
-        if (exists) return res.status(400).json({ error: "Driver already exists" });
+      if (!driverFirstName || !driverLastName || !driverBirthdate || !driverPhone) {
+        return res.status(400).json({
+          error: "Driver personal details are incomplete",
+        });
       }
-      if ((role === "Operator" || role === "Both") && operatorEmail) {
-        const exists = await Operator.findOne({ email: operatorEmail });
-        if (exists) return res.status(400).json({ error: "Operator already exists" });
+
+      if (!franchiseNumber || !todaName || !sector || !experienceYears || !plateNumber) {
+        return res.status(400).json({
+          error: "Franchise and tricycle details are incomplete",
+        });
+      }
+
+      if (!req.files?.driversLicenseImage?.[0]) {
+        return res.status(400).json({
+          error: "Driver's license image is required",
+        });
+      }
+
+      if (!req.files?.selfie?.[0]) {
+        return res.status(400).json({
+          error: "Selfie image is required",
+        });
+      }
+
+      const normalizedEmail = String(driverEmail).trim().toLowerCase();
+
+      const existingDriver = await Driver.findOne({ email: normalizedEmail });
+      if (existingDriver) {
+        return res.status(400).json({
+          error: "Driver already exists",
+        });
+      }
+
+      const sectorEnum = ["East", "West", "North", "South", "Other"];
+      if (!sectorEnum.includes(sector)) {
+        return res.status(400).json({
+          error: "Invalid sector",
+        });
+      }
+
+      const experienceEnum = ["1-5 taon", "6-10 taon", "16-20 taon", "20 taon pataas"];
+      if (!experienceEnum.includes(experienceYears)) {
+        return res.status(400).json({
+          error: "Invalid driving experience",
+        });
+      }
+
+      const colorEnum = ["yellow", "green", ""];
+      if (!colorEnum.includes(trikeColor || "")) {
+        return res.status(400).json({
+          error: "Invalid tricycle color",
+        });
+      }
+
+      const birthDateObj = new Date(driverBirthdate);
+      if (Number.isNaN(birthDateObj.getTime())) {
+        return res.status(400).json({
+          error: "Invalid birthdate",
+        });
+      }
+
+      const today = new Date();
+      const adultLimit = new Date(
+        today.getFullYear() - 18,
+        today.getMonth(),
+        today.getDate()
+      );
+
+      if (birthDateObj > adultLimit) {
+        return res.status(400).json({
+          error: "Driver must be at least 18 years old",
+        });
       }
 
       const profileID = uuidv4();
       const cap = Math.min(6, Math.max(1, Number(capacity) || 4));
       const savedImgs = {};
 
-      if (req.files?.votersIDImage?.[0]) {
-        const r = await uploadBufferToCloudinary(req.files.votersIDImage[0].buffer, {
-          folder: "toda-go/ids",
-          resource_type: "image",
-          transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
-        });
-        savedImgs.votersIDImage = r.secure_url;
-        savedImgs.votersIDImagePublicId = r.public_id;
-      }
-
-      if (req.files?.driversLicenseImage?.[0]) {
-        const r = await uploadBufferToCloudinary(req.files.driversLicenseImage[0].buffer, {
+      const licenseUpload = await uploadBufferToCloudinary(
+        req.files.driversLicenseImage[0].buffer,
+        {
           folder: "toda-go/licenses",
           resource_type: "image",
           transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
-        });
-        savedImgs.driversLicenseImage = r.secure_url;
-        savedImgs.driversLicenseImagePublicId = r.public_id;
-      }
+        }
+      );
 
-      if (req.files?.orcrImage?.[0]) {
-        const r = await uploadBufferToCloudinary(req.files.orcrImage[0].buffer, {
-          folder: "toda-go/orcr",
-          resource_type: "image",
-          transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
-        });
-        savedImgs.orcrImage = r.secure_url;
-        savedImgs.orcrImagePublicId = r.public_id;
-      }
+      savedImgs.driversLicenseImage = licenseUpload.secure_url;
+      savedImgs.driversLicenseImagePublicId = licenseUpload.public_id;
 
-      if (req.files?.selfie?.[0]) {
-        const r = await uploadBufferToCloudinary(req.files.selfie[0].buffer, {
-          folder: "toda-go/selfies",
-          resource_type: "image",
-          transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
-        });
-        savedImgs.selfieImage = r.secure_url;
-        savedImgs.selfieImagePublicId = r.public_id;
-      }
-
-      // Operator doc
-      const newOperator = new Operator({
-        profileID, franchiseNumber, todaName, sector, plateNumber,
-        operatorFirstName, operatorMiddleName, operatorLastName, operatorSuffix,
-        operatorName: `${operatorFirstName} ${operatorMiddleName} ${operatorLastName} ${operatorSuffix || ""}`.trim(),
-        operatorBirthdate, operatorPhone,
-        capacity: cap,
-
-        votersIDImage: savedImgs.votersIDImage,
-        driversLicenseImage: savedImgs.driversLicenseImage,
-        orcrImage: savedImgs.orcrImage,
-        selfieImage: savedImgs.selfieImage,
-
-        votersIDImagePublicId: savedImgs.votersIDImagePublicId,
-        driversLicenseImagePublicId: savedImgs.driversLicenseImagePublicId,
-        orcrImagePublicId: savedImgs.orcrImagePublicId,
-        selfieImagePublicId: savedImgs.selfieImagePublicId,
-
-        ...((role === "Operator" || role === "Both") && operatorEmail ? { email: operatorEmail } : {}),
-        ...((role === "Operator" || role === "Both") && operatorPassword ? { password: operatorPassword } : {}),
-        isVerified: false,
+      const selfieUpload = await uploadBufferToCloudinary(req.files.selfie[0].buffer, {
+        folder: "toda-go/selfies",
+        resource_type: "image",
+        transformation: [{ quality: "auto" }, { fetch_format: "auto" }],
       });
 
-      // Driver doc
-      const dFirst = role === "Both" ? operatorFirstName : driverFirstName;
-      const dMiddle = role === "Both" ? operatorMiddleName : driverMiddleName;
-      const dLast  = role === "Both" ? operatorLastName : driverLastName;
-      const dSuf   = role === "Both" ? operatorSuffix : driverSuffix;
-      const dBirth = role === "Both" ? operatorBirthdate : driverBirthdate;
-      const dPhone = role === "Both" ? operatorPhone : driverPhone;
+      savedImgs.selfieImage = selfieUpload.secure_url;
+      savedImgs.selfieImagePublicId = selfieUpload.public_id;
+
+      const dFirst = String(driverFirstName || "").trim();
+      const dMiddle = String(driverMiddleName || "").trim();
+      const dLast = String(driverLastName || "").trim();
+      const dSuffix = String(driverSuffix || "").trim();
+
+      const driverName = [dFirst, dMiddle, dLast, dSuffix]
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
 
       const newDriver = new Driver({
-        profileID, franchiseNumber, todaName, sector,
+        profileID,
+
+        email: normalizedEmail,
+        password: driverPassword,
+        isVerified: false,
+
+        driverVerified: false,
+        driverVerification: {
+          status: "unverify",
+          reviewedAt: null,
+          rejectionReason: null,
+          reviewedByAdminId: null,
+        },
+
         driverFirstName: dFirst,
         driverMiddleName: dMiddle,
         driverLastName: dLast,
-        driverSuffix: dSuf,
-        driverName: `${dFirst} ${dMiddle} ${dLast} ${dSuf || ""}`.trim(),
-        driverBirthdate: dBirth,
-        driverPhone: dPhone,
-        experienceYears, isLucenaVoter, votingLocation,
-        plateNumber,
+        driverSuffix: dSuffix,
+        driverName,
+        driverBirthdate: String(driverBirthdate).trim(),
+        driverPhone: String(driverPhone).trim(),
 
-        votersIDImage: savedImgs.votersIDImage,
+        franchiseNumber: String(franchiseNumber).trim(),
+        todaName: String(todaName).trim(),
+        sector: String(sector).trim(),
+        experienceYears: String(experienceYears).trim(),
+        plateNumber: String(plateNumber).trim().toUpperCase(),
+        trikeColor: trikeColor || "",
+        capacity: cap,
+
         driversLicenseImage: savedImgs.driversLicenseImage,
-        orcrImage: savedImgs.orcrImage,
-        selfieImage: savedImgs.selfieImage,
-
-        votersIDImagePublicId: savedImgs.votersIDImagePublicId,
         driversLicenseImagePublicId: savedImgs.driversLicenseImagePublicId,
-        orcrImagePublicId: savedImgs.orcrImagePublicId,
+        selfieImage: savedImgs.selfieImage,
         selfieImagePublicId: savedImgs.selfieImagePublicId,
-
-        ...((role === "Driver" || role === "Both") && driverEmail ? { email: driverEmail } : {}),
-        ...((role === "Driver" || role === "Both") && driverPassword ? { password: driverPassword } : {}),
-        isVerified: false,
       });
 
-      await newOperator.save();
       await newDriver.save();
 
-      // send verification emails + save internal notif entries
       const baseUrl = getBaseUrl(req);
 
-      async function sendVerify(kind, id, toEmail, displayName) {
-        if (!toEmail) return null;
+      const token = jwt.sign(
+        { kind: "driver", id: String(newDriver._id) },
+        process.env.JWT_SECRET,
+        { expiresIn: "1d" }
+      );
 
-        const token = jwt.sign({ kind, id: String(id) }, process.env.JWT_SECRET, { expiresIn: "1d" });
-        const verifyUrl = `${baseUrl}/api/auth/driver/verify-email?token=${encodeURIComponent(token)}`;
+      const verifyUrl = `${baseUrl}/api/auth/driver/verify-email?token=${encodeURIComponent(
+        token
+      )}`;
 
-        await sendMail({
-          to: toEmail,
-          subject: "Verify your TodaGo Driver Account",
-          html: `
-            <p>Hello ${displayName || "there"},</p>
-            <p>Please verify your account:</p>
-            <p><a href="${verifyUrl}" style="display:inline-block;padding:10px 16px;background:#1a73e8;color:#fff;border-radius:6px;text-decoration:none">Verify Email</a></p>
-            <p>Or paste this link: ${verifyUrl}</p>
-          `,
-        });
+      await sendMail({
+        to: newDriver.email,
+        subject: "Verify your TodaGo Driver Account",
+        html: `
+          <p>Hello ${newDriver.driverName || "Driver"},</p>
+          <p>Please verify your account:</p>
+          <p>
+            <a href="${verifyUrl}" style="display:inline-block;padding:10px 16px;background:#1a73e8;color:#fff;border-radius:6px;text-decoration:none">
+              Verify Email
+            </a>
+          </p>
+          <p>Or paste this link: ${verifyUrl}</p>
+          <p>After email verification, your driver account will still be reviewed by the admin.</p>
+        `,
+        text: `Hello ${newDriver.driverName || "Driver"}, verify your account here: ${verifyUrl}`,
+      });
 
-        return verifyUrl;
-      }
-
-      let driverVerifyUrl = null;
-      let operatorVerifyUrl = null;
-
-      if (role === "Driver" || role === "Both") {
-        driverVerifyUrl = await sendVerify("driver", newDriver._id, driverEmail, newDriver.driverName);
-        await pushNotif({
-          userId: newDriver._id,
-          userType: "driver",
-          category: "verification",
-          title: "Verify your email",
-          message: "We sent you a verification link. Please check your email (and Spam).",
-          meta: { sentTo: driverEmail, kind: "driver" },
-        });
-      }
-
-      if (role === "Operator" || role === "Both") {
-        operatorVerifyUrl = await sendVerify("operator", newOperator._id, operatorEmail, newOperator.operatorName);
-
-        // If your app treats operator as driver internally, keep userType="driver".
-        // If you later add userType="operator" in Notification enum, you can switch this.
-        await pushNotif({
-          userId: newDriver._id, // ✅ attach to driver profile so driver app can display it
-          userType: "driver",
-          category: "verification",
-          title: "Verify operator email",
-          message: "We sent a verification link for the operator account. Please check the operator email.",
-          meta: { sentTo: operatorEmail, kind: "operator" },
-        });
-      }
+      await pushNotif({
+        userId: newDriver._id,
+        userType: "driver",
+        category: "verification",
+        title: "Verify your email",
+        message: "We sent you a verification link. Please check your email and Spam folder.",
+        meta: {
+          sentTo: newDriver.email,
+          kind: "driver",
+        },
+      });
 
       return res.status(201).json({
-        message: "Registration successful. Please verify your email. Check your Spam Mail",
+        message:
+          "Registration successful. Please verify your email. Your driver account will be reviewed by the admin.",
       });
     } catch (error) {
       console.error("Driver registration failed:", error);
-      res.status(500).json({ error: "Server error", details: error.message });
+      return res.status(500).json({
+        error: "Server error",
+        details: error.message,
+      });
     }
   }
 );
@@ -379,50 +416,33 @@ router.post( "/register-driver",
 router.get("/verify-email", async (req, res) => {
   try {
     const { token } = req.query;
+
     if (!token) return res.status(400).send("Missing token");
 
     let decoded;
+
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
     } catch {
       return res.status(400).send("Invalid or expired verification link");
     }
 
-    const kind = (decoded.kind || "driver").toLowerCase();
     const id = decoded.id;
 
-    if (!id) return res.status(400).send("Invalid token payload");
-
-    if (kind === "operator") {
-      const operator = await Operator.findById(id);
-      if (!operator) return res.status(404).send("Account not found");
-
-      if (operator.isVerified) return res.send("Already verified. You can log in.");
-      operator.isVerified = true;
-      await operator.save();
-
-      // ✅ Put notif on driver account too (so driver app can show it)
-      const driver = await Driver.findOne({ profileID: operator.profileID }).select("_id").lean();
-
-      if (driver?._id) {
-        await pushNotif({
-          userId: driver._id,
-          userType: "driver",
-          category: "verification",
-          title: "Operator email verified",
-          message: "Your operator email has been verified successfully.",
-          meta: { operatorId: String(operator._id) },
-        });
-      }
-
-      return res.send("✅ Operator email verified! You can now log in.");
+    if (!id) {
+      return res.status(400).send("Invalid token payload");
     }
 
-    // default: driver
     const driver = await Driver.findById(id);
-    if (!driver) return res.status(404).send("Account not found");
 
-    if (driver.isVerified) return res.send("Already verified. You can log in.");
+    if (!driver) {
+      return res.status(404).send("Account not found");
+    }
+
+    if (driver.isVerified) {
+      return res.send("Already verified. You can log in.");
+    }
+
     driver.isVerified = true;
     await driver.save();
 
@@ -431,11 +451,13 @@ router.get("/verify-email", async (req, res) => {
       userType: "driver",
       category: "verification",
       title: "Email verified",
-      message: "Your email has been verified successfully.",
-      meta: { driverId: String(driver._id) },
+      message: "Your email has been verified successfully. Please wait for admin driver verification.",
+      meta: {
+        driverId: String(driver._id),
+      },
     });
 
-    return res.send("✅ Driver email verified! You can now log in.");
+    return res.send("✅ Driver email verified! Please wait for admin verification.");
   } catch (e) {
     console.error("driver verify-email error:", e);
     return res.status(500).send("Server error");

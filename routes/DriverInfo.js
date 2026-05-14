@@ -37,6 +37,11 @@ const DRIVER_SELF_FIELDS = [
   "isVerified",
   "plateNumber",
   "capacity",
+  "trikeColor",
+  "driversLicenseImage",
+  "driversLicenseImagePublicId",
+  "selfieImagePublicId",
+  "driverVerification",
 ].join(" ");
 
 const DRIVER_RELATED_FIELDS = [
@@ -55,6 +60,11 @@ const DRIVER_RELATED_FIELDS = [
   "isVerified",
   "plateNumber",
   "capacity",
+  "trikeColor",
+  "driversLicenseImage",
+  "driversLicenseImagePublicId",
+  "selfieImagePublicId",
+  "driverVerification",
 ].join(" ");
 
 const DRIVER_ADMIN_FIELDS = DRIVER_SELF_FIELDS;
@@ -84,20 +94,26 @@ function sanitizeDriverRelated(driver) {
   return {
     _id: driver._id,
     createdAt: driver.createdAt || null,
+
     driverFirstName: driver.driverFirstName || "",
     driverMiddleName: driver.driverMiddleName || "",
     driverLastName: driver.driverLastName || "",
     driverName: driver.driverName || "",
     driverSuffix: driver.driverSuffix || "",
+
     todaName: driver.todaName || "",
     franchiseNumber: driver.franchiseNumber || "",
     sector: driver.sector || "",
     experienceYears: driver.experienceYears || "",
+
     selfieImage: driver.selfieImage || "",
     driverVerified: !!driver.driverVerified,
     isVerified: !!driver.isVerified,
+    driverVerification: driver.driverVerification || null,
+
     plateNumber: driver.plateNumber || "",
     capacity: driver.capacity ?? null,
+    trikeColor: driver.trikeColor || "",
   };
 }
 
