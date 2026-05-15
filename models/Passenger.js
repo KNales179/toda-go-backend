@@ -85,10 +85,52 @@ const passengerSchema = new mongoose.Schema({
   },
 
 
-  // From original app
-  email: { type: String, unique: true, required: true },
-  password: { type: String, required: true },
-  isVerified: { type: Boolean, default: false }
+  // Account
+  email: {
+    type: String,
+    unique: true,
+    required: true,
+    lowercase: true,
+    trim: true,
+  },
+
+  password: {
+    type: String,
+    required: true,
+  },
+
+  // Email OTP verification status
+  // false = registered but not email verified yet
+  // true = email OTP verified
+  isVerified: {
+    type: Boolean,
+    default: false,
+  },
+
+  emailOtpHash: {
+    type: String,
+    default: null,
+  },
+
+  emailOtpExpires: {
+    type: Date,
+    default: null,
+  },
+
+  emailOtpAttempts: {
+    type: Number,
+    default: 0,
+  },
+
+  emailOtpLastSentAt: {
+    type: Date,
+    default: null,
+  },
+
+  emailOtpResendCount: {
+    type: Number,
+    default: 0,
+  },
 });
 
 // 🔒 Hash password before save

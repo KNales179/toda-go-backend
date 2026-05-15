@@ -1,3 +1,4 @@
+//sendBrevoEmail.js
 async function sendBrevoEmail({ to, subject, htmlContent, textContent }) {
   try {
     if (!process.env.BREVO_API_KEY) {
@@ -31,7 +32,13 @@ async function sendBrevoEmail({ to, subject, htmlContent, textContent }) {
 
     if (!response.ok) {
       console.error("❌ Brevo API error:", data);
-      throw new Error(data?.message || "Failed to send Brevo email.");
+
+      const message =
+        data?.message ||
+        data?.code ||
+        "Failed to send Brevo email.";
+
+      throw new Error(message);
     }
 
     return data;
