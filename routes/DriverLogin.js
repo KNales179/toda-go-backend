@@ -52,6 +52,33 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ error: "Incorrect password" });
     }
 
+    if (!driver.isVerified) {
+      return res.status(403).json({
+        success: false,
+        needEmailVerification: true,
+        needVerification: true,
+        message: "Please verify your email before logging in.",
+        email: driver.email,
+      });
+    }
+
+    const adminStatus = driver.driverVerification?.status || "unverify";
+
+    if (!driver.driverVerified || adminStatus !== "verify") {
+      return res.status(403).json({
+        success: false,
+        needAdminVerification: true,
+        message:
+          adminStatus === "reject"
+            ? driver.driverVerification?.rejectionReason ||
+              "Your driver verification was rejected. Please contact TFRO/admin."
+            : "Your driver account is still waiting for admin verification.",
+        email: driver.email,
+        driverVerified: !!driver.driverVerified,
+        driverVerification: driver.driverVerification || null,
+      });
+    }
+
     const token = signUserToken({
       sub: driver._id,
       role: "driver",

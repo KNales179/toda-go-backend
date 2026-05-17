@@ -6,8 +6,13 @@ const Driver = require("../models/Drivers");
 const Notification = require("../models/Notification");
 
 const { v4: uuidv4 } = require("uuid");
-const jwt = require("jsonwebtoken");
-const { sendMail } = require("../utils/mailer");
+const sendEmailOtp = require("../utils/sendEmailOtp");
+const {
+  generateEmailOtp,
+  hashEmailOtp,
+  getEmailOtpExpiry,
+  canResendOtp,
+} = require("../utils/emailOtpUtils");
 
 // --- Cloudinary + Multer (memory) ---
 const multer = require("multer");
@@ -28,6 +33,14 @@ try {
 
 
 // ---------- helpers ----------
+function driverFullName(d) {
+  return [d.driverFirstName, d.driverMiddleName, d.driverLastName, d.driverSuffix]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function getBaseUrl(req) {
   return (
     process.env.BACKEND_BASE_URL ||
@@ -317,6 +330,7 @@ router.post(
         .join(" ")
         .replace(/\s+/g, " ")
         .trim();
+      const otp = generateEmailOtp();
 
       const newDriver = new Driver({
         profileID,
@@ -324,6 +338,11 @@ router.post(
         email: normalizedEmail,
         password: driverPassword,
         isVerified: false,
+        emailOtpHash: hashEmailOtp(otp),
+        emailOtpExpires: getEmailOtpExpiry(),
+        emailOtpAttempts: 0,
+        emailOtpLastSentAt: new Date(),
+        emailOtpResendCount: 0,
 
         driverVerified: false,
         driverVerification: {
@@ -357,41 +376,30 @@ router.post(
 
       await newDriver.save();
 
-      const baseUrl = getBaseUrl(req);
+      try {
+        await sendEmailOtp({
+          to: newDriver.email,
+          otp,
+          name: driverFullName(newDriver) || newDriver.driverFirstName || "Driver",
+        });
+      } catch (emailError) {
+        console.error("❌ Driver OTP email send failed:", emailError);
 
-      const token = jwt.sign(
-        { kind: "driver", id: String(newDriver._id) },
-        process.env.JWT_SECRET,
-        { expiresIn: "1d" }
-      );
-
-      const verifyUrl = `${baseUrl}/api/auth/driver/verify-email?token=${encodeURIComponent(
-        token
-      )}`;
-
-      await sendMail({
-        to: newDriver.email,
-        subject: "Verify your TodaGo Driver Account",
-        html: `
-          <p>Hello ${newDriver.driverName || "Driver"},</p>
-          <p>Please verify your account:</p>
-          <p>
-            <a href="${verifyUrl}" style="display:inline-block;padding:10px 16px;background:#1a73e8;color:#fff;border-radius:6px;text-decoration:none">
-              Verify Email
-            </a>
-          </p>
-          <p>Or paste this link: ${verifyUrl}</p>
-          <p>After email verification, your driver account will still be reviewed by the admin.</p>
-        `,
-        text: `Hello ${newDriver.driverName || "Driver"}, verify your account here: ${verifyUrl}`,
-      });
+        return res.status(503).json({
+          success: false,
+          needEmailVerification: true,
+          email: newDriver.email,
+          message:
+            "Driver account was created, but we could not send the verification code right now. Please try resending the code later.",
+        });
+      }
 
       await pushNotif({
         userId: newDriver._id,
         userType: "driver",
         category: "verification",
         title: "Verify your email",
-        message: "We sent you a verification link. Please check your email and Spam folder.",
+        message: "We sent a 6-digit verification code to your email. Please check your Inbox or Spam folder.",
         meta: {
           sentTo: newDriver.email,
           kind: "driver",
@@ -399,8 +407,11 @@ router.post(
       });
 
       return res.status(201).json({
+        success: true,
+        needEmailVerification: true,
         message:
-          "Registration successful. Please verify your email. Your driver account will be reviewed by the admin.",
+          "Registration successful. Please verify your email using the code sent to your email. Your driver account will still be reviewed by the admin.",
+        email: newDriver.email,
       });
     } catch (error) {
       console.error("Driver registration failed:", error);
@@ -413,37 +424,85 @@ router.post(
 );
 
 
-router.get("/verify-email", async (req, res) => {
+// ---------- VERIFY DRIVER EMAIL OTP ----------
+router.post("/verify-email-otp", async (req, res) => {
   try {
-    const { token } = req.query;
+    const { email, otp } = req.body;
 
-    if (!token) return res.status(400).send("Missing token");
+    const cleanEmail = String(email || "").toLowerCase().trim();
+    const cleanOtp = String(otp || "").trim();
 
-    let decoded;
-
-    try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
-    } catch {
-      return res.status(400).send("Invalid or expired verification link");
+    if (!cleanEmail || !cleanOtp) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and verification code are required.",
+      });
     }
 
-    const id = decoded.id;
-
-    if (!id) {
-      return res.status(400).send("Invalid token payload");
+    if (!/^\d{6}$/.test(cleanOtp)) {
+      return res.status(400).json({
+        success: false,
+        message: "Verification code must be 6 digits.",
+      });
     }
 
-    const driver = await Driver.findById(id);
+    const driver = await Driver.findOne({ email: cleanEmail });
 
     if (!driver) {
-      return res.status(404).send("Account not found");
+      return res.status(404).json({
+        success: false,
+        message: "Driver account not found.",
+      });
     }
 
     if (driver.isVerified) {
-      return res.send("Already verified. You can log in.");
+      return res.status(200).json({
+        success: true,
+        message: "Email is already verified.",
+      });
+    }
+
+    if (!driver.emailOtpHash || !driver.emailOtpExpires) {
+      return res.status(400).json({
+        success: false,
+        message: "No verification code found. Please request a new code.",
+      });
+    }
+
+    if (new Date() > new Date(driver.emailOtpExpires)) {
+      return res.status(400).json({
+        success: false,
+        message: "Verification code has expired. Please request a new code.",
+      });
+    }
+
+    if (driver.emailOtpAttempts >= 5) {
+      return res.status(429).json({
+        success: false,
+        message: "Too many incorrect attempts. Please request a new code.",
+      });
+    }
+
+    const hashedInputOtp = hashEmailOtp(cleanOtp);
+
+    if (hashedInputOtp !== driver.emailOtpHash) {
+      driver.emailOtpAttempts += 1;
+      await driver.save();
+
+      return res.status(400).json({
+        success: false,
+        message: "Invalid verification code.",
+        attemptsLeft: Math.max(0, 5 - driver.emailOtpAttempts),
+      });
     }
 
     driver.isVerified = true;
+    driver.emailOtpHash = null;
+    driver.emailOtpExpires = null;
+    driver.emailOtpAttempts = 0;
+    driver.emailOtpLastSentAt = null;
+    driver.emailOtpResendCount = 0;
+
     await driver.save();
 
     await pushNotif({
@@ -451,62 +510,121 @@ router.get("/verify-email", async (req, res) => {
       userType: "driver",
       category: "verification",
       title: "Email verified",
-      message: "Your email has been verified successfully. Please wait for admin driver verification.",
+      message:
+        "Your email has been verified successfully. Please wait for admin driver verification.",
       meta: {
         driverId: String(driver._id),
       },
     });
 
-    return res.send("✅ Driver email verified! Please wait for admin verification.");
-  } catch (e) {
-    console.error("driver verify-email error:", e);
-    return res.status(500).send("Server error");
+    return res.status(200).json({
+      success: true,
+      message:
+        "Email verified successfully. Please wait for admin driver verification.",
+    });
+  } catch (error) {
+    console.error("❌ driver verify-email-otp error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error while verifying driver email.",
+    });
   }
 });
 
-// ✅ resend verification now also saves notification
-router.post("/resend-verification", async (req, res) => {
+// ---------- RESEND DRIVER EMAIL OTP ----------
+router.post("/resend-email-otp", async (req, res) => {
   try {
     const { email } = req.body;
-    if (!email) return res.status(400).json({ message: "Email required" });
 
-    const driver = await Driver.findOne({ email });
-    if (!driver) return res.status(404).json({ message: "No driver found" });
-    if (driver.isVerified) return res.json({ message: "Already verified" });
+    const cleanEmail = String(email || "").toLowerCase().trim();
 
-    const baseUrl = process.env.BACKEND_BASE_URL;
-    const token = jwt.sign({ kind: "driver", id: String(driver._id) }, process.env.JWT_SECRET, { expiresIn: "1d" });
-    const verifyUrl = `${baseUrl}/api/auth/driver/verify-email?token=${encodeURIComponent(token)}`;
+    if (!cleanEmail) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required.",
+      });
+    }
+
+    const driver = await Driver.findOne({ email: cleanEmail });
+
+    if (!driver) {
+      return res.status(404).json({
+        success: false,
+        message: "Driver account not found.",
+      });
+    }
+
+    if (driver.isVerified) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is already verified.",
+      });
+    }
+
+    if (!canResendOtp(driver.emailOtpLastSentAt)) {
+      return res.status(429).json({
+        success: false,
+        message: "Please wait 60 seconds before requesting another code.",
+      });
+    }
+
+    if (driver.emailOtpResendCount >= 3) {
+      return res.status(429).json({
+        success: false,
+        message: "Maximum resend limit reached. Please try again later.",
+      });
+    }
+
+    const newOtp = generateEmailOtp();
+
+    driver.emailOtpHash = hashEmailOtp(newOtp);
+    driver.emailOtpExpires = getEmailOtpExpiry();
+    driver.emailOtpAttempts = 0;
+    driver.emailOtpLastSentAt = new Date();
+    driver.emailOtpResendCount += 1;
+
+    await driver.save();
 
     try {
-      await sendMail({
+      await sendEmailOtp({
         to: driver.email,
-        subject: "Verify your TodaGo Driver Account",
-        html: `
-          <p>Hello ${driver.driverFirstName || "Driver"},</p>
-          <p>Please verify your account by clicking below (expires in 24 hours):</p>
-          <p><a href="${verifyUrl}" style="display:inline-block;padding:10px 16px;background:#1a73e8;color:#fff;border-radius:6px;text-decoration:none">Verify Email</a></p>
-          <p>If the button doesn't work, copy and paste:<br>${verifyUrl}</p>
-        `,
-        text: `Verify: ${verifyUrl}`,
+        otp: newOtp,
+        name: driverFullName(driver) || driver.driverFirstName || "Driver",
       });
-    } catch (e) {
-      console.error("❌ driver resend sendMail failed:", e.message);
+    } catch (emailError) {
+      console.error("❌ driver resend OTP email failed:", emailError);
+
+      return res.status(503).json({
+        success: false,
+        message:
+          "We could not send a new verification code right now. Please try again later.",
+      });
     }
 
     await pushNotif({
       userId: driver._id,
       userType: "driver",
       category: "verification",
-      title: "Verification link resent",
-      message: "We resent your email verification link. Please check your inbox (and Spam).",
-      meta: { sentTo: driver.email },
+      title: "Verification code resent",
+      message:
+        "We resent your driver email verification code. Please check your Inbox or Spam folder.",
+      meta: {
+        sentTo: driver.email,
+      },
     });
 
-    return res.json({ message: "Verification email sent" });
-  } catch (e) {
-    console.error("driver resend-verification error:", e);
-    return res.status(500).json({ message: "Server error" });
+    return res.status(200).json({
+      success: true,
+      message: "A new verification code has been sent to your email.",
+    });
+  } catch (error) {
+    console.error("❌ driver resend-email-otp error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to resend verification code. Please try again later.",
+    });
   }
 });
 

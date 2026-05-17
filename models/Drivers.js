@@ -7,10 +7,51 @@ const DriverSchema = new mongoose.Schema(
     profileID: { type: String, required: true },
     pushToken: { type: String, default: null },
 
-    email: { type: String, unique: true, sparse: true },
+    email: {
+      type: String,
+      unique: true,
+      sparse: true,
+      lowercase: true,
+      trim: true,
+    },
+
     password: { type: String },
-    isVerified: { type: Boolean, default: false }, // email verification
-    driverVerified: { type: Boolean, default: false }, // admin verification
+
+    // Email OTP verification status
+    // false = registered but not email verified yet
+    // true = email OTP verified
+    isVerified: {
+      type: Boolean,
+      default: false,
+    },
+
+    emailOtpHash: {
+      type: String,
+      default: null,
+    },
+
+    emailOtpExpires: {
+      type: Date,
+      default: null,
+    },
+
+    emailOtpAttempts: {
+      type: Number,
+      default: 0,
+    },
+
+    emailOtpLastSentAt: {
+      type: Date,
+      default: null,
+    },
+
+    emailOtpResendCount: {
+      type: Number,
+      default: 0,
+    },
+
+    // Admin verification
+    driverVerified: { type: Boolean, default: false },
 
     franchiseNumber: { type: String, required: true },
     todaName: { type: String, required: true, default: "Unassigned" },
