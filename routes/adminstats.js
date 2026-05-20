@@ -365,38 +365,46 @@ router.post("/admin/dev/passenger-trim", async (req, res) => {
     const { month, count } = req.body;
 
     if (!month || typeof month !== "string") {
-      return res.status(400).json({ error: "Missing or invalid month (expected 'YYYY-MM')." });
+      return res.status(400).json({ error: "Missing or invalid month. Use YYYY-MM." });
     }
+
     const n = Number(count);
     if (!n || n <= 0) {
-      return res.status(400).json({ error: "Missing or invalid count (must be > 0)." });
+      return res.status(400).json({ error: "Missing or invalid count." });
     }
 
     const [yearStr, monthStr] = month.split("-");
     const year = Number(yearStr);
     const monthIndex = Number(monthStr) - 1;
 
-    if (
-      !Number.isInteger(year) ||
-      !Number.isInteger(monthIndex) ||
-      monthIndex < 0 ||
-      monthIndex > 11
-    ) {
-      return res.status(400).json({ error: "Invalid month format. Use 'YYYY-MM'." });
-    }
-
-    const start = new Date(year, monthIndex, 1);
-    const end = new Date(year, monthIndex + 1, 1);
+    const start = new Date(Date.UTC(year, monthIndex, 1));
+    const end = new Date(Date.UTC(year, monthIndex + 1, 1));
 
     const idsToDelete = await Passenger.aggregate([
       {
         $addFields: {
           eventDate: {
-            $ifNull: ["$createdAt", { $toDate: "$_id" }],
+            $convert: {
+              input: "$createdAt",
+              to: "date",
+              onError: { $toDate: "$_id" },
+              onNull: { $toDate: "$_id" },
+            },
           },
         },
       },
-      { $match: { eventDate: { $gte: start, $lt: end } } },
+      {
+        $match: {
+          eventDate: { $gte: start, $lt: end },
+          $or: [
+            { email: { $exists: false } },
+            { email: null },
+            { email: { $regex: /ghost/i } },
+            { firstName: { $regex: /ghost/i } },
+            { lastName: { $regex: /ghost/i } },
+          ],
+        },
+      },
       { $sort: { eventDate: -1, _id: -1 } },
       { $limit: n },
       { $project: { _id: 1 } },
@@ -405,7 +413,7 @@ router.post("/admin/dev/passenger-trim", async (req, res) => {
     if (!idsToDelete.length) {
       return res.json({
         deletedCount: 0,
-        message: `No Passenger docs found for ${month}.`,
+        message: `No ghost Passenger docs found for ${month}.`,
       });
     }
 
@@ -413,7 +421,7 @@ router.post("/admin/dev/passenger-trim", async (req, res) => {
     const delResult = await Passenger.deleteMany({ _id: { $in: idList } });
 
     return res.json({
-      deletedCount: delResult.deletedCount,
+      deletedCount: delResult.deletedCount || 0,
       month,
     });
   } catch (err) {
