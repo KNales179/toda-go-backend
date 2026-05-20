@@ -36,7 +36,7 @@ function isValidOtp(code) {
 }
 
 // ADMIN-ONLY REGISTER
-router.post("/register", requireAdminAuth, async (req, res) => {
+router.post("/register", async (req, res) => {
   try {
     const { name = "", username, email, password, role } = req.body || {};
 
