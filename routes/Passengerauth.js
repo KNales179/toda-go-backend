@@ -308,6 +308,201 @@ router.post("/resend-email-otp", async (req, res) => {
   }
 });
 
+// ---------- PASSENGER FORGOT PASSWORD: SEND OTP ----------
+router.post("/forgot-password/send-otp", async (req, res) => {
+  try {
+    const cleanEmail = String(req.body?.email || "").toLowerCase().trim();
+
+    if (!cleanEmail) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required.",
+      });
+    }
+
+    const passenger = await Passenger.findOne({ email: cleanEmail });
+
+    if (!passenger) {
+      return res.status(404).json({
+        success: false,
+        message: "Passenger account not found.",
+      });
+    }
+
+    if (!canResendOtp(passenger.resetOtpLastSentAt)) {
+      return res.status(429).json({
+        success: false,
+        message: "Please wait 60 seconds before requesting another code.",
+      });
+    }
+
+    const otp = generateEmailOtp();
+
+    passenger.resetOtpHash = hashEmailOtp(otp);
+    passenger.resetOtpExpires = getEmailOtpExpiry();
+    passenger.resetOtpAttempts = 0;
+    passenger.resetOtpLastSentAt = new Date();
+    passenger.resetOtpVerified = false;
+
+    await passenger.save();
+
+    await sendEmailOtp({
+      to: passenger.email,
+      otp,
+      name: fullName(passenger) || passenger.firstName || "Passenger",
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Password reset code has been sent to your email.",
+      email: passenger.email,
+    });
+  } catch (error) {
+    console.error("passenger forgot-password/send-otp error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to send password reset code.",
+    });
+  }
+});
+
+// ---------- PASSENGER FORGOT PASSWORD: VERIFY OTP ----------
+router.post("/forgot-password/verify-otp", async (req, res) => {
+  try {
+    const cleanEmail = String(req.body?.email || "").toLowerCase().trim();
+    const cleanOtp = String(req.body?.otp || "").trim();
+
+    if (!cleanEmail || !cleanOtp) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and reset code are required.",
+      });
+    }
+
+    if (!/^\d{6}$/.test(cleanOtp)) {
+      return res.status(400).json({
+        success: false,
+        message: "Reset code must be 6 digits.",
+      });
+    }
+
+    const passenger = await Passenger.findOne({ email: cleanEmail });
+
+    if (!passenger) {
+      return res.status(404).json({
+        success: false,
+        message: "Passenger account not found.",
+      });
+    }
+
+    if (!passenger.resetOtpHash || !passenger.resetOtpExpires) {
+      return res.status(400).json({
+        success: false,
+        message: "No reset code found. Please request a new code.",
+      });
+    }
+
+    if (new Date() > new Date(passenger.resetOtpExpires)) {
+      return res.status(400).json({
+        success: false,
+        message: "Reset code has expired. Please request a new code.",
+      });
+    }
+
+    if (passenger.resetOtpAttempts >= 5) {
+      return res.status(429).json({
+        success: false,
+        message: "Too many incorrect attempts. Please request a new code.",
+      });
+    }
+
+    if (hashEmailOtp(cleanOtp) !== passenger.resetOtpHash) {
+      passenger.resetOtpAttempts += 1;
+      await passenger.save();
+
+      return res.status(400).json({
+        success: false,
+        message: "Invalid reset code.",
+        attemptsLeft: Math.max(0, 5 - passenger.resetOtpAttempts),
+      });
+    }
+
+    passenger.resetOtpVerified = true;
+    await passenger.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Reset code verified. You may now change your password.",
+      email: passenger.email,
+    });
+  } catch (error) {
+    console.error("passenger forgot-password/verify-otp error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to verify reset code.",
+    });
+  }
+});
+
+// ---------- PASSENGER FORGOT PASSWORD: CHANGE PASSWORD ----------
+router.post("/forgot-password/change-password", async (req, res) => {
+  try {
+    const cleanEmail = String(req.body?.email || "").toLowerCase().trim();
+    const newPassword = String(req.body?.newPassword || "");
+
+    if (!cleanEmail || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and new password are required.",
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 6 characters.",
+      });
+    }
+
+    const passenger = await Passenger.findOne({ email: cleanEmail });
+
+    if (!passenger) {
+      return res.status(404).json({
+        success: false,
+        message: "Passenger account not found.",
+      });
+    }
+
+    if (!passenger.resetOtpVerified) {
+      return res.status(403).json({
+        success: false,
+        message: "Please verify the reset code first.",
+      });
+    }
+
+    passenger.password = newPassword;
+
+    passenger.resetOtpHash = null;
+    passenger.resetOtpExpires = null;
+    passenger.resetOtpAttempts = 0;
+    passenger.resetOtpLastSentAt = null;
+    passenger.resetOtpVerified = false;
+
+    await passenger.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Password changed successfully. You can now log in.",
+    });
+  } catch (error) {
+    console.error("passenger forgot-password/change-password error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to change password.",
+    });
+  }
+});
+
 router.get("/:id", async (req, res) => {
   try {
     const p = await Passenger.findById(req.params.id);

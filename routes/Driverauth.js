@@ -628,7 +628,200 @@ router.post("/resend-email-otp", async (req, res) => {
   }
 });
 
+// ---------- DRIVER FORGOT PASSWORD: SEND OTP ----------
+router.post("/forgot-password/send-otp", async (req, res) => {
+  try {
+    const cleanEmail = String(req.body?.email || "").toLowerCase().trim();
 
+    if (!cleanEmail) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required.",
+      });
+    }
+
+    const driver = await Driver.findOne({ email: cleanEmail });
+
+    if (!driver) {
+      return res.status(404).json({
+        success: false,
+        message: "Driver account not found.",
+      });
+    }
+
+    if (!canResendOtp(driver.resetOtpLastSentAt)) {
+      return res.status(429).json({
+        success: false,
+        message: "Please wait 60 seconds before requesting another code.",
+      });
+    }
+
+    const otp = generateEmailOtp();
+
+    driver.resetOtpHash = hashEmailOtp(otp);
+    driver.resetOtpExpires = getEmailOtpExpiry();
+    driver.resetOtpAttempts = 0;
+    driver.resetOtpLastSentAt = new Date();
+    driver.resetOtpVerified = false;
+
+    await driver.save();
+
+    await sendEmailOtp({
+      to: driver.email,
+      otp,
+      name: driverFullName(driver) || driver.driverFirstName || "Driver",
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Password reset code has been sent to your email.",
+      email: driver.email,
+    });
+  } catch (error) {
+    console.error("driver forgot-password/send-otp error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to send password reset code.",
+    });
+  }
+});
+
+// ---------- DRIVER FORGOT PASSWORD: VERIFY OTP ----------
+router.post("/forgot-password/verify-otp", async (req, res) => {
+  try {
+    const cleanEmail = String(req.body?.email || "").toLowerCase().trim();
+    const cleanOtp = String(req.body?.otp || "").trim();
+
+    if (!cleanEmail || !cleanOtp) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and reset code are required.",
+      });
+    }
+
+    if (!/^\d{6}$/.test(cleanOtp)) {
+      return res.status(400).json({
+        success: false,
+        message: "Reset code must be 6 digits.",
+      });
+    }
+
+    const driver = await Driver.findOne({ email: cleanEmail });
+
+    if (!driver) {
+      return res.status(404).json({
+        success: false,
+        message: "Driver account not found.",
+      });
+    }
+
+    if (!driver.resetOtpHash || !driver.resetOtpExpires) {
+      return res.status(400).json({
+        success: false,
+        message: "No reset code found. Please request a new code.",
+      });
+    }
+
+    if (new Date() > new Date(driver.resetOtpExpires)) {
+      return res.status(400).json({
+        success: false,
+        message: "Reset code has expired. Please request a new code.",
+      });
+    }
+
+    if (driver.resetOtpAttempts >= 5) {
+      return res.status(429).json({
+        success: false,
+        message: "Too many incorrect attempts. Please request a new code.",
+      });
+    }
+
+    if (hashEmailOtp(cleanOtp) !== driver.resetOtpHash) {
+      driver.resetOtpAttempts += 1;
+      await driver.save();
+
+      return res.status(400).json({
+        success: false,
+        message: "Invalid reset code.",
+        attemptsLeft: Math.max(0, 5 - driver.resetOtpAttempts),
+      });
+    }
+
+    driver.resetOtpVerified = true;
+    await driver.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Reset code verified. You may now change your password.",
+      email: driver.email,
+    });
+  } catch (error) {
+    console.error("driver forgot-password/verify-otp error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to verify reset code.",
+    });
+  }
+});
+
+// ---------- DRIVER FORGOT PASSWORD: CHANGE PASSWORD ----------
+router.post("/forgot-password/change-password", async (req, res) => {
+  try {
+    const cleanEmail = String(req.body?.email || "").toLowerCase().trim();
+    const newPassword = String(req.body?.newPassword || "");
+
+    if (!cleanEmail || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and new password are required.",
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 6 characters.",
+      });
+    }
+
+    const driver = await Driver.findOne({ email: cleanEmail });
+
+    if (!driver) {
+      return res.status(404).json({
+        success: false,
+        message: "Driver account not found.",
+      });
+    }
+
+    if (!driver.resetOtpVerified) {
+      return res.status(403).json({
+        success: false,
+        message: "Please verify the reset code first.",
+      });
+    }
+
+    driver.password = newPassword;
+
+    driver.resetOtpHash = null;
+    driver.resetOtpExpires = null;
+    driver.resetOtpAttempts = 0;
+    driver.resetOtpLastSentAt = null;
+    driver.resetOtpVerified = false;
+
+    await driver.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Password changed successfully. You can now log in.",
+    });
+  } catch (error) {
+    console.error("driver forgot-password/change-password error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to change password.",
+    });
+  }
+});
 
 // Reuse a single worker (faster on repeated calls)
 let _workerPromise = null;

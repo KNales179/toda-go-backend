@@ -143,6 +143,31 @@ const DriverSchema = new mongoose.Schema(
 
     isPresident: { type: Boolean, default: false },
     todaPresName: { type: String, default: "" },
+
+    resetOtpHash: {
+      type: String,
+      default: null,
+    },
+
+    resetOtpExpires: {
+      type: Date,
+      default: null,
+    },
+
+    resetOtpAttempts: {
+      type: Number,
+      default: 0,
+    },
+
+    resetOtpLastSentAt: {
+      type: Date,
+      default: null,
+    },
+
+    resetOtpVerified: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true }
 );

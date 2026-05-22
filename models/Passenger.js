@@ -131,6 +131,31 @@ const passengerSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+
+  resetOtpHash: {
+    type: String,
+    default: null,
+  },
+
+  resetOtpExpires: {
+    type: Date,
+    default: null,
+  },
+
+  resetOtpAttempts: {
+    type: Number,
+    default: 0,
+  },
+
+  resetOtpLastSentAt: {
+    type: Date,
+    default: null,
+  },
+
+  resetOtpVerified: {
+    type: Boolean,
+    default: false,
+  },
 });
 
 // 🔒 Hash password before save
