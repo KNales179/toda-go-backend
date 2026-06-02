@@ -6,6 +6,30 @@ const Task = require("../models/Task");
 const Booking = require("../models/Bookings");
 const requireUserAuth = require("../middleware/requireUserAuth");
 
+function summarizeTasksForDebug(tasks = []) {
+  return tasks.map((t) => ({
+    id: String(t._id || t.id || ""),
+    driverId: String(t.driverId || ""),
+    sourceType: t.sourceType || "",
+    sourceId: String(t.sourceId || ""),
+    taskType: t.taskType || "",
+    status: t.status || "",
+    dependsOnTaskId: t.dependsOnTaskId ? String(t.dependsOnTaskId) : null,
+    createdAt: t.createdAt || null,
+    completedAt: t.completedAt || null,
+  }));
+}
+
+async function getDriverTasksForDebug(driverId) {
+  return Task.find({
+    driverId: String(driverId),
+    status: { $ne: "CANCELED" },
+  })
+    .select("_id driverId sourceType sourceId taskType status dependsOnTaskId createdAt completedAt")
+    .sort({ createdAt: 1 })
+    .lean();
+}
+
 router.use(requireUserAuth);
 function haversineMeters(a, b) {
   const toRad = (v) => (v * Math.PI) / 180;
@@ -152,6 +176,23 @@ router.post("/tasks/:taskId/complete", async (req, res) => {
       return res.status(403).json({ ok: false, error: "Forbidden" });
     }
 
+    const beforeTasks = await getDriverTasksForDebug(t.driverId);
+    console.log("🧪 [task-complete START]", {
+      taskId: String(taskId),
+      authDriverId: String(req.user.sub || ""),
+      driverLat,
+      driverLng,
+      completingTask: {
+        id: String(t._id),
+        sourceId: String(t.sourceId || ""),
+        sourceType: t.sourceType || "",
+        taskType: t.taskType || "",
+        status: t.status || "",
+        dependsOnTaskId: t.dependsOnTaskId ? String(t.dependsOnTaskId) : null,
+      },
+      tasksBefore: summarizeTasksForDebug(beforeTasks),
+    });
+
     if (t.status !== "COMPLETED") {
       t.status = "COMPLETED";
       t.completedAt = new Date();
@@ -203,7 +244,27 @@ router.post("/tasks/:taskId/complete", async (req, res) => {
       .sort({ createdAt: 1 })
       .lean();
 
-    return res.json({ ok: true, task: t, ...pick, tasks });
+    console.log("🧪 [task-complete AFTER REPLAN]", {
+      completedTaskId: String(taskId),
+      completedSourceId: String(t.sourceId || ""),
+      completedTaskType: t.taskType,
+      pick,
+      tasksReturned: summarizeTasksForDebug(tasks),
+    });
+
+    return res.json({
+      ok: true,
+      task: t,
+      ...pick,
+      tasks,
+      debug: {
+        completedTaskId: String(taskId),
+        completedSourceId: String(t.sourceId || ""),
+        completedTaskType: t.taskType,
+        pick,
+        tasksReturned: summarizeTasksForDebug(tasks),
+      },
+    });
   } catch (e) {
     console.error("Task complete error:", e);
     return res.status(500).json({ ok: false, error: "Server error" });

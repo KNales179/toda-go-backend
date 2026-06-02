@@ -16,6 +16,31 @@ const Task = require("../models/Task");
 const DEBUG_WAITING = true; 
 
 
+function summarizeTasksForDebug(tasks = []) {
+  return tasks.map((t) => ({
+    id: String(t._id || t.id || ""),
+    driverId: String(t.driverId || ""),
+    sourceType: t.sourceType || "",
+    sourceId: String(t.sourceId || ""),
+    taskType: t.taskType || "",
+    status: t.status || "",
+    dependsOnTaskId: t.dependsOnTaskId ? String(t.dependsOnTaskId) : null,
+    createdAt: t.createdAt || null,
+    completedAt: t.completedAt || null,
+  }));
+}
+
+async function getDriverTasksForDebug(driverId) {
+  return Task.find({
+    driverId: String(driverId),
+    status: { $ne: "CANCELED" },
+  })
+    .select("_id driverId sourceType sourceId taskType status dependsOnTaskId createdAt completedAt")
+    .sort({ createdAt: 1 })
+    .lean();
+}
+
+
 async function sendPush(to, title, body, extra = {}) {
   if (!to) return;
 
@@ -1744,15 +1769,28 @@ router.post("/cancel-booking", async (req, res) => {
       await releaseSeats({ driverId: b.driverId, booking: b, reason: "cancel" });
     }
 
-    // ✅ cancel all open tasks for this booking (keep completed as history)
-    await Task.updateMany(
+    // ✅ cancel all open tasks for THIS booking only (keep completed as history)
+    const cancelOpenTasksResult = await Task.updateMany(
       {
+        driverId: String(authDriverId),
         sourceType: "BOOKING",
         sourceId: String(bookingId),
         status: { $in: ["PENDING", "ACTIVE"] },
       },
-      { $set: { status: "CANCELED" } }
+      {
+        $set: {
+          status: "CANCELED",
+          canceledBy: "complete-booking",
+          canceledAt: new Date(),
+        },
+      }
     );
+
+    console.log("🧪 [complete-booking TASK CANCEL RESULT]", {
+      bookingId: String(bookingId),
+      matchedCount: cancelOpenTasksResult.matchedCount,
+      modifiedCount: cancelOpenTasksResult.modifiedCount,
+    });
 
     const updated = await Booking.findOneAndUpdate(
       { bookingId },
@@ -1907,6 +1945,23 @@ router.post("/complete-booking", requireUserAuth, async (req, res) => {
       return res.status(403).json({ message: "Not your booking" });
     }
 
+    const beforeTasks = await getDriverTasksForDebug(authDriverId);
+    console.log("🧪 [complete-booking START]", {
+      bookingId: String(bookingId),
+      authDriverId,
+      bodyDriverLat: driverLat,
+      bodyDriverLng: driverLng,
+      booking: {
+        bookingId: b.bookingId,
+        status: b.status,
+        progressStatus: b.progressStatus || null,
+        driverId: String(b.driverId || ""),
+        passengerId: String(b.passengerId || ""),
+        paymentStatus: b.paymentStatus || null,
+      },
+      tasksBefore: summarizeTasksForDebug(beforeTasks),
+    });
+
     // If accepted/enroute and has a driver, release seats
     if ((b.status === "accepted" || b.status === "enroute") && b.driverId) {
       await releaseSeats({ driverId: b.driverId, booking: b, reason: "complete" });
@@ -1954,7 +2009,16 @@ router.post("/complete-booking", requireUserAuth, async (req, res) => {
       }
 
       try {
-        await enforceSingleActiveAndPickNearest(b.driverId, lat, lng);
+        const pick = await enforceSingleActiveAndPickNearest(b.driverId, lat, lng);
+        const afterReplanTasks = await getDriverTasksForDebug(authDriverId);
+
+        console.log("🧪 [complete-booking AFTER REPLAN]", {
+          completedBookingId: String(bookingId),
+          usedLat: lat,
+          usedLng: lng,
+          pick,
+          tasksAfterReplan: summarizeTasksForDebug(afterReplanTasks),
+        });
       } catch (e) {
         console.warn("complete-booking replan failed:", e?.message || e);
       }
@@ -2024,9 +2088,22 @@ router.post("/complete-booking", requireUserAuth, async (req, res) => {
       console.error("❌ Error sending complete-booking push:", err);
     }
 
+    const finalTasks = await getDriverTasksForDebug(authDriverId);
+    console.log("🧪 [complete-booking END]", {
+      completedBookingId: String(bookingId),
+      updatedBookingStatus: updated?.status,
+      finalTasks: summarizeTasksForDebug(finalTasks),
+    });
+
     return res.status(200).json({
       message: "Booking marked as completed and history saved!",
       booking: { ...(updated.toObject?.() ?? updated), id: updated.bookingId },
+      debug: {
+        completedBookingId: String(bookingId),
+        taskCancelMatched: cancelOpenTasksResult.matchedCount,
+        taskCancelModified: cancelOpenTasksResult.modifiedCount,
+        finalTasks: summarizeTasksForDebug(finalTasks),
+      },
     });
   } catch (e) {
     console.error("❌ complete-booking error:", e);
