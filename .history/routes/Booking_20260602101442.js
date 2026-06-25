@@ -1939,25 +1939,13 @@ router.post("/complete-booking", requireUserAuth, async (req, res) => {
 
     const b = await Booking.findOne({ bookingId }).lean();
 
-    if (!b) {
-      return res.status(404).json({ message: "Booking not found" });
-    }
+    if (!b) return res.status(404).json({ message: "Booking not found" });
 
     if (String(b.driverId || "") !== authDriverId) {
       return res.status(403).json({ message: "Not your booking" });
     }
 
-    // ✅ Prevent duplicate completion if driver taps/retries again
-    if (String(b.status || "").toLowerCase() === "completed") {
-      return res.status(200).json({
-        ok: true,
-        message: "Booking already completed",
-        booking: b,
-      });
-    }
-
     const beforeTasks = await getDriverTasksForDebug(authDriverId);
-
     console.log("🧪 [complete-booking START]", {
       bookingId: String(bookingId),
       authDriverId,
@@ -1974,44 +1962,23 @@ router.post("/complete-booking", requireUserAuth, async (req, res) => {
       tasksBefore: summarizeTasksForDebug(beforeTasks),
     });
 
-    // ✅ Release driver seats only for active/ongoing booking
+    // If accepted/enroute and has a driver, release seats
     if ((b.status === "accepted" || b.status === "enroute") && b.driverId) {
-      await releaseSeats({
-        driverId: b.driverId,
-        booking: b,
-        reason: "complete",
-      });
+      await releaseSeats({ driverId: b.driverId, booking: b, reason: "complete" });
     }
 
-    // ✅ FIX: store the update result in cancelOpenTasksResult
-    // Cancels only tasks for THIS bookingId, not the driver's other bookings.
-    const cancelOpenTasksResult = await Task.updateMany(
+    // ✅ cancel all open tasks for this booking (keep completed as history)
+    await Task.updateMany(
       {
         sourceType: "BOOKING",
         sourceId: String(bookingId),
         status: { $in: ["PENDING", "ACTIVE"] },
       },
-      {
-        $set: {
-          status: "CANCELED",
-          canceledBy: "complete-booking",
-          canceledAt: new Date(),
-        },
-      }
+      { $set: { status: "CANCELED" } }
     );
 
-    console.log("🧪 [complete-booking TASK CANCEL RESULT]", {
-      bookingId: String(bookingId),
-      matchedCount: cancelOpenTasksResult.matchedCount,
-      modifiedCount: cancelOpenTasksResult.modifiedCount,
-    });
-
     const updated = await Booking.findOneAndUpdate(
-      {
-        bookingId,
-        driverId: b.driverId,
-        status: { $in: ["accepted", "enroute"] },
-      },
+      { bookingId },
       {
         $set: {
           status: "completed",
@@ -2022,16 +1989,9 @@ router.post("/complete-booking", requireUserAuth, async (req, res) => {
         },
       },
       { new: true }
-    ).lean();
+    );
 
-    if (!updated) {
-      return res.status(409).json({
-        ok: false,
-        message: "Booking could not be completed. It may already be completed or no longer active.",
-      });
-    }
-
-    // ✅ Replan next task among remaining bookings
+    // ✅ replan (pick next ACTIVE task among remaining bookings)
     if (b.driverId) {
       let lat = Number(driverLat);
       let lng = Number(driverLng);
@@ -2043,7 +2003,6 @@ router.post("/complete-booking", requireUserAuth, async (req, res) => {
           })
             .select("location")
             .lean();
-
           lat = Number(ds2?.location?.latitude);
           lng = Number(ds2?.location?.longitude);
         } catch {}
@@ -2065,7 +2024,7 @@ router.post("/complete-booking", requireUserAuth, async (req, res) => {
       }
     }
 
-    // ✅ Save ride history
+    // --- your RideHistory save block stays the same ---
     try {
       const niceType = ((t) => {
         const up = String(t || "CLASSIC").toUpperCase();
@@ -2076,10 +2035,7 @@ router.post("/complete-booking", requireUserAuth, async (req, res) => {
 
       const seats = Number(updated.partySize || 1);
       const baseFare = Number(updated.fare || 0);
-      const totalFare =
-        niceType === "Group"
-          ? baseFare * (Number.isFinite(seats) ? seats : 1)
-          : baseFare;
+      const totalFare = niceType === "Group" ? baseFare * (Number.isFinite(seats) ? seats : 1) : baseFare;
 
       await RideHistory.create({
         bookingId: updated.bookingId,
@@ -2112,11 +2068,10 @@ router.post("/complete-booking", requireUserAuth, async (req, res) => {
       console.error("❌ Error saving ride history:", e);
     }
 
-    // 🔔 Passenger push
+    // 🔔 passenger push
     try {
       if (updated && updated.passengerId) {
         const passenger = await Passenger.findById(updated.passengerId).select("pushToken");
-
         if (passenger?.pushToken) {
           await sendPush(
             passenger.pushToken,
@@ -2133,19 +2088,26 @@ router.post("/complete-booking", requireUserAuth, async (req, res) => {
       console.error("❌ Error sending complete-booking push:", err);
     }
 
+    const finalTasks = await getDriverTasksForDebug(authDriverId);
+    console.log("🧪 [complete-booking END]", {
+      completedBookingId: String(bookingId),
+      updatedBookingStatus: updated?.status,
+      finalTasks: summarizeTasksForDebug(finalTasks),
+    });
+
     return res.status(200).json({
-      ok: true,
-      message: "Booking completed",
-      booking: updated,
-      taskCancelMatched: cancelOpenTasksResult.matchedCount,
-      taskCancelModified: cancelOpenTasksResult.modifiedCount,
+      message: "Booking marked as completed and history saved!",
+      booking: { ...(updated.toObject?.() ?? updated), id: updated.bookingId },
+      debug: {
+        completedBookingId: String(bookingId),
+        taskCancelMatched: cancelOpenTasksResult.matchedCount,
+        taskCancelModified: cancelOpenTasksResult.modifiedCount,
+        finalTasks: summarizeTasksForDebug(finalTasks),
+      },
     });
   } catch (e) {
     console.error("❌ complete-booking error:", e);
-    return res.status(500).json({
-      message: "Server error",
-      details: e?.message || String(e),
-    });
+    return res.status(500).json({ message: "Server error", details: e.message });
   }
 });
 
